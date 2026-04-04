@@ -1,0 +1,1182 @@
+PROJECT CONTEXT EXPORT
+Generated: 2026-04-04 09:57:17 UTC
+Root directory: C:\laragon\www\python
+
+================================================================================
+SECTION: PROJECT STRUCTURE
+================================================================================
+
+python/
+├── agency_banner.png
+├── agency_banner_v2.png
+├── ai-banner-generator.txt
+├── background.png
+├── banner_data.json
+├── composite_banner.py
+├── creative_agent.py
+├── creative_campaign.json
+├── export_context.py
+├── final_banner.png
+├── generate_copy.py
+├── Heebo-Bold.ttf
+├── Heebo-VariableFont_wght.ttf
+├── main.py
+└── scraped_content.txt
+
+================================================================================
+SECTION: PYTHON SOURCES (5 file(s))
+================================================================================
+
+================================================================================
+FILE: composite_banner.py
+================================================================================
+
+"""
+Composite headline and CTA onto background.png using banner_data.json.
+Requires: pip install pillow arabic-reshaper python-bidi
+"""
+
+import json
+import sys
+from pathlib import Path
+
+import arabic_reshaper
+from bidi.algorithm import get_display
+from PIL import Image, ImageDraw, ImageFont
+
+BASE = Path(__file__).resolve().parent
+BACKGROUND_PATH = BASE / "background.png"
+BANNER_JSON_PATH = BASE / "banner_data.json"
+OUTPUT_PATH = BASE / "final_banner.png"
+ARIAL_PATH = Path(r"C:\Windows\Fonts\arial.ttf")
+
+HEADLINE_SIZE = 56
+CTA_SIZE = 38
+MARGIN = 48
+HEADLINE_FILL = (255, 255, 255)
+CTA_FILL = (255, 236, 60)
+STROKE_FILL = (0, 0, 0)
+STROKE_WIDTH = 3
+SHADOW_OFFSET = (3, 3)
+SHADOW_ALPHA = 180
+
+
+def prepare_hebrew(text: str) -> str:
+    reshaped = arabic_reshaper.reshape(text)
+    return get_display(reshaped)
+
+
+def load_font(size: int) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
+    if ARIAL_PATH.is_file():
+        return ImageFont.truetype(str(ARIAL_PATH), size=size)
+    return ImageFont.load_default()
+
+
+def main() -> None:
+    if not BACKGROUND_PATH.is_file():
+        print(f"Error: {BACKGROUND_PATH} not found.", file=sys.stderr)
+        sys.exit(1)
+    if not BANNER_JSON_PATH.is_file():
+        print(f"Error: {BANNER_JSON_PATH} not found.", file=sys.stderr)
+        sys.exit(1)
+
+    with BANNER_JSON_PATH.open(encoding="utf-8") as f:
+        data = json.load(f)
+
+    try:
+        headline_raw = data["headline"]
+        cta_raw = data["cta"]
+    except KeyError as e:
+        print(f"Error: banner JSON missing key {e.args[0]!r}.", file=sys.stderr)
+        sys.exit(1)
+
+    headline = prepare_hebrew(str(headline_raw))
+    cta = prepare_hebrew(str(cta_raw))
+
+    image = Image.open(BACKGROUND_PATH).convert("RGBA")
+    width, height = image.size
+
+    headline_font = load_font(HEADLINE_SIZE)
+    cta_font = load_font(CTA_SIZE)
+
+    overlay = Image.new("RGBA", image.size, (0, 0, 0, 0))
+    draw = ImageDraw.Draw(overlay)
+
+    # Headline: top center (with stroke + soft shadow for contrast)
+    hb = draw.textbbox(
+        (0, 0), headline, font=headline_font, stroke_width=STROKE_WIDTH
+    )
+    hw = hb[2] - hb[0]
+    hh = hb[3] - hb[1]
+    hx = (width - hw) // 2 - hb[0]
+    hy = MARGIN - hb[1]
+
+    sx, sy = SHADOW_OFFSET
+    shadow_color = (*STROKE_FILL, SHADOW_ALPHA)
+    draw.text((hx + sx, hy + sy), headline, font=headline_font, fill=shadow_color)
+    draw.text(
+        (hx, hy),
+        headline,
+        font=headline_font,
+        fill=HEADLINE_FILL,
+        stroke_width=STROKE_WIDTH,
+        stroke_fill=STROKE_FILL,
+    )
+
+    # CTA: bottom right
+    cta_stroke = max(2, STROKE_WIDTH - 1)
+    cb = draw.textbbox((0, 0), cta, font=cta_font, stroke_width=cta_stroke)
+    cw = cb[2] - cb[0]
+    ch = cb[3] - cb[1]
+    cx = width - MARGIN - cw - cb[0]
+    cy = height - MARGIN - ch - cb[1]
+
+    draw.text((cx + sx, cy + sy), cta, font=cta_font, fill=shadow_color)
+    draw.text(
+        (cx, cy),
+        cta,
+        font=cta_font,
+        fill=CTA_FILL,
+        stroke_width=cta_stroke,
+        stroke_fill=STROKE_FILL,
+    )
+
+    composed = Image.alpha_composite(image, overlay).convert("RGB")
+    composed.save(OUTPUT_PATH, format="PNG")
+    print(f"Success: wrote {OUTPUT_PATH}")
+
+
+if __name__ == "__main__":
+    main()
+
+
+================================================================================
+FILE: creative_agent.py
+================================================================================
+
+"""
+Elite marketing-agency banner: GPT-4o copy (any industry), DALL-E 3 background,
+right-half panel + brand logo — save agency_banner_with_logo.png.
+
+Requires:
+  pip install openai requests pillow arabic-reshaper python-bidi
+  Env: OPENAI_API_KEY
+
+Inputs:  scraped_content.txt (UTF-8), logo.png (same folder)
+Outputs: creative_campaign.json, background.png, agency_banner_with_logo.png
+Font:    Heebo-Bold.ttf next to this script (same folder).
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import sys
+from pathlib import Path
+
+import arabic_reshaper
+import requests
+from bidi.algorithm import get_display
+from openai import OpenAI
+from PIL import Image, ImageDraw, ImageFont
+
+BASE = Path(__file__).resolve().parent
+SCRAPED_PATH = BASE / "scraped_content.txt"
+HEEBO_FONT_PATH = BASE / "Heebo-Bold.ttf"
+LOGO_PATH = BASE / "logo.png"
+BACKGROUND_PNG_PATH = BASE / "background.png"
+CAMPAIGN_JSON_PATH = BASE / "creative_campaign.json"
+FINAL_BANNER_PATH = BASE / "agency_banner_with_logo.png"
+
+BANNER_SIZE = 1024
+
+# Panel (right half)
+PANEL_PAD_X = 40
+PANEL_PAD_Y = 36
+LOGO_TARGET_WIDTH = 200
+LOGO_TOP_Y = 28
+LOGO_GAP_BELOW = 22
+PANEL_OPACITY = 0.80
+# Dark blue panel (80% opacity applied via alpha)
+PANEL_FILL = (12, 20, 38)
+
+# Typography (Heebo-Bold for all; weights simulated by size)
+HEADLINE_FONT_SIZE = 42
+SUBHEAD_FONT_SIZE = 26
+CTA_FONT_SIZE = 28
+HEADLINE_SUBHEAD_GAP = 20
+TEXT_BUTTON_GAP = 36
+BUTTON_PAD_X = 36
+BUTTON_PAD_Y = 18
+BUTTON_RADIUS = 14
+BOTTOM_PAD = 44
+
+GOLD_FILL = (247, 200, 48, 255)
+GOLD_OUTLINE = (255, 235, 160, 255)
+GOLD_SHADOW = (180, 130, 10, 255)
+CTA_TEXT_BLACK = (12, 14, 18, 255)
+SUBHEAD_GRAY = (210, 215, 225, 255)
+
+ELITE_AGENCY_SYSTEM = """You are an elite full-service marketing agency: sharp strategy, any vertical, any geography.
+
+Your job is to read the scraped website text and DYNAMICALLY infer:
+• The ACTUAL brand or business name (how customers would recognize them).
+• The CORE business or service (e.g. SaaS, plumbing, law firm, restaurant, publisher, clinic, e-commerce, agency, nonprofit — whatever truly matches the source).
+
+STRICT RULES — IGNORE and do NOT let these steer the brand story:
+• Legal boilerplate, terms of service, cookie notices, disclaimers.
+• Privacy policy content.
+• Accessibility statements-only pages (unless they are the sole signal — prefer product/service pages).
+Focus on real value propositions, offerings, and customer-facing copy.
+
+Then identify the prospect’s main PAIN POINT and the brand’s main SOLUTION or benefit.
+
+Output ONLY valid JSON (no markdown, no extra keys) with exactly these four string fields:
+
+- headline: A punchy Hebrew QUESTION that highlights the customer’s pain. Cleverly weave in the inferred BRAND NAME and/or CORE SERVICE where it feels natural (not forced). Keep it banner-short.
+- subhead: One short Hebrew sentence — the main solution, outcome, or benefit (not a question). Confident and clear.
+- cta: Hebrew call to action, exactly 2–3 words (imperative).
+- image_prompt: One detailed ENGLISH prompt for DALL-E 3. The visual scene must match the IDENTIFIED INDUSTRY and mood (e.g. workshop & van for trades; courtroom or office for legal; kitchen for food; calm studio for wellness; desks & screens for software — adapt freely). CRITICAL COMPOSITION: The entire RIGHT HALF of the square frame (from the vertical centerline to the right edge) must be CLEAN NEGATIVE SPACE only — smooth wall, soft gradient, or empty minimal backdrop — NO objects, people, equipment, or busy detail there; reserved for overlay text. Main subject and environment occupy the LEFT half only. Absolutely NO text, letters, numbers, logos, watermarks, or readable signage anywhere in the image."""
+
+
+def _require_api_key() -> None:
+    if not os.environ.get("OPENAI_API_KEY"):
+        print(
+            "[creative_agent] ERROR: Set OPENAI_API_KEY "
+            "(e.g. PowerShell: $env:OPENAI_API_KEY='your-key').",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+
+def _read_scraped() -> str:
+    if not SCRAPED_PATH.is_file():
+        print(f"[creative_agent] ERROR: {SCRAPED_PATH} not found.", file=sys.stderr)
+        sys.exit(1)
+    text = SCRAPED_PATH.read_text(encoding="utf-8").strip()
+    if not text:
+        print("[creative_agent] ERROR: scraped content is empty.", file=sys.stderr)
+        sys.exit(1)
+    return text
+
+
+def _require_font() -> None:
+    if not HEEBO_FONT_PATH.is_file():
+        print(
+            f"[creative_agent] ERROR: Hebrew font not found: {HEEBO_FONT_PATH}\n"
+            "Place Heebo-Bold.ttf in the same folder as creative_agent.py.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+
+def _require_logo() -> None:
+    if not LOGO_PATH.is_file():
+        print(
+            f"[creative_agent] ERROR: Logo not found: {LOGO_PATH}\n"
+            "Place logo.png in the same folder as creative_agent.py.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+
+def load_resized_logo_rgba() -> Image.Image:
+    """Resize logo to ~LOGO_TARGET_WIDTH px wide; preserve aspect ratio; keep alpha."""
+    im = Image.open(LOGO_PATH).convert("RGBA")
+    lw, lh = im.size
+    if lw <= 0:
+        print("[creative_agent] ERROR: logo.png has invalid width.", file=sys.stderr)
+        sys.exit(1)
+    if lw == LOGO_TARGET_WIDTH:
+        return im
+    scale = LOGO_TARGET_WIDTH / float(lw)
+    nw = LOGO_TARGET_WIDTH
+    nh = max(1, int(round(lh * scale)))
+    return im.resize((nw, nh), Image.Resampling.LANCZOS)
+
+
+def prepare_hebrew(text: str) -> str:
+    reshaped = arabic_reshaper.reshape(text)
+    return get_display(reshaped)
+
+
+def _load_heebo(size: int) -> ImageFont.FreeTypeFont:
+    return ImageFont.truetype(str(HEEBO_FONT_PATH), size=size)
+
+
+def wrap_hebrew_paragraph(
+    raw: str,
+    draw: ImageDraw.ImageDraw,
+    font: ImageFont.FreeTypeFont,
+    max_width: int,
+) -> list[str]:
+    """Word-wrap raw Hebrew (before bidi) to fit max_width using prepared line widths."""
+    words = raw.split()
+    if not words:
+        return []
+    lines: list[str] = []
+    current: list[str] = []
+    for w in words:
+        trial = " ".join(current + [w])
+        prep = prepare_hebrew(trial)
+        bbox = draw.textbbox((0, 0), prep, font=font)
+        tw = bbox[2] - bbox[0]
+        if tw <= max_width:
+            current.append(w)
+        else:
+            if current:
+                lines.append(" ".join(current))
+                current = [w]
+            else:
+                lines.append(w)
+                current = []
+    if current:
+        lines.append(" ".join(current))
+    return lines
+
+
+def fetch_banner_payload(client: OpenAI, user_content: str) -> dict:
+    print("[creative_agent] Step 1/4: Requesting copy + image brief from GPT-4o (Elite Marketing Agency)…")
+    response = client.chat.completions.create(
+        model="gpt-4o",
+        messages=[
+            {"role": "system", "content": ELITE_AGENCY_SYSTEM},
+            {"role": "user", "content": user_content[:16000]},
+        ],
+        response_format={"type": "json_object"},
+    )
+    text = response.choices[0].message.content
+    if not text:
+        print("[creative_agent] ERROR: Empty response from GPT-4o.", file=sys.stderr)
+        sys.exit(1)
+    print("[creative_agent] Step 1/4: Parsing JSON…")
+    data = json.loads(text)
+    for key in ("headline", "subhead", "cta", "image_prompt"):
+        if key not in data or not str(data[key]).strip():
+            print(f"[creative_agent] ERROR: Missing or empty JSON key {key!r}.", file=sys.stderr)
+            sys.exit(1)
+    print("[creative_agent] Step 1/4: OK — headline, subhead, cta, image_prompt received.")
+    return data
+
+
+def generate_background_dalle3(client: OpenAI, image_prompt: str) -> None:
+    print("[creative_agent] Step 2/4: Generating background with DALL-E 3 (1024×1024)…")
+    img_response = client.images.generate(
+        model="dall-e-3",
+        prompt=image_prompt,
+        size="1024x1024",
+    )
+    image_url = img_response.data[0].url
+    if not image_url:
+        print("[creative_agent] ERROR: DALL-E returned no image URL.", file=sys.stderr)
+        sys.exit(1)
+    print("[creative_agent] Step 2/4: Downloading image from OpenAI URL…")
+    img_req = requests.get(image_url, timeout=120)
+    img_req.raise_for_status()
+    BACKGROUND_PNG_PATH.write_bytes(img_req.content)
+    print(f"[creative_agent] Step 2/4: Wrote {BACKGROUND_PNG_PATH}.")
+
+
+def run_panel_design_engine(
+    headline_raw: str,
+    subhead_raw: str,
+    cta_raw: str,
+    out_path: Path,
+) -> None:
+    """
+    Right-half dark panel (~80% opacity), logo top-center, then Heebo headline + subhead,
+    gold CTA at bottom.
+    """
+    if not BACKGROUND_PNG_PATH.is_file():
+        print(f"[creative_agent] ERROR: {BACKGROUND_PNG_PATH} not found.", file=sys.stderr)
+        sys.exit(1)
+
+    print("[creative_agent] Step 4/4: Panel design — loading background…")
+    base = Image.open(BACKGROUND_PNG_PATH).convert("RGBA")
+    w, h = base.size
+    if (w, h) != (BANNER_SIZE, BANNER_SIZE):
+        print(
+            f"[creative_agent] Step 4/4: Resizing background {w}×{h} → {BANNER_SIZE}×{BANNER_SIZE}…"
+        )
+        base = base.resize((BANNER_SIZE, BANNER_SIZE), Image.Resampling.LANCZOS)
+        w = h = BANNER_SIZE
+
+    panel_x0 = w // 2
+    alpha = int(round(255 * PANEL_OPACITY))
+    r, g, b = PANEL_FILL
+    overlay = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+    panel_draw = ImageDraw.Draw(overlay)
+    panel_draw.rectangle([panel_x0, 0, w, h], fill=(r, g, b, alpha))
+    canvas = Image.alpha_composite(base, overlay)
+
+    panel_center_x = (panel_x0 + w) // 2
+    print("[creative_agent] Step 4/4: Placing logo (top-center of panel, alpha mask)…")
+    logo_img = load_resized_logo_rgba()
+    logo_w, logo_h = logo_img.size
+    logo_x = panel_center_x - logo_w // 2
+    logo_x = max(panel_x0 + PANEL_PAD_X, min(logo_x, w - PANEL_PAD_X - logo_w))
+    logo_y = LOGO_TOP_Y
+    canvas.paste(logo_img, (logo_x, logo_y), logo_img)
+    content_top_y = logo_y + logo_h + LOGO_GAP_BELOW
+
+    draw = ImageDraw.Draw(canvas)
+
+    inner_left = panel_x0 + PANEL_PAD_X
+    inner_right = w - PANEL_PAD_X
+    text_max_w = inner_right - inner_left
+
+    cta = prepare_hebrew(str(cta_raw))
+
+    head_sz = HEADLINE_FONT_SIZE
+    font_head = _load_heebo(head_sz)
+    for _ in range(4):
+        raw_h = wrap_hebrew_paragraph(str(headline_raw), draw, font_head, text_max_w)
+        if len(raw_h) <= 4:
+            break
+        head_sz = max(26, head_sz - 4)
+        font_head = _load_heebo(head_sz)
+    h_lines = [prepare_hebrew(line) for line in raw_h]
+
+    font_sub = _load_heebo(SUBHEAD_FONT_SIZE)
+    font_cta = _load_heebo(CTA_FONT_SIZE)
+    s_lines = [prepare_hebrew(line) for line in wrap_hebrew_paragraph(str(subhead_raw), draw, font_sub, text_max_w)]
+
+    cb = draw.textbbox((0, 0), cta, font=font_cta)
+    ctw = cb[2] - cb[0]
+    cth = cb[3] - cb[1]
+    btn_w = ctw + 2 * BUTTON_PAD_X
+    btn_h = cth + 2 * BUTTON_PAD_Y
+    bx0 = panel_center_x - btn_w // 2
+    bx0 = max(inner_left, min(bx0, inner_right - btn_w))
+    by1 = h - BOTTOM_PAD
+    by0 = by1 - btn_h
+
+    # Stack text below logo, stop above button
+    y = content_top_y
+    text_ceiling = by0 - TEXT_BUTTON_GAP
+
+    def line_height(font: ImageFont.FreeTypeFont, line: str) -> int:
+        bb = draw.textbbox((0, 0), line, font=font)
+        return bb[3] - bb[1]
+
+    def draw_rtl_line(line: str, font: ImageFont.FreeTypeFont, fill: tuple[int, int, int, int]) -> float:
+        nonlocal y
+        bbox = draw.textbbox((0, 0), line, font=font)
+        line_w = bbox[2] - bbox[0]
+        x = inner_right - line_w - bbox[0]
+        shadow = (0, 0, 0, 90)
+        for dx, dy in ((2, 2), (1, 1)):
+            draw.text((x + dx, y + dy), line, font=font, fill=shadow)
+        draw.text((x, y), line, font=font, fill=fill)
+        y += line_height(font, line) + 8
+        return y
+
+    print("[creative_agent] Step 4/4: Drawing headline + subhead on panel (Heebo)…")
+    for line in h_lines:
+        if y > text_ceiling - line_height(font_head, line):
+            break
+        draw_rtl_line(line, font_head, (255, 255, 255, 255))
+
+    y += HEADLINE_SUBHEAD_GAP - 8
+    for line in s_lines:
+        if y > text_ceiling - line_height(font_sub, line):
+            break
+        draw_rtl_line(line, font_sub, SUBHEAD_GRAY)
+
+    print("[creative_agent] Step 4/4: Drawing gold CTA button…")
+    draw.rounded_rectangle(
+        [bx0, by0 + 3, bx0 + btn_w, by1],
+        radius=BUTTON_RADIUS,
+        fill=GOLD_SHADOW,
+    )
+    draw.rounded_rectangle(
+        [bx0, by0, bx0 + btn_w, by1],
+        radius=BUTTON_RADIUS,
+        fill=GOLD_FILL,
+        outline=GOLD_OUTLINE,
+        width=2,
+    )
+    tx = bx0 + BUTTON_PAD_X - cb[0]
+    ty = by0 + BUTTON_PAD_Y - cb[1]
+    draw.text((tx, ty), cta, font=font_cta, fill=CTA_TEXT_BLACK)
+
+    print("[creative_agent] Step 4/4: Saving agency_banner_with_logo.png…")
+    canvas.convert("RGB").save(out_path, format="PNG", optimize=True)
+    print(f"[creative_agent] Step 4/4: Wrote {out_path}.")
+
+
+def main() -> None:
+    _require_api_key()
+    _require_font()
+    _require_logo()
+    user_content = _read_scraped()
+    client = OpenAI()
+
+    payload = fetch_banner_payload(client, user_content)
+    generate_background_dalle3(client, str(payload["image_prompt"]))
+
+    print(f"[creative_agent] Step 3/4: Saving payload to {CAMPAIGN_JSON_PATH}…")
+    with CAMPAIGN_JSON_PATH.open("w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False, indent=2)
+
+    run_panel_design_engine(
+        str(payload["headline"]),
+        str(payload["subhead"]),
+        str(payload["cta"]),
+        FINAL_BANNER_PATH,
+    )
+    print("[creative_agent] Pipeline complete — agency_banner_with_logo.png is ready.")
+
+
+if __name__ == "__main__":
+    main()
+
+
+================================================================================
+FILE: export_context.py
+================================================================================
+
+"""
+Scan the project directory (folder containing this script), export all .py sources,
+banner_data.json, and a directory tree into project_context.txt for AI / tooling context.
+
+Ignores .git and __pycache__ everywhere.
+
+Usage: python export_context.py
+"""
+
+from __future__ import annotations
+
+import os
+from datetime import datetime, timezone
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent
+OUTPUT_FILE = ROOT / "project_context.txt"
+
+IGNORE_DIRS = frozenset({".git", "__pycache__"})
+
+FILE_HEADER_LINE = "=" * 80
+
+
+def _tree_lines(directory: Path, prefix: str) -> list[str]:
+    lines: list[str] = []
+    try:
+        entries = [
+            p
+            for p in directory.iterdir()
+            if not (p.is_dir() and p.name in IGNORE_DIRS)
+        ]
+        entries.sort(key=lambda p: (not p.is_dir(), p.name.lower()))
+    except OSError as exc:
+        return [f"{prefix}[Error reading directory: {exc}]"]
+
+    for i, entry in enumerate(entries):
+        is_last = i == len(entries) - 1
+        branch = "└── " if is_last else "├── "
+        lines.append(f"{prefix}{branch}{entry.name}")
+        if entry.is_dir():
+            extension = "    " if is_last else "│   "
+            lines.extend(_tree_lines(entry, prefix + extension))
+    return lines
+
+
+def build_project_structure(root: Path) -> str:
+    header = f"{root.name}/"
+    body_lines = _tree_lines(root, "")
+    return header + ("\n" + "\n".join(body_lines) if body_lines else "")
+
+
+def collect_py_files(root: Path) -> list[Path]:
+    paths: list[Path] = []
+    root_str = os.fspath(root)
+    for dirpath, dirnames, filenames in os.walk(root_str):
+        dirnames[:] = [d for d in dirnames if d not in IGNORE_DIRS]
+        for name in filenames:
+            if name.endswith(".py"):
+                paths.append(Path(dirpath) / name)
+    return sorted(paths)
+
+
+def read_text_file(path: Path) -> str:
+    return path.read_text(encoding="utf-8", errors="replace")
+
+
+def file_section(relative_display: str, body: str) -> list[str]:
+    return [
+        "",
+        FILE_HEADER_LINE,
+        f"FILE: {relative_display}",
+        FILE_HEADER_LINE,
+        "",
+        body.rstrip("\n"),
+        "",
+    ]
+
+
+def main() -> None:
+    generated_at = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    chunks: list[str] = [
+        "PROJECT CONTEXT EXPORT",
+        f"Generated: {generated_at}",
+        f"Root directory: {ROOT}",
+        "",
+        FILE_HEADER_LINE,
+        "SECTION: PROJECT STRUCTURE",
+        FILE_HEADER_LINE,
+        "",
+        build_project_structure(ROOT),
+    ]
+
+    py_files = collect_py_files(ROOT)
+    chunks.append("")
+    chunks.append(FILE_HEADER_LINE)
+    chunks.append(f"SECTION: PYTHON SOURCES ({len(py_files)} file(s))")
+    chunks.append(FILE_HEADER_LINE)
+
+    for py_path in py_files:
+        rel = py_path.relative_to(ROOT)
+        chunks.extend(file_section(rel.as_posix(), read_text_file(py_path)))
+
+    json_path = ROOT / "banner_data.json"
+    chunks.append(FILE_HEADER_LINE)
+    chunks.append("SECTION: banner_data.json")
+    chunks.append(FILE_HEADER_LINE)
+    if json_path.is_file():
+        chunks.extend(file_section("banner_data.json", read_text_file(json_path)))
+    else:
+        chunks.extend(
+            file_section(
+                "banner_data.json (missing)",
+                "[This file was not found in the project root.]",
+            )
+        )
+
+    OUTPUT_FILE.write_text("\n".join(chunks).rstrip() + "\n", encoding="utf-8")
+    print(f"Wrote {OUTPUT_FILE}")
+
+
+if __name__ == "__main__":
+    main()
+
+
+================================================================================
+FILE: generate_copy.py
+================================================================================
+
+"""
+Read scraped_content.txt and ask GPT-4o for social banner copy (JSON).
+Save banner_data.json, generate DALL-E 3 background, save background.png.
+Requires: pip install openai requests
+Set OPENAI_API_KEY in the environment (never commit keys to the repo).
+"""
+
+import json
+import os
+import sys
+from pathlib import Path
+
+import requests
+from openai import OpenAI
+
+SCRAPED_PATH = Path(__file__).resolve().parent / "scraped_content.txt"
+BANNER_JSON_PATH = Path(__file__).resolve().parent / "banner_data.json"
+BACKGROUND_PNG_PATH = Path(__file__).resolve().parent / "background.png"
+
+SYSTEM_PROMPT = (
+    "You are an expert marketing copywriter. Analyze the provided text from a "
+    "business website. Create copy for a social media banner. Output ONLY a valid "
+    "JSON object with 3 keys: headline (a catchy short Hebrew title, max 6 words), "
+    "cta (call to action in Hebrew, max 4 words), and image_prompt (a detailed prompt "
+    "in English for an AI image generator to create a professional background image "
+    "WITHOUT any text, matching the business vibe)."
+)
+
+
+def main() -> None:
+    if not os.environ.get("OPENAI_API_KEY"):
+        print(
+            "Error: Set OPENAI_API_KEY (e.g. in PowerShell: "
+            "$env:OPENAI_API_KEY='your-key-here').",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    if not SCRAPED_PATH.is_file():
+        print(f"Error: {SCRAPED_PATH} not found.", file=sys.stderr)
+        sys.exit(1)
+
+    user_content = SCRAPED_PATH.read_text(encoding="utf-8")
+    if not user_content.strip():
+        print("Error: scraped content is empty.", file=sys.stderr)
+        sys.exit(1)
+
+    client = OpenAI()
+
+    print("Requesting banner copy from gpt-4o…")
+    response = client.chat.completions.create(
+        model="gpt-4o",
+        messages=[
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": user_content},
+        ],
+        response_format={"type": "json_object"},
+    )
+
+    text = response.choices[0].message.content
+    if not text:
+        print("Error: Empty response from API.", file=sys.stderr)
+        sys.exit(1)
+
+    print("Parsing JSON response…")
+    data = json.loads(text)
+
+    print(f"Saving banner data to {BANNER_JSON_PATH}…")
+    with BANNER_JSON_PATH.open("w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
+    print("Generated banner JSON:")
+    print(json.dumps(data, ensure_ascii=False, indent=2))
+
+    try:
+        image_prompt = data["image_prompt"]
+    except KeyError:
+        print("Error: JSON missing required key 'image_prompt'.", file=sys.stderr)
+        sys.exit(1)
+
+    print("Calling DALL-E 3 (1024×1024)…")
+    img_response = client.images.generate(
+        model="dall-e-3",
+        prompt=image_prompt,
+        size="1024x1024",
+    )
+    image_url = img_response.data[0].url
+    if not image_url:
+        print("Error: DALL-E response had no image URL.", file=sys.stderr)
+        sys.exit(1)
+
+    print("Downloading image from URL…")
+    img_req = requests.get(image_url, timeout=120)
+    img_req.raise_for_status()
+
+    print(f"Writing {BACKGROUND_PNG_PATH}…")
+    BACKGROUND_PNG_PATH.write_bytes(img_req.content)
+    print("Done.")
+
+
+if __name__ == "__main__":
+    main()
+
+
+================================================================================
+FILE: main.py
+================================================================================
+
+"""
+Crawl up to 10 unique internal pages; save title and <p> text to scraped_content.txt.
+Skips legal/accessibility junk links; downloads homepage logo to logo.png.
+
+Uses Selenium (headless Chrome) for JS-rendered sites (WordPress, Shopify, SPAs, custom stacks).
+
+Requires: pip install selenium webdriver-manager requests pillow
+Chrome must be installed; ChromeDriver via webdriver-manager.
+"""
+
+from __future__ import annotations
+
+import io
+import random
+import time
+from collections import deque
+from pathlib import Path
+from urllib.parse import unquote, urljoin, urlparse, urlunparse
+
+import requests
+from PIL import Image, UnidentifiedImageError
+from selenium import webdriver
+from selenium.common.exceptions import WebDriverException
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.chrome.service import Service
+from selenium.webdriver.common.by import By
+from webdriver_manager.chrome import ChromeDriverManager
+
+BASE_DIR = Path(__file__).resolve().parent
+MAX_PAGES = 10
+OUTPUT_FILE = BASE_DIR / "scraped_content.txt"
+LOGO_FILE = BASE_DIR / "logo.png"
+SEPARATOR = "=" * 80
+RENDER_WAIT_SECONDS = 10
+
+# Case-insensitive for ASCII; Hebrew phrases matched as literal substrings.
+JUNK_KEYWORDS = (
+    "privacy",
+    "terms",
+    "policy",
+    "accessibility",
+    "cookie",
+    "תקנון",
+    "פרטיות",
+    "נגישות",
+    "תנאי שימוש",
+)
+
+REQUEST_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/131.0.0.0 Safari/537.36"
+    ),
+    "Accept": "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
+}
+
+
+def normalize_url(url: str) -> str:
+    """Add https:// when no scheme is given."""
+    url = url.strip()
+    if not url:
+        return url
+    parsed = urlparse(url)
+    if not parsed.scheme:
+        return "https://" + url
+    return url
+
+
+def strip_fragment(url: str) -> str:
+    """Remove #fragment for stable deduplication."""
+    p = urlparse(url)
+    return urlunparse((p.scheme, p.netloc, p.path or "/", p.params, p.query, ""))
+
+
+def same_site(url: str, base_netloc: str) -> bool:
+    """True if url is http(s) and host matches the crawl root (internal link)."""
+    p = urlparse(url)
+    if p.scheme not in ("http", "https"):
+        return False
+    return p.netloc.lower() == base_netloc.lower()
+
+
+def link_contains_junk(url: str, anchor_text: str) -> bool:
+    """
+    True if URL (decoded) or visible anchor/label text should be excluded from crawl.
+    English keywords: case-insensitive. Hebrew: substring match on decoded URL and anchor.
+    """
+    decoded_url = unquote(url)
+    haystacks = (
+        decoded_url.lower(),
+        anchor_text.lower(),
+        decoded_url,
+        anchor_text,
+    )
+    for kw in JUNK_KEYWORDS:
+        if not kw:
+            continue
+        ascii_kw = kw.isascii()
+        for h in haystacks:
+            if ascii_kw:
+                if kw in h.lower():
+                    return True
+            else:
+                if kw in h:
+                    return True
+    return False
+
+
+def format_page_block(page_url: str, title: str, paragraphs: list[str]) -> str:
+    """One nicely separated section for the output file."""
+    lines = [
+        SEPARATOR,
+        f"URL: {page_url}",
+        SEPARATOR,
+        f"Title: {title}",
+        "",
+        "Paragraphs (<p>):",
+    ]
+    if paragraphs:
+        lines.append("")
+        lines.append("\n\n".join(paragraphs))
+    else:
+        lines.append("(no <p> tags with text found)")
+    lines.append("")
+    lines.append("")
+    return "\n".join(lines)
+
+
+def build_headless_chrome() -> webdriver.Chrome:
+    options = Options()
+    options.add_argument("--headless=new")
+    options.add_argument("--disable-gpu")
+    options.add_argument("--no-sandbox")
+    options.add_argument("--disable-dev-shm-usage")
+    options.add_argument("--window-size=1920,1080")
+    options.add_argument(
+        "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+    )
+    service = Service(ChromeDriverManager().install())
+    return webdriver.Chrome(service=service, options=options)
+
+
+def extract_title_and_paragraphs(driver: webdriver.Chrome) -> tuple[str, list[str]]:
+    """Return document title and non-empty stripped text from all <p> elements in the live DOM."""
+    title_text = (driver.title or "").strip()
+    if not title_text:
+        title_text = "(no title found)"
+
+    paras = driver.find_elements(By.TAG_NAME, "p")
+    texts: list[str] = []
+    for p in paras:
+        t = (p.text or "").strip()
+        if t:
+            texts.append(t)
+    return title_text, texts
+
+
+def _anchor_label(el) -> str:
+    parts = [
+        (el.text or "").strip(),
+        (el.get_attribute("aria-label") or "").strip(),
+        (el.get_attribute("title") or "").strip(),
+    ]
+    return " ".join(p for p in parts if p)
+
+
+def discover_internal_links(driver: webdriver.Chrome, base_host: str) -> list[str]:
+    """Same-site http(s) hrefs only; skip junk URLs and junk anchor text (blocklist)."""
+    current = driver.current_url
+    found: list[str] = []
+    for el in driver.find_elements(By.CSS_SELECTOR, "a[href]"):
+        href = el.get_attribute("href")
+        if not href:
+            continue
+        absolute = strip_fragment(urljoin(current, href))
+        if not same_site(absolute, base_host):
+            continue
+        label = _anchor_label(el)
+        if link_contains_junk(absolute, label):
+            continue
+        found.append(absolute)
+    return found
+
+
+def _resolve_img_url(driver: webdriver.Chrome, img) -> str | None:
+    """Best-effort absolute image URL from src, lazy attrs, or srcset."""
+    base = driver.current_url
+    src = (img.get_attribute("src") or "").strip()
+    if src.startswith("data:"):
+        src = ""
+    if not src:
+        for attr in ("data-src", "data-lazy-src", "data-original", "data-srcset"):
+            v = (img.get_attribute(attr) or "").strip()
+            if v and not v.startswith("data:"):
+                src = v
+                break
+    if not src:
+        srcset = (img.get_attribute("srcset") or "").strip()
+        if srcset:
+            first = srcset.split(",")[0].strip()
+            src = first.split()[0] if first else ""
+    if not src or src.startswith("data:"):
+        return None
+    return urljoin(base, src)
+
+
+def _img_element_priority(img) -> int:
+    """Higher = stronger logo candidate."""
+    score = 0
+    try:
+        if img.find_elements(By.XPATH, "./ancestor::header"):
+            score += 100
+        if img.find_elements(By.XPATH, "./ancestor::nav"):
+            score += 90
+    except WebDriverException:
+        pass
+
+    cls = (img.get_attribute("class") or "").lower()
+    eid = (img.get_attribute("id") or "").lower()
+    alt = (img.get_attribute("alt") or "").lower()
+    src = (img.get_attribute("src") or "").lower()
+    blob = f"{cls} {eid} {alt} {src}"
+    if "custom-logo" in cls or "site-logo" in cls:
+        score += 85
+    if "logo" in blob:
+        score += 50
+
+    try:
+        w = img.size.get("width", 0)
+        h = img.size.get("height", 0)
+        if w >= 80 and h >= 24:
+            score += 20
+        elif w < 16 or h < 16:
+            score -= 50
+    except WebDriverException:
+        pass
+
+    return score
+
+
+def extract_and_save_homepage_logo(driver: webdriver.Chrome) -> bool:
+    """
+    Heuristic logo detection (header/nav, logo in attributes, custom-logo / site-logo).
+    Download with requests; save as RGBA PNG for correct transparency.
+    """
+    imgs: list = []
+    seen_ids: set[str] = set()
+
+    xpaths = [
+        "//header//img",
+        "//nav//img",
+        "//*[contains(translate(@class,'LOGO','logo'),'logo')]//img",
+        "//img[contains(translate(@class,'LOGO','logo'),'logo')]",
+        "//*[contains(@class,'custom-logo')]//img",
+        "//img[contains(@class,'custom-logo')]",
+        "//*[contains(@class,'site-logo')]//img",
+        "//img[contains(@class,'site-logo')]",
+    ]
+    for xp in xpaths:
+        try:
+            for img in driver.find_elements(By.XPATH, xp):
+                eid = img.id
+                if eid in seen_ids:
+                    continue
+                seen_ids.add(eid)
+                imgs.append(img)
+        except WebDriverException:
+            continue
+
+    for img in driver.find_elements(By.TAG_NAME, "img"):
+        eid = img.id
+        if eid in seen_ids:
+            continue
+        attrs = " ".join(
+            filter(
+                None,
+                [
+                    img.get_attribute("class"),
+                    img.get_attribute("id"),
+                    img.get_attribute("src"),
+                    img.get_attribute("alt"),
+                ],
+            )
+        ).lower()
+        if "logo" in attrs:
+            seen_ids.add(eid)
+            imgs.append(img)
+
+    scored: list[tuple[int, object]] = [(_img_element_priority(im), im) for im in imgs]
+    scored.sort(key=lambda x: -x[0])
+
+    tried_urls: set[str] = set()
+    for _pri, img in scored:
+        url = _resolve_img_url(driver, img)
+        if not url:
+            continue
+        if urlparse(url).scheme not in ("http", "https"):
+            continue
+        if url in tried_urls:
+            continue
+        tried_urls.add(url)
+        try:
+            r = requests.get(url, timeout=45, headers=REQUEST_HEADERS)
+            r.raise_for_status()
+            if len(r.content) < 80:
+                continue
+            try:
+                im = Image.open(io.BytesIO(r.content))
+                im = im.convert("RGBA")
+                im.save(LOGO_FILE, format="PNG", optimize=True)
+                print(f"Saved homepage logo to {LOGO_FILE}")
+                return True
+            except (UnidentifiedImageError, OSError, ValueError):
+                continue
+        except requests.RequestException:
+            continue
+
+    print("Warning: could not detect or download a homepage logo (logo.png not written).")
+    return False
+
+
+def main() -> None:
+    raw_url = input("Enter a URL: ")
+    if not raw_url.strip():
+        print("Error: URL cannot be empty.")
+        return
+
+    start_url = strip_fragment(normalize_url(raw_url))
+    base_host = urlparse(start_url).netloc.lower()
+    if not base_host:
+        print("Error: That URL is not valid.")
+        return
+
+    queue: deque[str] = deque([start_url])
+    visited: set[str] = set()
+    pages_fetched = 0
+    file_chunks: list[str] = []
+    logo_saved = False
+
+    print("Starting headless Chrome (webdriver-manager)...")
+    driver = build_headless_chrome()
+    try:
+        while queue and pages_fetched < MAX_PAGES:
+            url = queue.popleft()
+            if url in visited:
+                continue
+            visited.add(url)
+
+            if pages_fetched > 0:
+                time.sleep(random.uniform(1, 3))
+
+            try:
+                driver.get(url)
+            except WebDriverException as e:
+                print(f"Skip (navigation failed): {url} — {e}")
+                continue
+
+            time.sleep(RENDER_WAIT_SECONDS)
+
+            final_url = strip_fragment(driver.current_url)
+
+            try:
+                title_text, paragraph_texts = extract_title_and_paragraphs(driver)
+            except WebDriverException as e:
+                print(f"Skip (extract failed): {final_url} — {e}")
+                continue
+
+            file_chunks.append(format_page_block(final_url, title_text, paragraph_texts))
+            pages_fetched += 1
+            print(f"Scraped ({pages_fetched}/{MAX_PAGES}): {final_url}")
+
+            if not logo_saved:
+                logo_saved = extract_and_save_homepage_logo(driver)
+
+            try:
+                for absolute in discover_internal_links(driver, base_host):
+                    if absolute not in visited:
+                        queue.append(absolute)
+            except WebDriverException as e:
+                print(f"Warning: link discovery failed on {final_url} — {e}")
+    finally:
+        driver.quit()
+
+    with open(OUTPUT_FILE, "w", encoding="utf-8") as f:
+        f.write(f"Crawl summary: {pages_fetched} page(s), starting from {start_url}\n\n")
+        f.write("".join(file_chunks))
+
+    print(f"Done. Content saved to {OUTPUT_FILE} ({pages_fetched} page(s)).")
+
+
+if __name__ == "__main__":
+    main()
+
+================================================================================
+SECTION: banner_data.json
+================================================================================
+
+================================================================================
+FILE: banner_data.json
+================================================================================
+
+{
+  "headline": "מתחילים לבנות מותגים!",
+  "cta": "פרטים נוספים כאן",
+  "image_prompt": "A sleek, modern digital workspace, showcasing elegant website wireframes on a laptop screen. The background should have a minimalist, tech-savvy vibe with hints of blue and grey tones. Include elements like a coffee cup, potted plant, and stylish desk accessories to convey a productive and professional atmosphere."
+}

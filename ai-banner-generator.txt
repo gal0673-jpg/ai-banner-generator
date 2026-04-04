@@ -1,0 +1,528 @@
+AI BANNER GENERATOR — PROJECT EXPORT
+Root: C:\laragon\www\python
+
+================================================================================
+SECTION: PROJECT STRUCTURE
+================================================================================
+
+python/
+├── background.png
+├── banner_data.json
+├── composite_banner.py
+├── export_context.py
+├── final_banner.png
+├── generate_copy.py
+├── main.py
+└── scraped_content.txt
+
+================================================================================
+FILE: composite_banner.py
+================================================================================
+
+"""
+Composite headline and CTA onto background.png using banner_data.json.
+Requires: pip install pillow arabic-reshaper python-bidi
+"""
+
+import json
+import sys
+from pathlib import Path
+
+import arabic_reshaper
+from bidi.algorithm import get_display
+from PIL import Image, ImageDraw, ImageFont
+
+BASE = Path(__file__).resolve().parent
+BACKGROUND_PATH = BASE / "background.png"
+BANNER_JSON_PATH = BASE / "banner_data.json"
+OUTPUT_PATH = BASE / "final_banner.png"
+ARIAL_PATH = Path(r"C:\Windows\Fonts\arial.ttf")
+
+HEADLINE_SIZE = 56
+CTA_SIZE = 38
+MARGIN = 48
+HEADLINE_FILL = (255, 255, 255)
+CTA_FILL = (255, 236, 60)
+STROKE_FILL = (0, 0, 0)
+STROKE_WIDTH = 3
+SHADOW_OFFSET = (3, 3)
+SHADOW_ALPHA = 180
+
+
+def prepare_hebrew(text: str) -> str:
+    reshaped = arabic_reshaper.reshape(text)
+    return get_display(reshaped)
+
+
+def load_font(size: int) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
+    if ARIAL_PATH.is_file():
+        return ImageFont.truetype(str(ARIAL_PATH), size=size)
+    return ImageFont.load_default()
+
+
+def main() -> None:
+    if not BACKGROUND_PATH.is_file():
+        print(f"Error: {BACKGROUND_PATH} not found.", file=sys.stderr)
+        sys.exit(1)
+    if not BANNER_JSON_PATH.is_file():
+        print(f"Error: {BANNER_JSON_PATH} not found.", file=sys.stderr)
+        sys.exit(1)
+
+    with BANNER_JSON_PATH.open(encoding="utf-8") as f:
+        data = json.load(f)
+
+    try:
+        headline_raw = data["headline"]
+        cta_raw = data["cta"]
+    except KeyError as e:
+        print(f"Error: banner JSON missing key {e.args[0]!r}.", file=sys.stderr)
+        sys.exit(1)
+
+    headline = prepare_hebrew(str(headline_raw))
+    cta = prepare_hebrew(str(cta_raw))
+
+    image = Image.open(BACKGROUND_PATH).convert("RGBA")
+    width, height = image.size
+
+    headline_font = load_font(HEADLINE_SIZE)
+    cta_font = load_font(CTA_SIZE)
+
+    overlay = Image.new("RGBA", image.size, (0, 0, 0, 0))
+    draw = ImageDraw.Draw(overlay)
+
+    # Headline: top center (with stroke + soft shadow for contrast)
+    hb = draw.textbbox(
+        (0, 0), headline, font=headline_font, stroke_width=STROKE_WIDTH
+    )
+    hw = hb[2] - hb[0]
+    hh = hb[3] - hb[1]
+    hx = (width - hw) // 2 - hb[0]
+    hy = MARGIN - hb[1]
+
+    sx, sy = SHADOW_OFFSET
+    shadow_color = (*STROKE_FILL, SHADOW_ALPHA)
+    draw.text((hx + sx, hy + sy), headline, font=headline_font, fill=shadow_color)
+    draw.text(
+        (hx, hy),
+        headline,
+        font=headline_font,
+        fill=HEADLINE_FILL,
+        stroke_width=STROKE_WIDTH,
+        stroke_fill=STROKE_FILL,
+    )
+
+    # CTA: bottom right
+    cta_stroke = max(2, STROKE_WIDTH - 1)
+    cb = draw.textbbox((0, 0), cta, font=cta_font, stroke_width=cta_stroke)
+    cw = cb[2] - cb[0]
+    ch = cb[3] - cb[1]
+    cx = width - MARGIN - cw - cb[0]
+    cy = height - MARGIN - ch - cb[1]
+
+    draw.text((cx + sx, cy + sy), cta, font=cta_font, fill=shadow_color)
+    draw.text(
+        (cx, cy),
+        cta,
+        font=cta_font,
+        fill=CTA_FILL,
+        stroke_width=cta_stroke,
+        stroke_fill=STROKE_FILL,
+    )
+
+    composed = Image.alpha_composite(image, overlay).convert("RGB")
+    composed.save(OUTPUT_PATH, format="PNG")
+    print(f"Success: wrote {OUTPUT_PATH}")
+
+
+if __name__ == "__main__":
+    main()
+
+
+================================================================================
+FILE: export_context.py
+================================================================================
+
+"""
+Scan the project directory (folder containing this script), export .py sources,
+banner_data.json, and a directory tree to ai-banner-generator.txt for AI context.
+Ignores .git and __pycache__.
+"""
+
+from __future__ import annotations
+
+import os
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent
+OUTPUT_FILE = ROOT / "ai-banner-generator.txt"
+
+IGNORE_DIRS = frozenset({".git", "__pycache__"})
+
+
+def _tree_lines(directory: Path, prefix: str) -> list[str]:
+    lines: list[str] = []
+    try:
+        entries = [
+            p
+            for p in directory.iterdir()
+            if not (p.is_dir() and p.name in IGNORE_DIRS)
+        ]
+        entries.sort(key=lambda p: (not p.is_dir(), p.name.lower()))
+    except OSError as exc:
+        return [f"{prefix}[Error reading directory: {exc}]"]
+
+    for i, entry in enumerate(entries):
+        is_last = i == len(entries) - 1
+        branch = "└── " if is_last else "├── "
+        lines.append(f"{prefix}{branch}{entry.name}")
+        if entry.is_dir():
+            extension = "    " if is_last else "│   "
+            lines.extend(_tree_lines(entry, prefix + extension))
+    return lines
+
+
+def build_project_structure(root: Path) -> str:
+    header = f"{root.name}/"
+    body_lines = _tree_lines(root, "")
+    return header + ("\n" + "\n".join(body_lines) if body_lines else "")
+
+
+def collect_py_files(root: Path) -> list[Path]:
+    paths: list[Path] = []
+    root_str = os.fspath(root)
+    for dirpath, dirnames, filenames in os.walk(root_str):
+        dirnames[:] = [d for d in dirnames if d not in IGNORE_DIRS]
+        for name in filenames:
+            if name.endswith(".py"):
+                paths.append(Path(dirpath) / name)
+    return sorted(paths)
+
+
+def read_text_file(path: Path) -> str:
+    return path.read_text(encoding="utf-8", errors="replace")
+
+
+def main() -> None:
+    chunks: list[str] = [
+        "AI BANNER GENERATOR — PROJECT EXPORT",
+        f"Root: {ROOT}",
+        "",
+        "=" * 80,
+        "SECTION: PROJECT STRUCTURE",
+        "=" * 80,
+        "",
+        build_project_structure(ROOT),
+        "",
+    ]
+
+    py_files = collect_py_files(ROOT)
+    for py_path in py_files:
+        rel = py_path.relative_to(ROOT)
+        chunks.extend(
+            [
+                "=" * 80,
+                f"FILE: {rel.as_posix()}",
+                "=" * 80,
+                "",
+                read_text_file(py_path),
+                "",
+            ]
+        )
+
+    json_path = ROOT / "banner_data.json"
+    if json_path.is_file():
+        chunks.extend(
+            [
+                "=" * 80,
+                "FILE: banner_data.json",
+                "=" * 80,
+                "",
+                read_text_file(json_path),
+                "",
+            ]
+        )
+
+    OUTPUT_FILE.write_text("\n".join(chunks).rstrip() + "\n", encoding="utf-8")
+    print(f"Wrote {OUTPUT_FILE}")
+
+
+if __name__ == "__main__":
+    main()
+
+
+================================================================================
+FILE: generate_copy.py
+================================================================================
+
+"""
+Read scraped_content.txt and ask GPT-4o for social banner copy (JSON).
+Save banner_data.json, generate DALL-E 3 background, save background.png.
+Requires: pip install openai requests
+Set OPENAI_API_KEY in the environment (never commit keys to the repo).
+"""
+
+import json
+import os
+import sys
+from pathlib import Path
+
+import requests
+from openai import OpenAI
+
+SCRAPED_PATH = Path(__file__).resolve().parent / "scraped_content.txt"
+BANNER_JSON_PATH = Path(__file__).resolve().parent / "banner_data.json"
+BACKGROUND_PNG_PATH = Path(__file__).resolve().parent / "background.png"
+
+SYSTEM_PROMPT = (
+    "You are an expert marketing copywriter. Analyze the provided text from a "
+    "business website. Create copy for a social media banner. Output ONLY a valid "
+    "JSON object with 3 keys: headline (a catchy short Hebrew title, max 6 words), "
+    "cta (call to action in Hebrew, max 4 words), and image_prompt (a detailed prompt "
+    "in English for an AI image generator to create a professional background image "
+    "WITHOUT any text, matching the business vibe)."
+)
+
+
+def main() -> None:
+    if not os.environ.get("OPENAI_API_KEY"):
+        print(
+            "Error: Set OPENAI_API_KEY (e.g. in PowerShell: "
+            "$env:OPENAI_API_KEY='your-key-here').",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    if not SCRAPED_PATH.is_file():
+        print(f"Error: {SCRAPED_PATH} not found.", file=sys.stderr)
+        sys.exit(1)
+
+    user_content = SCRAPED_PATH.read_text(encoding="utf-8")
+    if not user_content.strip():
+        print("Error: scraped content is empty.", file=sys.stderr)
+        sys.exit(1)
+
+    client = OpenAI()
+
+    print("Requesting banner copy from gpt-4o…")
+    response = client.chat.completions.create(
+        model="gpt-4o",
+        messages=[
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": user_content},
+        ],
+        response_format={"type": "json_object"},
+    )
+
+    text = response.choices[0].message.content
+    if not text:
+        print("Error: Empty response from API.", file=sys.stderr)
+        sys.exit(1)
+
+    print("Parsing JSON response…")
+    data = json.loads(text)
+
+    print(f"Saving banner data to {BANNER_JSON_PATH}…")
+    with BANNER_JSON_PATH.open("w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
+    print("Generated banner JSON:")
+    print(json.dumps(data, ensure_ascii=False, indent=2))
+
+    try:
+        image_prompt = data["image_prompt"]
+    except KeyError:
+        print("Error: JSON missing required key 'image_prompt'.", file=sys.stderr)
+        sys.exit(1)
+
+    print("Calling DALL-E 3 (1024×1024)…")
+    img_response = client.images.generate(
+        model="dall-e-3",
+        prompt=image_prompt,
+        size="1024x1024",
+    )
+    image_url = img_response.data[0].url
+    if not image_url:
+        print("Error: DALL-E response had no image URL.", file=sys.stderr)
+        sys.exit(1)
+
+    print("Downloading image from URL…")
+    img_req = requests.get(image_url, timeout=120)
+    img_req.raise_for_status()
+
+    print(f"Writing {BACKGROUND_PNG_PATH}…")
+    BACKGROUND_PNG_PATH.write_bytes(img_req.content)
+    print("Done.")
+
+
+if __name__ == "__main__":
+    main()
+
+
+================================================================================
+FILE: main.py
+================================================================================
+
+"""
+Crawl up to 10 unique internal pages from a start URL; save title and <p> text to scraped_content.txt.
+"""
+
+import random
+import time
+
+# HTTP client for downloading pages
+import requests
+
+# HTML parser
+from bs4 import BeautifulSoup
+
+# URL handling: join relative links, parse, rebuild without fragments
+from urllib.parse import urljoin, urlparse, urlunparse
+
+# HTTP headers that look like a normal desktop browser (helps with basic Cloudflare / bot checks)
+BROWSER_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/131.0.0.0 Safari/537.36"
+    ),
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9",
+}
+
+MAX_PAGES = 10
+OUTPUT_FILE = "scraped_content.txt"
+SEPARATOR = "=" * 80
+
+
+def normalize_url(url: str) -> str:
+    """Add https:// when no scheme is given."""
+    url = url.strip()
+    if not url:
+        return url
+    parsed = urlparse(url)
+    if not parsed.scheme:
+        return "https://" + url
+    return url
+
+
+def strip_fragment(url: str) -> str:
+    """Remove #fragment for stable deduplication."""
+    p = urlparse(url)
+    return urlunparse((p.scheme, p.netloc, p.path or "/", p.params, p.query, ""))
+
+
+def same_site(url: str, base_netloc: str) -> bool:
+    """True if url is http(s) and host matches the crawl root (internal link)."""
+    p = urlparse(url)
+    if p.scheme not in ("http", "https"):
+        return False
+    return p.netloc.lower() == base_netloc.lower()
+
+
+def format_page_block(page_url: str, title: str, paragraphs: list[str]) -> str:
+    """One nicely separated section for the output file."""
+    lines = [
+        SEPARATOR,
+        f"URL: {page_url}",
+        SEPARATOR,
+        f"Title: {title}",
+        "",
+        "Paragraphs (<p>):",
+    ]
+    if paragraphs:
+        lines.append("")
+        lines.append("\n\n".join(paragraphs))
+    else:
+        lines.append("(no <p> tags with text found)")
+    lines.append("")
+    lines.append("")
+    return "\n".join(lines)
+
+
+def extract_title_and_paragraphs(soup: BeautifulSoup) -> tuple[str, list[str]]:
+    """Return document title and non-empty stripped text from all <p> tags."""
+    title_tag = soup.find("title")
+    if title_tag and title_tag.string:
+        title_text = title_tag.string.strip()
+    else:
+        title_text = "(no title found)"
+    paragraphs = soup.find_all("p")
+    texts = [p.get_text(strip=True) for p in paragraphs]
+    texts = [t for t in texts if t]
+    return title_text, texts
+
+
+def main() -> None:
+    raw_url = input("Enter a URL: ")
+    if not raw_url.strip():
+        print("Error: URL cannot be empty.")
+        return
+
+    start_url = strip_fragment(normalize_url(raw_url))
+    base_host = urlparse(start_url).netloc.lower()
+    if not base_host:
+        print("Error: That URL is not valid.")
+        return
+
+    from collections import deque
+
+    queue: deque[str] = deque([start_url])
+    visited: set[str] = set()
+    pages_fetched = 0
+    file_chunks: list[str] = []
+
+    while queue and pages_fetched < MAX_PAGES:
+        url = queue.popleft()
+        if url in visited:
+            continue
+        visited.add(url)
+
+        # Random delay between requests (skip before the very first fetch)
+        if pages_fetched > 0:
+            time.sleep(random.uniform(1, 3))
+
+        try:
+            response = requests.get(url, timeout=15, headers=BROWSER_HEADERS)
+            response.raise_for_status()
+        except requests.exceptions.InvalidURL:
+            print(f"Skip (invalid URL): {url}")
+            continue
+        except requests.exceptions.RequestException as e:
+            print(f"Skip (fetch failed): {url} — {e}")
+            continue
+
+        final_url = strip_fragment(response.url)
+        soup = BeautifulSoup(response.text, "html.parser")
+        title_text, paragraph_texts = extract_title_and_paragraphs(soup)
+        file_chunks.append(format_page_block(final_url, title_text, paragraph_texts))
+        pages_fetched += 1
+        print(f"Scraped ({pages_fetched}/{MAX_PAGES}): {final_url}")
+
+        # Discover internal links for further crawling
+        for tag in soup.find_all("a", href=True):
+            absolute = strip_fragment(urljoin(response.url, tag["href"]))
+            if not same_site(absolute, base_host):
+                continue
+            if absolute not in visited:
+                queue.append(absolute)
+
+    # Write everything once with UTF-8 so Hebrew and other scripts are preserved
+    with open(OUTPUT_FILE, "w", encoding="utf-8") as f:
+        f.write(f"Crawl summary: {pages_fetched} page(s), starting from {start_url}\n\n")
+        f.write("".join(file_chunks))
+
+    print(f"Done. Content saved to {OUTPUT_FILE} ({pages_fetched} page(s)).")
+
+
+if __name__ == "__main__":
+    main()
+
+================================================================================
+FILE: banner_data.json
+================================================================================
+
+{
+  "headline": "מתחילים לבנות מותגים!",
+  "cta": "פרטים נוספים כאן",
+  "image_prompt": "A sleek, modern digital workspace, showcasing elegant website wireframes on a laptop screen. The background should have a minimalist, tech-savvy vibe with hints of blue and grey tones. Include elements like a coffee cup, potted plant, and stylish desk accessories to convey a productive and professional atmosphere."
+}
