@@ -4,8 +4,8 @@ Skips legal/accessibility junk links; downloads homepage logo to logo.png.
 Uses Selenium (headless Chrome) for JS-rendered sites (WordPress, Shopify, SPAs, custom stacks).
 Requires: pip install selenium requests pillow openai
 Chrome must be installed; Selenium Manager resolves ChromeDriver automatically.
-After crawl, if OPENAI_API_KEY is set and logo.png exists, runs creative_agent + html_renderer
-and saves final_agency_banner.png (1080x1080) via headless Chrome.
+After crawl, if OPENAI_API_KEY is set and logo.png exists, runs creative_agent: OpenAI JSON,
+DALL-E background.png, and creative_campaign.json (no HTML/screenshot step).
 """
 from __future__ import annotations
 
@@ -30,9 +30,6 @@ BASE_DIR = Path(__file__).resolve().parent
 MAX_PAGES = 10
 OUTPUT_FILE = BASE_DIR / "scraped_content.txt"
 LOGO_FILE = BASE_DIR / "logo.png"
-FINAL_AGENCY_BANNER_PNG = BASE_DIR / "final_agency_banner.png"
-BANNER_TEMP_HTML = BASE_DIR / "banner_temp.html"
-AGENCY_BANNER_FONT_WAIT_SECONDS = 2
 SEPARATOR = "=" * 80
 RENDER_WAIT_SECONDS = 10
 
@@ -144,69 +141,61 @@ def build_headless_chrome() -> webdriver.Chrome:
     return webdriver.Chrome(options=options)
 
 
-def run_agency_banner_pipeline() -> None:
+def run_agency_banner_pipeline(work_dir: Path | None = None) -> None:
     """
-    GPT-4o + DALL-E 3 (via creative_agent), HTML banner (html_renderer), then headless
-    screenshot at 1080x1080. Deletes banner_temp.html when finished.
+    GPT-4o + DALL-E 3 (via creative_agent): writes creative_campaign.json,
+    background.png, and uses existing logo.png. No HTML render or Selenium screenshot.
+
+    If ``work_dir`` is set, all artifacts live under that directory (for API jobs).
+    When ``work_dir`` is set, missing scraped content or logo raises ``RuntimeError``.
     """
     from openai import OpenAI
 
-    from creative_agent import (
-        BACKGROUND_PNG_PATH,
-        CAMPAIGN_JSON_PATH,
-        fetch_banner_payload,
-        generate_background_dalle3,
-    )
-    from html_renderer import render_banner_html
+    from creative_agent import fetch_banner_payload, generate_background_dalle3
 
-    if not OUTPUT_FILE.is_file() or not OUTPUT_FILE.read_text(encoding="utf-8").strip():
-        print("Agency banner: skipped (no scraped content).", file=sys.stderr)
+    root = work_dir if work_dir is not None else BASE_DIR
+    output_file = root / "scraped_content.txt"
+    logo_file = root / "logo.png"
+    background_png = root / "background.png"
+    campaign_json = root / "creative_campaign.json"
+
+    if work_dir is not None:
+        work_dir.mkdir(parents=True, exist_ok=True)
+
+    if not output_file.is_file() or not output_file.read_text(encoding="utf-8").strip():
+        msg = "Agency banner: skipped (no scraped content)."
+        if work_dir is not None:
+            raise RuntimeError(msg)
+        print(msg, file=sys.stderr)
         return
-    if not LOGO_FILE.is_file():
-        print(
-            "Agency banner: skipped (logo.png missing; homepage logo was not saved).",
-            file=sys.stderr,
+    if not logo_file.is_file():
+        msg = (
+            "Agency banner: skipped (logo.png missing; homepage logo was not saved)."
         )
+        if work_dir is not None:
+            raise RuntimeError(msg)
+        print(msg, file=sys.stderr)
         return
 
     print("Agency banner: requesting copy + generating background (OpenAI)...")
     client = OpenAI()
-    user_content = OUTPUT_FILE.read_text(encoding="utf-8")
+    user_content = output_file.read_text(encoding="utf-8")
     payload = fetch_banner_payload(client, user_content)
-    generate_background_dalle3(client, str(payload["image_prompt"]))
-
-    with CAMPAIGN_JSON_PATH.open("w", encoding="utf-8") as f:
-        json.dump(payload, f, ensure_ascii=False, indent=2)
-
-    print(f"Agency banner: writing {BANNER_TEMP_HTML.name}...")
-    render_banner_html(
-        payload,
-        BACKGROUND_PNG_PATH,
-        LOGO_FILE,
-        output_path=BANNER_TEMP_HTML,
+    generate_background_dalle3(
+        client, str(payload["image_prompt"]), output_path=background_png
     )
 
-    file_url = BANNER_TEMP_HTML.resolve().as_uri()
-    print("Agency banner: headless Chrome -- loading file, 1080x1080, font wait...")
-    driver = build_headless_chrome()
-    try:
-        driver.get(file_url)
-        driver.set_window_size(1080, 1080)
-        time.sleep(AGENCY_BANNER_FONT_WAIT_SECONDS)
-        if not driver.get_screenshot_as_file(str(FINAL_AGENCY_BANNER_PNG)):
-            print(
-                "[main] ERROR: Screenshot failed (get_screenshot_as_file returned False).",
-                file=sys.stderr,
-            )
-        else:
-            print(f"Agency banner: saved {FINAL_AGENCY_BANNER_PNG}")
-    finally:
-        driver.quit()
+    with campaign_json.open("w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False, indent=2)
 
-    try:
-        BANNER_TEMP_HTML.unlink()
-    except OSError as exc:
-        print(f"Warning: could not remove {BANNER_TEMP_HTML}: {exc}", file=sys.stderr)
+    if not background_png.is_file():
+        err = "background.png was not created."
+        if work_dir is not None:
+            raise RuntimeError(err)
+        print(f"[main] ERROR: {err}", file=sys.stderr)
+        return
+
+    print(f"Agency banner: saved {campaign_json.name} and {background_png.name}")
 
 
 def extract_title_and_paragraphs(driver: webdriver.Chrome) -> tuple[str, list[str]]:
@@ -307,7 +296,7 @@ def _img_element_priority(img) -> int:
     return score
 
 
-def extract_and_save_homepage_logo(driver: webdriver.Chrome) -> bool:
+def extract_and_save_homepage_logo(driver: webdriver.Chrome, logo_file: Path) -> bool:
     """
     Heuristic logo detection (header/nav, logo in attributes, custom-logo / site-logo).
     Download with requests; save as RGBA PNG for correct transparency.
@@ -376,8 +365,8 @@ def extract_and_save_homepage_logo(driver: webdriver.Chrome) -> bool:
             try:
                 im = Image.open(io.BytesIO(r.content))
                 im = im.convert("RGBA")
-                im.save(LOGO_FILE, format="PNG", optimize=True)
-                print(f"Saved homepage logo to {LOGO_FILE}")
+                im.save(logo_file, format="PNG", optimize=True)
+                print(f"Saved homepage logo to {logo_file}")
                 return True
             except (UnidentifiedImageError, OSError, ValueError):
                 continue
@@ -388,17 +377,20 @@ def extract_and_save_homepage_logo(driver: webdriver.Chrome) -> bool:
     return False
 
 
-def main() -> None:
-    raw_url = input("Enter a URL: ")
-    if not raw_url.strip():
-        print("Error: URL cannot be empty.")
-        return
+def crawl_from_url(raw_url: str, *, work_dir: Path | None = None) -> None:
+    """
+    Crawl up to MAX_PAGES internal pages; write scraped_content.txt and best-effort logo.png.
+    If ``work_dir`` is set, files are written there (isolated API jobs); otherwise BASE_DIR.
+    """
+    output_file = work_dir / "scraped_content.txt" if work_dir else OUTPUT_FILE
+    logo_file = work_dir / "logo.png" if work_dir else LOGO_FILE
+    if work_dir is not None:
+        work_dir.mkdir(parents=True, exist_ok=True)
 
     start_url = strip_fragment(normalize_url(raw_url))
     base_host = urlparse(start_url).netloc.lower()
     if not base_host:
-        print("Error: That URL is not valid.")
-        return
+        raise ValueError("That URL is not valid.")
 
     queue: deque[str] = deque([start_url])
     visited: set[str] = set()
@@ -439,7 +431,7 @@ def main() -> None:
             print(f"Scraped ({pages_fetched}/{MAX_PAGES}): {final_url}")
 
             if not logo_saved:
-                logo_saved = extract_and_save_homepage_logo(driver)
+                logo_saved = extract_and_save_homepage_logo(driver, logo_file)
 
             try:
                 for absolute in discover_internal_links(driver, base_host):
@@ -450,18 +442,31 @@ def main() -> None:
     finally:
         driver.quit()
 
-    with open(OUTPUT_FILE, "w", encoding="utf-8") as f:
+    with open(output_file, "w", encoding="utf-8") as f:
         f.write(f"Crawl summary: {pages_fetched} page(s), starting from {start_url}\n\n")
         f.write("".join(file_chunks))
 
-    print(f"Done. Content saved to {OUTPUT_FILE} ({pages_fetched} page(s)).")
+    print(f"Done. Content saved to {output_file} ({pages_fetched} page(s)).")
+
+
+def main() -> None:
+    raw_url = input("Enter a URL: ")
+    if not raw_url.strip():
+        print("Error: URL cannot be empty.")
+        return
+
+    try:
+        crawl_from_url(raw_url)
+    except ValueError as e:
+        print(f"Error: {e}")
+        return
 
     if os.environ.get("OPENAI_API_KEY"):
         run_agency_banner_pipeline()
     else:
         print(
-            "Tip: set OPENAI_API_KEY to generate creative_campaign.json, background.png, "
-            "and final_agency_banner.png after crawl (requires logo.png)."
+            "Tip: set OPENAI_API_KEY to generate creative_campaign.json and background.png "
+            "after crawl (requires logo.png)."
         )
 
 
