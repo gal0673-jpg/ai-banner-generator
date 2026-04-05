@@ -1,0 +1,297 @@
+/* ═══════════════════════════════════════════════════════════════════════════
+   BannerCanvas2 — "Immersive Full-Canvas" design
+   All selectors are prefixed with bc2- to avoid any collision with Design 1.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/* ── Viewport ─────────────────────────────────────────────────────────────── */
+.bc2-root {}
+
+.bc2-viewport {
+  width: 100%;
+  max-width: min(96%, 860px);
+  margin: 0 auto;
+  aspect-ratio: 1 / 1;
+  position: relative;
+  background: #0f172a;
+  border-radius: 14px;
+  overflow: hidden;
+  box-shadow: 0 16px 56px rgba(0, 0, 0, 0.30);
+}
+
+.bc2-viewport-inner {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+}
+
+/* ── Canvas root ──────────────────────────────────────────────────────────── */
+.bc2-canvas {
+  transform-origin: top left;
+  color-scheme: light;
+  direction: ltr;
+  font-family: 'Heebo', 'Segoe UI', 'Helvetica Neue', Arial, sans-serif;
+}
+
+.bc2-canvas.bc2-capture {
+  color-scheme: light !important;
+}
+
+.bc2-canvas.bc2-capture .bc2-resize-handle-root {
+  visibility: hidden !important;
+  opacity: 0 !important;
+  pointer-events: none !important;
+}
+
+/* ── Layer shell ──────────────────────────────────────────────────────────── */
+.bc2-layer-inner {
+  width: 100%;
+  height: 100%;
+  box-sizing: border-box;
+  display: block;
+}
+
+.bc2-text-shell {
+  box-sizing: border-box;
+  direction: rtl;
+  text-align: right;
+  unicode-bidi: isolate;
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+/* ── Layer drag & outline ─────────────────────────────────────────────────── */
+.bc2-layer {
+  box-sizing: border-box;
+  cursor: grab;
+  outline: 2px dashed transparent;
+  outline-offset: 2px;
+  border-radius: 4px;
+  transition: outline-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.bc2-layer--text .bc2-layer-inner,
+.bc2-layer--cta  .bc2-layer-inner { padding: 6px; }
+
+/* Hover / drag outlines — visible against dark background */
+.bc2-canvas:not(.bc2-capture) .bc2-layer:hover:not(.bc2-layer--dragging) {
+  outline-color: rgba(255, 255, 255, 0.45);
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.12);
+}
+
+.bc2-canvas:not(.bc2-capture) .bc2-layer.bc2-layer--dragging {
+  outline-color: rgba(255, 255, 255, 0.90);
+  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.20);
+}
+
+.bc2-canvas.bc2-capture .bc2-layer {
+  outline: none !important;
+  box-shadow: none !important;
+  cursor: default;
+}
+
+.bc2-layer--text .bc2-text,
+.bc2-layer--cta  .bc2-text { cursor: text; }
+
+.bc2-layer--dragging.bc2-layer--text .bc2-text,
+.bc2-layer--dragging.bc2-layer--cta  .bc2-text { cursor: grabbing !important; }
+
+/* ── Logo ─────────────────────────────────────────────────────────────────── */
+.bc2-logo-img {
+  display: block;
+  max-width: 100%;
+  max-height: 100%;
+  width: auto;
+  height: auto;
+  object-fit: contain;
+  object-position: right center;
+  pointer-events: none;
+  user-select: none;
+  /* Drop shadow ensures visibility on dark background */
+  filter: drop-shadow(0 2px 16px rgba(0, 0, 0, 0.55)) brightness(1.08);
+}
+
+/* ── Text layers — WHITE on dark background ───────────────────────────────── */
+.bc2-text {
+  width: 100%;
+  min-height: 1.2em;
+  outline: none;
+  cursor: text;
+  direction: rtl;
+  text-align: right;
+  color: #ffffff;
+  line-height: 1.22;
+  word-break: break-word;
+}
+
+.bc2-headline {
+  font-size: 60px;
+  font-weight: 900;
+  letter-spacing: -0.025em;
+  line-height: 1.12;
+  text-shadow:
+    0 2px 24px rgba(0, 0, 0, 0.70),
+    0 0 2px rgba(0, 0, 0, 0.90);
+}
+
+.bc2-subhead {
+  font-size: 24px;
+  font-weight: 400;
+  line-height: 1.55;
+  color: rgba(255, 255, 255, 0.88);
+  text-shadow: 0 1px 12px rgba(0, 0, 0, 0.60);
+}
+
+/* ── Feature pills (dark glass) ──────────────────────────────────────────── */
+.bc2-feat-grid {
+  display: flex;
+  flex-direction: row;
+  gap: 16px;
+  direction: rtl;
+  width: 100%;
+  height: 100%;
+}
+
+.bc2-feat-pill {
+  flex: 1;
+  min-width: 0;
+  /* Dark glass — no backdrop-filter (html-to-image compatible) */
+  background: rgba(10, 15, 30, 0.65);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-top: 3px solid;   /* color set inline from ctaBgHex */
+  border-radius: 16px;
+  padding: 20px 18px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  direction: rtl;
+}
+
+.bc2-feat-icon {
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 16px;
+  font-weight: 800;
+  flex-shrink: 0;
+}
+
+.bc2-feat-text {
+  font-size: 16px;
+  font-weight: 500;
+  color: rgba(255, 255, 255, 0.90);
+  line-height: 1.45;
+  direction: rtl;
+  text-align: right;
+  outline: none;
+  cursor: text;
+  word-break: break-word;
+  display: block;
+  width: 100%;
+}
+
+.bc2-layer--dragging.bc2-layer--bullets .bc2-feat-text {
+  cursor: grabbing !important;
+}
+
+/* ── CTA drag handle ─────────────────────────────────────────────────────── */
+.bc2-cta-drag-handle {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.35rem;
+  min-height: 26px;
+  padding: 4px 8px;
+  margin-bottom: 4px;
+  cursor: grab;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.12);
+  border: 1px dashed rgba(255, 255, 255, 0.40);
+  direction: rtl;
+  user-select: none;
+}
+
+.bc2-cta-drag-grip {
+  display: block;
+  width: 22px;
+  height: 4px;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.70);
+  box-shadow:
+    0 6px 0 rgba(255, 255, 255, 0.45),
+    0 12px 0 rgba(255, 255, 255, 0.25);
+}
+
+.bc2-cta-drag-label {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: rgba(255, 255, 255, 0.80);
+}
+
+.bc2-layer--dragging.bc2-layer--cta .bc2-cta-drag-handle {
+  cursor: grabbing !important;
+}
+
+.bc2-canvas.bc2-capture .bc2-cta-drag-handle {
+  display: none !important;
+}
+
+/* ── CTA button ──────────────────────────────────────────────────────────── */
+.bc2-cta {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  direction: rtl;
+  font-size: 28px;
+  font-weight: 800;
+  border-radius: 14px;
+  padding: 0.45em 0.9em;
+  vertical-align: middle;
+}
+
+.bc2-cta.bc2-text {
+  text-shadow: none;
+}
+
+/* ── Download row ────────────────────────────────────────────────────────── */
+.bc2-download-row {
+  margin-top: 1.25rem;
+  display: flex;
+  justify-content: center;
+}
+
+.bc2-btn-download {
+  padding: 0.7rem 1.5rem;
+  font-size: 0.95rem;
+  font-weight: 600;
+  border: none;
+  border-radius: 10px;
+  background: #1e293b;
+  color: #f1f5f9;
+  cursor: pointer;
+}
+
+.bc2-btn-download:hover:not(:disabled) {
+  background: #334155;
+}
+
+.bc2-btn-download:disabled {
+  opacity: 0.65;
+  cursor: wait;
+}
+
+.bc2-download-error {
+  margin: 0.5rem 0 0;
+  text-align: center;
+  color: #b91c1c;
+  font-size: 0.9rem;
+}
+
+@media (prefers-color-scheme: dark) {
+  .bc2-download-error { color: #fca5a5; }
+}

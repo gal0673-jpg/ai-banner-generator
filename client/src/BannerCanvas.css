@@ -1,13 +1,14 @@
+/* ── Viewport (responsive wrapper) ─────────────────────────────────────────── */
 .banner-viewport {
   width: 100%;
-  max-width: min(92vw, 720px);
+  max-width: min(96%, 860px);
   margin: 0 auto;
   aspect-ratio: 1 / 1;
   position: relative;
-  background: #111;
-  border-radius: 12px;
+  background: #e2e8f0;
+  border-radius: 14px;
   overflow: hidden;
-  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.18);
+  box-shadow: 0 16px 56px rgba(0, 0, 0, 0.18);
 }
 
 .banner-viewport-inner {
@@ -16,121 +17,107 @@
   overflow: hidden;
 }
 
+/* ── Canvas root ────────────────────────────────────────────────────────────── */
 .banner-canvas {
-  position: relative;
-  width: 1080px;
-  height: 1080px;
   transform-origin: top left;
-  overflow: hidden;
-  background: #1a1a1a;
-  direction: rtl;
-  font-family: system-ui, 'Segoe UI', 'Helvetica Neue', Arial, sans-serif;
+  color-scheme: light;
+  direction: ltr;
+  font-family: 'Heebo', 'Segoe UI', 'Helvetica Neue', Arial, sans-serif;
 }
 
-.banner-canvas.capture-mode .react-resizable-handle {
-  display: none !important;
+.banner-canvas.capture-mode {
+  color-scheme: light !important;
+  background-color: #ffffff !important;
 }
 
-.banner-bg {
-  position: absolute;
-  inset: 0;
-  z-index: 0;
+.banner-canvas.capture-mode .banner-resize-handle-root {
+  visibility: hidden !important;
+  opacity: 0 !important;
+  pointer-events: none !important;
+}
+
+/* ── Layer shell ────────────────────────────────────────────────────────────── */
+.banner-layer-inner {
   width: 100%;
   height: 100%;
-  object-fit: cover;
-  pointer-events: none;
-  user-select: none;
+  box-sizing: border-box;
+  display: block;
 }
 
-/* Solid dark layer above photo, below all Rnd content (text, logo, CTA) */
-.banner-bg-overlay {
-  position: absolute;
-  inset: 0;
-  z-index: 1;
-  pointer-events: none;
-  background:
-    linear-gradient(to top, rgba(0, 0, 0, 0.35) 0%, transparent 55%),
-    rgba(0, 0, 0, 0.45);
-}
-
-.banner-canvas > .banner-rnd {
-  z-index: 2;
-}
-
-.banner-rnd-rtl-shell {
-  width: 100%;
-  height: 100%;
+.banner-text-shell {
   box-sizing: border-box;
   direction: rtl;
   text-align: right;
   unicode-bidi: isolate;
-  display: flex;
-  flex-direction: column;
-  align-items: stretch;
-  justify-content: center;
+  display: block;
+  width: 100%;
+  height: 100%;
 }
 
-.banner-rnd-cta-shell {
-  align-items: stretch;
-}
-
-.banner-rnd {
-  display: flex;
-  align-items: center;
-  justify-content: center;
+/* ── Layer drag & resize ────────────────────────────────────────────────────── */
+.banner-layer {
   box-sizing: border-box;
-  padding: 6px;
   cursor: grab;
-  outline: 1px dashed transparent;
-  outline-offset: -1px;
-  transition: outline-color 0.12s ease;
+  outline: 2px dashed transparent;
+  outline-offset: 2px;
+  border-radius: 4px;
+  transition:
+    outline-color 0.15s ease,
+    box-shadow 0.15s ease;
 }
 
-.banner-canvas:not(.capture-mode) .banner-rnd:hover {
-  outline-color: rgba(255, 255, 255, 0.7);
+.banner-layer--text .banner-layer-inner,
+.banner-layer--cta .banner-layer-inner {
+  padding: 6px;
 }
 
-.banner-canvas.capture-mode .banner-rnd {
+.banner-layer--logo .banner-layer-inner {
+  padding: 6px;
+}
+
+/* Hover / active outlines — visible against the light right panel */
+.banner-canvas:not(.capture-mode) .banner-layer:hover:not(.banner-layer--dragging) {
+  outline-color: rgba(79, 70, 229, 0.45);
+  box-shadow: 0 0 0 1px rgba(79, 70, 229, 0.12);
+}
+
+.banner-canvas:not(.capture-mode) .banner-layer.banner-layer--dragging {
+  outline-color: rgba(79, 70, 229, 0.90);
+  box-shadow: 0 0 0 2px rgba(79, 70, 229, 0.20);
+}
+
+.banner-canvas.capture-mode .banner-layer {
   outline: none !important;
+  box-shadow: none !important;
   cursor: default;
 }
 
-.banner-rnd.react-draggable-dragging {
-  cursor: grabbing !important;
-}
-
-.banner-rnd.react-draggable-dragging,
-.banner-rnd.react-draggable-dragging * {
-  cursor: grabbing !important;
-}
-
-.banner-rnd-text .banner-text,
-.banner-rnd-text .banner-bullets,
-.banner-rnd-cta .banner-text {
+.banner-layer--text .banner-text,
+.banner-layer--text .banner-bullets,
+.banner-layer--cta .banner-text {
   cursor: text;
 }
 
-.banner-rnd-text.react-draggable-dragging .banner-text,
-.banner-rnd-text.react-draggable-dragging .banner-bullets,
-.banner-rnd-cta.react-draggable-dragging .banner-text {
+.banner-layer--dragging.banner-layer--text .banner-text,
+.banner-layer--dragging.banner-layer--text .banner-bullets,
+.banner-layer--dragging.banner-layer--cta .banner-text {
   cursor: grabbing !important;
 }
 
-.banner-rnd-logo {
-  padding: 6px;
-}
-
-.banner-rnd-logo img {
+/* ── Logo ────────────────────────────────────────────────────────────────────── */
+.banner-layer-logo-img {
   display: block;
   max-width: 100%;
   max-height: 100%;
   width: auto;
   height: auto;
   object-fit: contain;
+  object-position: right center;
   pointer-events: none;
   user-select: none;
 }
 
+/* ── Text layers (right panel = light background → dark text) ───────────────── */
 .banner-text {
   width: 100%;
   min-height: 1.2em;
@@ -138,66 +125,148 @@
   cursor: text;
   direction: rtl;
   text-align: right;
-  color: #fff;
-  text-shadow:
-    0 0 1px rgba(0, 0, 0, 0.9),
-    0 2px 12px rgba(0, 0, 0, 0.65);
+  /* Dark text — right panel is #f8fafc */
+  color: #0f172a;
+  text-shadow: none;
   line-height: 1.25;
   word-break: break-word;
 }
 
 .banner-headline {
-  font-size: 52px;
-  font-weight: 800;
+  font-size: 46px;
+  font-weight: 900;
   letter-spacing: -0.02em;
+  line-height: 1.18;
+  color: #0f172a;
 }
 
 .banner-subhead {
-  font-size: 28px;
+  font-size: 20px;
   font-weight: 500;
-  opacity: 0.98;
+  line-height: 1.55;
+  color: #475569;
 }
 
-.banner-bullets {
-  margin: 0;
-  padding: 0.35em 0 0.35em 1em;
-  list-style: disc;
-  list-style-position: outside;
-  font-size: 26px;
+/* ── Feature card grid (replaces bullet list) ───────────────────────────────── */
+.banner-feat-grid {
+  display: flex;
+  flex-direction: row;
+  gap: 14px;
+  direction: rtl;
+  width: 100%;
+  height: 100%;
+}
+
+.banner-feat-card {
+  flex: 1;
+  min-width: 0;
+  background: #ffffff;
+  border-radius: 14px;
+  padding: 22px 18px 18px;
+  box-shadow:
+    0 2px 8px rgba(0, 0, 0, 0.06),
+    0 8px 24px rgba(0, 0, 0, 0.06);
+  border-top: 4px solid;        /* colour set inline from ctaBgHex */
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  direction: rtl;
+}
+
+.banner-feat-icon {
+  width: 34px;
+  height: 34px;
+  border-radius: 9px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 17px;
+  font-weight: 800;
+  flex-shrink: 0;
+  /* bg and color set inline */
+}
+
+.banner-feat-text {
+  font-size: 16px;
   font-weight: 600;
+  color: #1e293b;
+  line-height: 1.45;
   direction: rtl;
   text-align: right;
+  outline: none;
+  cursor: text;
+  word-break: break-word;
+  display: block;
+  width: 100%;
 }
 
-.banner-bullets li {
-  margin: 0.35em 0;
-  padding-inline-end: 0.25em;
+.banner-layer--dragging.banner-layer--bullets .banner-feat-text {
+  cursor: grabbing !important;
 }
 
-.banner-bullets .banner-text {
-  display: inline;
-  font-size: inherit;
-  font-weight: inherit;
-}
-
-.banner-cta {
+/* ── CTA drag handle ────────────────────────────────────────────────────────── */
+.banner-cta-drag-handle {
   display: flex;
   align-items: center;
   justify-content: center;
-  text-align: right;
+  gap: 0.35rem;
+  min-height: 26px;
+  padding: 4px 8px;
+  margin-bottom: 4px;
+  cursor: grab;
+  border-radius: 8px;
+  background: rgba(15, 23, 42, 0.07);
+  border: 1px dashed rgba(15, 23, 42, 0.28);
   direction: rtl;
-  font-size: 30px;
-  font-weight: 700;
-  background: rgba(79, 70, 229, 0.92);
-  border-radius: 999px;
-  padding: 0.35em 0.75em;
-  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.35);
+  user-select: none;
+}
+
+.banner-cta-drag-grip {
+  display: block;
+  width: 22px;
+  height: 4px;
+  border-radius: 2px;
+  background: rgba(15, 23, 42, 0.45);
+  box-shadow:
+    0 6px 0 rgba(15, 23, 42, 0.30),
+    0 12px 0 rgba(15, 23, 42, 0.15);
+}
+
+.banner-cta-drag-label {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: rgba(15, 23, 42, 0.65);
+}
+
+.banner-layer--dragging.banner-layer--cta .banner-cta-drag-handle {
+  cursor: grabbing !important;
+}
+
+.banner-canvas.capture-mode .banner-cta-drag-handle {
+  display: none !important;
+}
+
+/* ── CTA button ─────────────────────────────────────────────────────────────── */
+.banner-cta {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  direction: rtl;
+  font-size: 24px;
+  font-weight: 800;
+  border-radius: 14px;
+  padding: 0.45em 0.9em;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.22);
+  vertical-align: middle;
 }
 
 .banner-cta.banner-text {
   text-shadow: none;
 }
 
+/* ── Download row ────────────────────────────────────────────────────────────── */
 .banner-download-row {
   margin-top: 1.25rem;
   display: flex;
@@ -207,18 +276,19 @@
 }
 
 .banner-download-row .btn-download {
-  padding: 0.65rem 1.35rem;
-  font-size: 1rem;
+  padding: 0.7rem 1.5rem;
+  font-size: 0.95rem;
   font-weight: 600;
   border: none;
   border-radius: 10px;
-  background: var(--btn, #4f46e5);
+  background: #4f46e5;
   color: #fff;
   cursor: pointer;
+  letter-spacing: 0.01em;
 }
 
 .banner-download-row .btn-download:hover:not(:disabled) {
-  filter: brightness(1.06);
+  filter: brightness(1.08);
 }
 
 .banner-download-row .btn-download:disabled {

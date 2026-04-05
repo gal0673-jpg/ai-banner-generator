@@ -1,3 +1,30 @@
+@import 'tailwindcss';
+
+/* ── Editable content fields inside the banner preview ── */
+.ce-field {
+  cursor: text;
+  outline: none;
+  transition: outline 0.12s;
+  border-radius: 3px;
+}
+.ce-field:hover {
+  outline: 2px dashed #93c5fd;
+  outline-offset: 3px;
+}
+.ce-field:focus {
+  outline: 2px solid #3b82f6;
+  outline-offset: 3px;
+}
+
+/* ── Drag grip indicator inside draggable Rnd blocks ── */
+.drag-handle-ui {
+  cursor: grab;
+  user-select: none;
+}
+.drag-handle-ui:active {
+  cursor: grabbing;
+}
+
 :root {
   font-family: system-ui, 'Segoe UI', Roboto, sans-serif;
   line-height: 1.5;

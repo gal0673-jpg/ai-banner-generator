@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -38,6 +39,12 @@ DALLE_IMAGE_API_ENFORCEMENT = (
 
 ELITE_AGENCY_SYSTEM = """You are an elite full-service marketing agency: sharp strategy, any vertical, any geography.
 
+INPUTS YOU MUST COMBINE:
+1) SCRAPED WEBSITE TEXT — titles, paragraphs, and on-page signals from the crawl (may include a trailing section).
+2) OPTIONAL USER CAMPAIGN BRIEF — when the document contains a block titled "USER CAMPAIGN BRIEF (goals / target audience — provided by the user)", treat it as authoritative guidance for positioning, tone, and who we are speaking to. Weight it heavily: align headline, subhead, bullets, and CTA with those goals and that audience while staying truthful to the brand inferred from the site. If the brief is absent or empty, rely solely on the scraped site.
+
+If the USER CAMPAIGN BRIEF contains specific hard data (like prices, discounts, numbers, or specific offers), you MUST inject them into the headline, subhead, or bullet_points — use whichever field carries the message most clearly (e.g. a percent-off or price in the headline or a bullet; a bundle or deadline in the subhead). Do not omit, round away, or replace user-supplied figures with vague language unless the brief itself is ambiguous.
+
 Your job is to read the scraped website text and DYNAMICALLY infer:
 • The ACTUAL brand or business name (how customers would recognize them).
 • The CORE business or service (e.g. SaaS, plumbing, law firm, restaurant, publisher, clinic, e-commerce, agency, nonprofit — whatever truly matches the source).
@@ -56,11 +63,12 @@ LANGUAGE: Write headline, subhead, bullet_points, and cta entirely in natural, m
 
 Output ONLY valid JSON (no markdown, no commentary, no extra keys) with exactly these keys:
 
-- headline (string): A punchy Hebrew line for the main title. You may use a question or a bold statement; weave in the inferred brand or core service where it fits naturally. Keep it short (hero headline length).
-- subhead (string): One short Hebrew sentence — the main solution, outcome, or differentiator. Confident and clear.
-- bullet_points (array): Exactly three strings. Each is a very short Hebrew benefit or feature that is SPECIFIC to this scraped business (derive from real offerings, audience, or proof signals in the source — not generic filler). No duplicates; each bullet adds a distinct angle.
+- headline (string): A punchy Hebrew line for the main title. You may use a question or a bold statement; weave in the inferred brand or core service where it fits naturally. Default to hero headline length; if the brief includes prices, discounts, or concrete offers, you may extend modestly so those facts fit without feeling cramped (still one line of thought, not a paragraph).
+- subhead (string): One short Hebrew sentence — the main solution, outcome, or differentiator. Confident and clear. If promotional specifics from the brief belong in the subhead, allow an extra short clause or slightly longer sentence so numbers and terms stay accurate and readable.
+- bullet_points (array): Exactly three strings. Each is a concise Hebrew benefit or feature that is SPECIFIC to this scraped business (derive from real offerings, audience, proof signals, or explicit brief details — not generic filler). When the brief names a deal, metric, or guarantee, reflect it in at least one bullet even if that bullet is a bit longer than usual. No duplicates; each bullet adds a distinct angle.
 - cta (string): Hebrew call to action, imperative, about 2–4 words.
-- image_prompt (string): One detailed ENGLISH prompt for DALL-E 3. Describe a strong hero/background image that matches the identified industry (e.g. workshop and tools for trades; professional office for legal; appetizing setting for food; calm space for wellness; modern workspace for software — adapt to the actual business). The prompt MUST always weave in these exact sensibility keywords/phrases (or very close equivalents): "bright daylight lighting", "clean white or light-gray background", "airy modern aesthetic", "optimistic vibe". Avoid dark, moody, low-key, neon-heavy, or "cyberpunk" tech visuals — no dramatic night scenes, heavy shadows as the dominant look, or dystopian/futuristic noir; the image must harmonize with a light-themed web layout. No requirement to reserve empty zones for text — HTML handles typography.
+- brand_color (string): A single CSS hex color for the brand accent, exactly 7 characters: "#" plus six hexadecimal digits (e.g. "#1D4ED8"). Infer the dominant brand color from the website copy and context (product category, named colors, industry cues). If the site gives no clear color signal, choose a vibrant, professional accent that fits the brand personality (still as valid hex).
+- image_prompt (string): One detailed ENGLISH prompt for DALL-E 3. Describe a powerful, IMMERSIVE background photograph that matches the identified industry (examples: gleaming code on a dark monitor in a sleek workspace for tech/SaaS; artisan tools and materials in a workshop for trades; beautifully plated food in a restaurant setting; modern surgical or clinical equipment for healthcare; elegant law books and oak desk for legal; drone shot of construction site for real-estate — adapt precisely to the actual business). CRITICAL CONTEXT: this image will fill the LEFT HALF of a split-panel banner and will have a dark gradient overlay applied, so it needs RICH VISUAL DEPTH, strong contrast, and interesting textures that look compelling under a dark overlay. Use these sensibility keywords: "professional editorial photography", "dramatic depth of field", "cinematic lighting", "rich textures and detail", "bold composition", "studio-quality realism". Prefer real-world environments, materials, and objects that feel TACTILE and SPECIFIC to the industry — avoid generic grid patterns, flat-lay product shots, plain backgrounds, or anything overly minimalist. Avoid neon-heavy, cyberpunk, or cartoonish aesthetics. No requirement to reserve empty zones for text — HTML handles typography.
 
 *** image_prompt — NON-NEGOTIABLE (highest priority) ***
 """ + DALLE_IMAGE_API_ENFORCEMENT + """
@@ -101,7 +109,7 @@ def fetch_banner_payload(client: OpenAI, user_content: str) -> dict:
         raise RuntimeError("[creative_agent] ERROR: Empty response from GPT-4o.")
     print("[creative_agent] Step 1/3: Parsing JSON…")
     data = json.loads(text)
-    for key in ("headline", "subhead", "cta", "image_prompt"):
+    for key in ("headline", "subhead", "cta", "image_prompt", "brand_color"):
         if key not in data or not str(data[key]).strip():
             raise RuntimeError(f"[creative_agent] ERROR: Missing or empty JSON key {key!r}.")
     bullets = data.get("bullet_points")
@@ -121,8 +129,18 @@ def fetch_banner_payload(client: OpenAI, user_content: str) -> dict:
             )
         normalized.append(item.strip())
     data["bullet_points"] = normalized
+
+    hex_color = str(data["brand_color"]).strip()
+    if not hex_color.startswith("#"):
+        hex_color = "#" + hex_color
+    if not re.fullmatch(r"#[0-9A-Fa-f]{6}", hex_color):
+        raise RuntimeError(
+            f"[creative_agent] ERROR: 'brand_color' must be #RRGGBB hex, got {data['brand_color']!r}."
+        )
+    data["brand_color"] = hex_color.upper()
+
     print(
-        "[creative_agent] Step 1/3: OK — headline, subhead, bullet_points (3), cta, image_prompt received."
+        "[creative_agent] Step 1/3: OK — headline, subhead, bullet_points (3), cta, brand_color, image_prompt received."
     )
     return data
 

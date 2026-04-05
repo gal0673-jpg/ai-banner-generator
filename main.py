@@ -141,10 +141,14 @@ def build_headless_chrome() -> webdriver.Chrome:
     return webdriver.Chrome(options=options)
 
 
-def run_agency_banner_pipeline(work_dir: Path | None = None) -> None:
+def run_agency_banner_pipeline(
+    work_dir: Path | None = None,
+    site_url: str = "",
+) -> None:
     """
     GPT-4o + DALL-E 3 (via creative_agent): writes creative_campaign.json,
-    background.png, and uses existing logo.png. No HTML render or Selenium screenshot.
+    background.png, and uses existing logo.png.  After that it renders a
+    professional split-panel PNG to rendered_banner.png using html_renderer.
 
     If ``work_dir`` is set, all artifacts live under that directory (for API jobs).
     When ``work_dir`` is set, missing scraped content or logo raises ``RuntimeError``.
@@ -152,12 +156,15 @@ def run_agency_banner_pipeline(work_dir: Path | None = None) -> None:
     from openai import OpenAI
 
     from creative_agent import fetch_banner_payload, generate_background_dalle3
+    from html_renderer import render_banner_html, render_html_to_png
 
     root = work_dir if work_dir is not None else BASE_DIR
     output_file = root / "scraped_content.txt"
     logo_file = root / "logo.png"
     background_png = root / "background.png"
     campaign_json = root / "creative_campaign.json"
+    banner_html = root / "banner_temp.html"
+    rendered_banner = root / "rendered_banner.png"
 
     if work_dir is not None:
         work_dir.mkdir(parents=True, exist_ok=True)
@@ -196,6 +203,21 @@ def run_agency_banner_pipeline(work_dir: Path | None = None) -> None:
         return
 
     print(f"Agency banner: saved {campaign_json.name} and {background_png.name}")
+
+    # ── High-quality rendered banner (split-panel HTML → PNG) ─────────────────
+    print("Agency banner: rendering split-panel PNG (html_renderer + headless Chrome)…")
+    try:
+        render_banner_html(
+            payload,
+            background_path=background_png,
+            logo_path=logo_file,
+            output_path=banner_html,
+            site_url=site_url,
+        )
+        render_html_to_png(banner_html, rendered_banner)
+        print(f"Agency banner: rendered_banner.png saved to {rendered_banner}")
+    except Exception as exc:  # noqa: BLE001
+        print(f"[main] WARNING: rendered_banner.png failed ({exc}). Continuing without it.", file=sys.stderr)
 
 
 def extract_title_and_paragraphs(driver: webdriver.Chrome) -> tuple[str, list[str]]:
@@ -377,10 +399,16 @@ def extract_and_save_homepage_logo(driver: webdriver.Chrome, logo_file: Path) ->
     return False
 
 
-def crawl_from_url(raw_url: str, *, work_dir: Path | None = None) -> None:
+def crawl_from_url(
+    raw_url: str,
+    *,
+    work_dir: Path | None = None,
+    campaign_brief: str | None = None,
+) -> None:
     """
     Crawl up to MAX_PAGES internal pages; write scraped_content.txt and best-effort logo.png.
     If ``work_dir`` is set, files are written there (isolated API jobs); otherwise BASE_DIR.
+    If ``campaign_brief`` is non-empty, it is appended to scraped_content.txt for the creative step.
     """
     output_file = work_dir / "scraped_content.txt" if work_dir else OUTPUT_FILE
     logo_file = work_dir / "logo.png" if work_dir else LOGO_FILE
@@ -445,6 +473,14 @@ def crawl_from_url(raw_url: str, *, work_dir: Path | None = None) -> None:
     with open(output_file, "w", encoding="utf-8") as f:
         f.write(f"Crawl summary: {pages_fetched} page(s), starting from {start_url}\n\n")
         f.write("".join(file_chunks))
+        if campaign_brief and str(campaign_brief).strip():
+            f.write("\n\n")
+            f.write(SEPARATOR + "\n")
+            f.write(
+                "USER CAMPAIGN BRIEF (goals / target audience — provided by the user)\n"
+            )
+            f.write(SEPARATOR + "\n\n")
+            f.write(str(campaign_brief).strip() + "\n")
 
     print(f"Done. Content saved to {output_file} ({pages_fetched} page(s)).")
 
@@ -462,7 +498,7 @@ def main() -> None:
         return
 
     if os.environ.get("OPENAI_API_KEY"):
-        run_agency_banner_pipeline()
+        run_agency_banner_pipeline(site_url=raw_url)
     else:
         print(
             "Tip: set OPENAI_API_KEY to generate creative_campaign.json and background.png "

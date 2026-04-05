@@ -1,0 +1,4269 @@
+AI BANNER CONTEXT EXPORT
+Generated (UTC): 2026-04-05 16:55:51 UTC
+Project root: C:\laragon\www\python
+Output filename: ai-banner-context.txt
+
+Includes: architecture summary, DB summary, filtered tree, Python sources, client sources, root config.
+Excluded: .git, __pycache__, node_modules, venv, dist, build, .cursor, tasks/* file contents,
+         ai-banner-context.txt, project_context.txt.
+
+
+================================================================================
+SECTION: ARCHITECTURE
+================================================================================
+
+SYSTEM OVERVIEW (banner generator)
+---------------------------------
+- Backend: FastAPI in api.py — JWT auth (auth.py), SQLAlchemy models (models.py), MySQL via DATABASE_URL (database.py).
+- Bootstrap: on startup, creates superuser gal0673@gmail.com if missing (see SUPERUSER_EMAIL in api.py).
+- Flow: POST /generate enqueues crawl + creative pipeline (main.py); task row in banner_tasks; static files under tasks/<uuid>/ served at /task-files/...
+- Client: Vite + React (client/) — Login, BannerWorkspace, BannerCanvas (Framer Motion + re-resizable, html-to-image export).
+- Pipeline pieces: creative_agent.py, generate_copy.py, html_renderer.py, composite_banner.py (image generation path).
+- Admin: GET /admin/tasks (superuser). Primary-admin-only: GET /admin/ai-banner-context (same email as SUPERUSER_EMAIL).
+
+This file is generated for AI-assisted development and debugging; it omits git, node_modules, per-task binary trees, and prior context dumps.
+
+================================================================================
+SECTION: DATABASE
+================================================================================
+
+DATABASE (SQLAlchemy, MySQL via DATABASE_URL)
+--------------------------------------------
+users
+  - id (UUID, PK)
+  - email (unique)
+  - hashed_password
+  - is_superuser (bool)
+  - created_at (timezone-aware)
+
+banner_tasks
+  - id (UUID, PK)
+  - user_id (FK -> users.id, CASCADE)
+  - status (pending | scraped | generating_image | completed | failed)
+  - url, brief (optional), error (optional)
+  - headline, subhead, bullet_points (JSON list), cta, brand_color
+  - background_url, logo_url (paths under /task-files/...)
+
+See models.py for exact column types and relationships.
+
+================================================================================
+SECTION: PROJECT STRUCTURE (filtered)
+================================================================================
+
+python/
+├── client
+│   ├── public
+│   │   ├── favicon.svg
+│   │   └── icons.svg
+│   ├── src
+│   │   ├── assets
+│   │   │   ├── react.svg
+│   │   │   └── vite.svg
+│   │   ├── api.js
+│   │   ├── App.css
+│   │   ├── App.jsx
+│   │   ├── AuthContext.jsx
+│   │   ├── BannerCanvas.css
+│   │   ├── BannerCanvas.jsx
+│   │   ├── BannerWorkspace.jsx
+│   │   ├── index.css
+│   │   ├── Login.jsx
+│   │   └── main.jsx
+│   ├── .env.example
+│   ├── .gitignore
+│   ├── eslint.config.js
+│   ├── index.html
+│   ├── package-lock.json
+│   ├── package.json
+│   ├── README.md
+│   └── vite.config.js
+├── tasks
+│   └── [16 task UUID folders — runtime outputs omitted]
+├── .env
+├── .gitignore
+├── ai-banner-generator.txt
+├── ai_banner_context.py
+├── api.py
+├── auth.py
+├── banner_data.json
+├── composite_banner.py
+├── creative_agent.py
+├── creative_campaign.json
+├── database.py
+├── export_context.py
+├── generate_copy.py
+├── html_renderer.py
+├── main.py
+├── models.py
+├── requirements.txt
+└── scraped_content.txt
+
+================================================================================
+SECTION: PYTHON FILES (11)
+================================================================================
+
+
+================================================================================
+FILE: ai_banner_context.py
+================================================================================
+
+"""
+Generate ai-banner-context.txt: compact handoff for AI (architecture, DB, tree, source).
+
+Skipped: .git, __pycache__, node_modules, venv, dist, build, .cursor, tasks/* contents,
+         and embedding of previous giant context dumps.
+
+CLI:  python ai_banner_context.py
+      python ai_banner_context.py --root .
+"""
+
+from __future__ import annotations
+
+import argparse
+import os
+from datetime import datetime, timezone
+from pathlib import Path
+
+RULE = "=" * 80
+
+OUTPUT_FILENAME = "ai-banner-context.txt"
+
+IGNORE_DIR_NAMES = frozenset({
+    ".git",
+    "__pycache__",
+    "node_modules",
+    ".venv",
+    "venv",
+    "dist",
+    "build",
+    ".eggs",
+    ".cursor",
+})
+
+# Do not paste these into the bundle (self-bloat / regenerated artifacts).
+SKIP_CONTENT_FILENAMES = frozenset({
+    "project_context.txt",
+    OUTPUT_FILENAME,
+})
+
+# Omit from tree listing only (not source); keeps the structure readable for AI.
+_TREE_ARTIFACT_SUFFIXES = (
+    ".png",
+    ".jpg",
+    ".jpeg",
+    ".webp",
+    ".gif",
+    ".ico",
+    ".db",
+    ".sqlite",
+    ".sqlite3",
+    ".woff2",
+    ".ttf",
+    ".pdf",
+)
+
+
+def _dir_skipped(name: str) -> bool:
+    if name in IGNORE_DIR_NAMES:
+        return True
+    if name.endswith(".egg-info"):
+        return True
+    return False
+
+
+def _tree_entry_skipped(path: Path) -> bool:
+    if _dir_skipped(path.name):
+        return True
+    if path.is_file():
+        if path.name in SKIP_CONTENT_FILENAMES:
+            return True
+        low = path.name.lower()
+        if any(low.endswith(s) for s in _TREE_ARTIFACT_SUFFIXES):
+            return True
+    return False
+
+
+def _should_skip_file_for_content(path: Path, root: Path) -> bool:
+    try:
+        rel = path.relative_to(root)
+    except ValueError:
+        return True
+    if rel.name in SKIP_CONTENT_FILENAMES:
+        return True
+    return False
+
+
+def project_tree_lines(directory: Path, prefix: str = "", project_root: Path | None = None) -> list[str]:
+    """ASCII tree; under <root>/tasks/ only a stub line (no UUID spam)."""
+    project_root = project_root or directory
+    lines: list[str] = []
+    try:
+        children = sorted(
+            [p for p in directory.iterdir() if not _tree_entry_skipped(p)],
+            key=lambda p: (not p.is_dir(), p.name.lower()),
+        )
+    except OSError as exc:
+        return [f"{prefix}[cannot read: {exc}]"]
+
+    root_res = project_root.resolve()
+    for i, path in enumerate(children):
+        last = i == len(children) - 1
+        branch = "└── " if last else "├── "
+        lines.append(f"{prefix}{branch}{path.name}")
+
+        if not path.is_dir():
+            continue
+
+        ext = "    " if last else "│   "
+        next_prefix = prefix + ext
+
+        if path.resolve() == (root_res / "tasks").resolve():
+            try:
+                n = sum(1 for p in path.iterdir() if p.is_dir())
+            except OSError:
+                n = 0
+            lines.append(f"{next_prefix}└── [{n} task UUID folders — runtime outputs omitted]")
+            continue
+
+        lines.extend(project_tree_lines(path, next_prefix, project_root))
+    return lines
+
+
+def structure_section(root: Path) -> str:
+    top = f"{root.name}/"
+    body = project_tree_lines(root, "", root)
+    return top + ("\n" + "\n".join(body) if body else "")
+
+
+def walk_filtered(root: Path):
+    root_s = os.fspath(root.resolve())
+    for dirpath, dirnames, filenames in os.walk(root_s):
+        dirnames[:] = [d for d in dirnames if not _dir_skipped(d)]
+        # Never walk into tasks/*/ (only skip one level under tasks)
+        rel = Path(dirpath).resolve().relative_to(root.resolve())
+        parts = rel.parts
+        if len(parts) >= 2 and parts[0] == "tasks":
+            dirnames[:] = []
+        yield dirpath, dirnames, filenames
+
+
+def iter_py_files(root: Path) -> list[Path]:
+    paths: list[Path] = []
+    for dirpath, _dirnames, filenames in walk_filtered(root):
+        for name in filenames:
+            if name.endswith(".py"):
+                p = Path(dirpath) / name
+                if not _should_skip_file_for_content(p, root):
+                    paths.append(p)
+    return sorted(paths)
+
+
+def iter_client_source_files(root: Path) -> list[Path]:
+    """React/Vite sources and config (no node_modules)."""
+    client = root / "client"
+    if not client.is_dir():
+        return []
+    extra = [
+        client / "package.json",
+        client / "vite.config.js",
+        client / "index.html",
+        client / "eslint.config.js",
+    ]
+    paths: list[Path] = []
+    src = client / "src"
+    if src.is_dir():
+        for dirpath, _dirnames, filenames in os.walk(src):
+            for name in filenames:
+                if name.endswith((".jsx", ".js", ".css")):
+                    paths.append(Path(dirpath) / name)
+    paths.extend(p for p in extra if p.is_file())
+    paths = [p for p in paths if not _should_skip_file_for_content(p, root)]
+    return sorted(set(paths), key=lambda p: str(p).lower())
+
+
+def iter_root_config_files(root: Path) -> list[Path]:
+    names = ("requirements.txt", ".env.example")
+    out: list[Path] = []
+    for n in names:
+        p = root / n
+        if p.is_file() and not _should_skip_file_for_content(p, root):
+            out.append(p)
+    return out
+
+
+def read_utf8(path: Path) -> str:
+    return path.read_text(encoding="utf-8", errors="replace")
+
+
+def header_block(title: str) -> list[str]:
+    return ["", RULE, title, RULE, ""]
+
+
+def file_block(label: str, content: str) -> list[str]:
+    return [
+        "",
+        RULE,
+        f"FILE: {label}",
+        RULE,
+        "",
+        content.rstrip("\n"),
+        "",
+    ]
+
+
+def architecture_section() -> str:
+    return """
+SYSTEM OVERVIEW (banner generator)
+---------------------------------
+- Backend: FastAPI in api.py — JWT auth (auth.py), SQLAlchemy models (models.py), MySQL via DATABASE_URL (database.py).
+- Bootstrap: on startup, creates superuser gal0673@gmail.com if missing (see SUPERUSER_EMAIL in api.py).
+- Flow: POST /generate enqueues crawl + creative pipeline (main.py); task row in banner_tasks; static files under tasks/<uuid>/ served at /task-files/...
+- Client: Vite + React (client/) — Login, BannerWorkspace, BannerCanvas (Framer Motion + re-resizable, html-to-image export).
+- Pipeline pieces: creative_agent.py, generate_copy.py, html_renderer.py, composite_banner.py (image generation path).
+- Admin: GET /admin/tasks (superuser). Primary-admin-only: GET /admin/ai-banner-context (same email as SUPERUSER_EMAIL).
+
+This file is generated for AI-assisted development and debugging; it omits git, node_modules, per-task binary trees, and prior context dumps.
+""".strip()
+
+
+def database_section() -> str:
+    return """
+DATABASE (SQLAlchemy, MySQL via DATABASE_URL)
+--------------------------------------------
+users
+  - id (UUID, PK)
+  - email (unique)
+  - hashed_password
+  - is_superuser (bool)
+  - created_at (timezone-aware)
+
+banner_tasks
+  - id (UUID, PK)
+  - user_id (FK -> users.id, CASCADE)
+  - status (pending | scraped | generating_image | completed | failed)
+  - url, brief (optional), error (optional)
+  - headline, subhead, bullet_points (JSON list), cta, brand_color
+  - background_url, logo_url (paths under /task-files/...)
+
+See models.py for exact column types and relationships.
+""".strip()
+
+
+def build_document(root: Path) -> str:
+    root = root.resolve()
+    stamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    parts: list[str] = [
+        "AI BANNER CONTEXT EXPORT",
+        f"Generated (UTC): {stamp}",
+        f"Project root: {root}",
+        f"Output filename: {OUTPUT_FILENAME}",
+        "",
+        "Includes: architecture summary, DB summary, filtered tree, Python sources, client sources, root config.",
+        "Excluded: .git, __pycache__, node_modules, venv, dist, build, .cursor, tasks/* file contents,",
+        f"         {', '.join(sorted(SKIP_CONTENT_FILENAMES))}.",
+        "",
+    ]
+
+    parts.extend(header_block("SECTION: ARCHITECTURE"))
+    parts.append(architecture_section())
+
+    parts.extend(header_block("SECTION: DATABASE"))
+    parts.append(database_section())
+
+    parts.extend(header_block("SECTION: PROJECT STRUCTURE (filtered)"))
+    parts.append(structure_section(root))
+
+    py_paths = iter_py_files(root)
+    parts.extend(header_block(f"SECTION: PYTHON FILES ({len(py_paths)})"))
+    for path in py_paths:
+        rel = path.relative_to(root).as_posix()
+        parts.extend(file_block(rel, read_utf8(path)))
+
+    client_paths = iter_client_source_files(root)
+    parts.extend(header_block(f"SECTION: CLIENT SOURCE FILES ({len(client_paths)})"))
+    for path in client_paths:
+        rel = path.relative_to(root).as_posix()
+        parts.extend(file_block(rel, read_utf8(path)))
+
+    cfg_paths = iter_root_config_files(root)
+    parts.extend(header_block(f"SECTION: ROOT CONFIG ({len(cfg_paths)})"))
+    for path in cfg_paths:
+        rel = path.relative_to(root).as_posix()
+        parts.extend(file_block(rel, read_utf8(path)))
+
+    return "\n".join(parts).rstrip() + "\n"
+
+
+def write_to_project_root(root: Path | None = None) -> Path:
+    root = (root or Path(__file__).resolve().parent).resolve()
+    out = root / OUTPUT_FILENAME
+    out.write_text(build_document(root), encoding="utf-8")
+    return out
+
+
+def main() -> None:
+    p = argparse.ArgumentParser(description=f"Write {OUTPUT_FILENAME} for AI context.")
+    p.add_argument("--root", type=Path, default=None, help="Project root (default: parent of this script).")
+    args = p.parse_args()
+    root = (args.root or Path(__file__).resolve().parent).resolve()
+    if not root.is_dir():
+        raise SystemExit(f"Not a directory: {root}")
+    out = write_to_project_root(root)
+    print(f"Wrote {out}")
+
+
+if __name__ == "__main__":
+    main()
+
+
+================================================================================
+FILE: api.py
+================================================================================
+
+"""
+FastAPI backend for the banner generator React app.
+
+Run: uvicorn api:app --reload --host 0.0.0.0 --port 8000
+
+Requires: see requirements.txt (fastapi, uvicorn, sqlalchemy, auth libs, DB driver).
+"""
+
+from __future__ import annotations
+
+from contextlib import asynccontextmanager
+from pathlib import Path
+from typing import Annotated, Any, Literal
+import json
+import os
+import re
+import secrets
+import uuid
+
+from dotenv import load_dotenv
+
+load_dotenv(Path(__file__).resolve().parent / ".env")
+
+from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.security import OAuth2PasswordRequestForm
+from fastapi.staticfiles import StaticFiles
+from starlette.responses import Response
+from pydantic import BaseModel, Field
+from sqlalchemy import select
+from sqlalchemy.orm import Session, joinedload
+
+from auth import create_access_token, get_current_superuser, get_current_user, get_password_hash, verify_password
+from ai_banner_context import OUTPUT_FILENAME, build_document
+from database import Base, SessionLocal, engine, get_db
+from main import BASE_DIR, crawl_from_url, run_agency_banner_pipeline
+from models import BannerTask, User
+
+TASKS_DIR = BASE_DIR / "tasks"
+TASKS_DIR.mkdir(parents=True, exist_ok=True)
+
+TaskStatus = Literal["pending", "scraped", "generating_image", "completed", "failed"]
+
+SUPERUSER_EMAIL = "gal0673@gmail.com".lower()
+
+
+def require_primary_admin(user: Annotated[User, Depends(get_current_superuser)]) -> User:
+    """Only the bootstrapped primary admin (gal0673@gmail.com) may export AI context."""
+    if user.email.strip().lower() != SUPERUSER_EMAIL:
+        raise HTTPException(
+            status_code=403,
+            detail="ייצוא הקשר ל-AI זמין רק לחשבון האדמין הראשי.",
+        )
+    return user
+
+
+_BRAND_HEX = re.compile(r"^#[0-9A-Fa-f]{6}$")
+
+
+def _persist_task(task_uuid: uuid.UUID, **kwargs: Any) -> None:
+    with SessionLocal() as db:
+        row = db.get(BannerTask, task_uuid)
+        if row is None:
+            return
+        for key, value in kwargs.items():
+            setattr(row, key, value)
+        db.commit()
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    Base.metadata.create_all(bind=engine)
+    if not os.environ.get("JWT_SECRET_KEY"):
+        print(
+            "[startup] WARNING: JWT_SECRET_KEY is not set; login and protected routes will fail until it is set."
+        )
+
+    with SessionLocal() as db:
+        existing = db.execute(select(User).where(User.email == SUPERUSER_EMAIL)).scalar_one_or_none()
+        if existing is None:
+            initial_password = secrets.token_urlsafe(24)
+            su = User(
+                email=SUPERUSER_EMAIL,
+                hashed_password=get_password_hash(initial_password),
+                is_superuser=True,
+            )
+            db.add(su)
+            db.commit()
+            print(
+                f"[bootstrap] Created superuser {SUPERUSER_EMAIL}; "
+                f"initial password (rotate after first login): {initial_password}"
+            )
+    yield
+
+
+app = FastAPI(title="Banner generator API", lifespan=lifespan)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+        "http://localhost:5174",    # <-- הוספנו את זה
+        "http://127.0.0.1:5174",
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+app.mount("/task-files", StaticFiles(directory=str(TASKS_DIR)), name="task_files")
+
+
+class RegisterRequest(BaseModel):
+    email: str = Field(..., min_length=3, max_length=255)
+    password: str = Field(..., min_length=8, max_length=128)
+
+
+class TokenResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+
+
+class GenerateRequest(BaseModel):
+    url: str = Field(..., min_length=1, description="Site URL to crawl")
+    brief: str | None = Field(
+        default=None,
+        max_length=12000,
+        description="Optional campaign goal / target audience for the creative model",
+    )
+
+
+def run_banner_task(task_id: str, url: str, brief: str | None) -> None:
+    task_uuid = uuid.UUID(task_id)
+    work_dir = TASKS_DIR / task_id
+    try:
+        crawl_from_url(url, work_dir=work_dir, campaign_brief=brief)
+        _persist_task(task_uuid, status="scraped")
+
+        if not os.environ.get("OPENAI_API_KEY"):
+            _persist_task(task_uuid, status="failed", error="OPENAI_API_KEY is not set")
+            return
+
+        _persist_task(task_uuid, status="generating_image")
+        run_agency_banner_pipeline(work_dir=work_dir)
+
+        campaign_path = work_dir / "creative_campaign.json"
+        background = work_dir / "background.png"
+        logo = work_dir / "logo.png"
+        if not campaign_path.is_file() or not background.is_file() or not logo.is_file():
+            _persist_task(
+                task_uuid,
+                status="failed",
+                error="Missing creative_campaign.json, background.png, or logo.png after pipeline.",
+            )
+            return
+
+        with campaign_path.open(encoding="utf-8") as f:
+            data = json.load(f)
+
+        for key in ("headline", "subhead", "cta"):
+            if key not in data or not str(data[key]).strip():
+                _persist_task(
+                    task_uuid,
+                    status="failed",
+                    error=f"Invalid creative_campaign.json: missing or empty {key!r}",
+                )
+                return
+        bullets = data.get("bullet_points")
+        if not isinstance(bullets, list) or len(bullets) != 3:
+            _persist_task(
+                task_uuid,
+                status="failed",
+                error="Invalid creative_campaign.json: bullet_points must be 3 strings.",
+            )
+            return
+
+        bc_raw = data.get("brand_color")
+        if not isinstance(bc_raw, str) or not bc_raw.strip():
+            _persist_task(
+                task_uuid,
+                status="failed",
+                error="Invalid creative_campaign.json: missing or empty brand_color.",
+            )
+            return
+        bc = bc_raw.strip()
+        if not bc.startswith("#"):
+            bc = "#" + bc
+        if not _BRAND_HEX.match(bc):
+            _persist_task(
+                task_uuid,
+                status="failed",
+                error="Invalid creative_campaign.json: brand_color must be #RRGGBB hex.",
+            )
+            return
+
+        _persist_task(
+            task_uuid,
+            status="completed",
+            error=None,
+            headline=str(data["headline"]).strip(),
+            subhead=str(data["subhead"]).strip(),
+            bullet_points=[str(b).strip() for b in bullets],
+            cta=str(data["cta"]).strip(),
+            brand_color=bc.upper(),
+            background_url=f"/task-files/{task_id}/background.png",
+            logo_url=f"/task-files/{task_id}/logo.png",
+        )
+    except Exception as exc:  # noqa: BLE001 — surface any pipeline failure to the client
+        _persist_task(task_uuid, status="failed", error=str(exc))
+
+
+@app.post("/auth/register", status_code=201)
+def register(body: RegisterRequest, db: Annotated[Session, Depends(get_db)]) -> dict[str, str]:
+    email = body.email.strip().lower()
+    if not email:
+        raise HTTPException(status_code=400, detail="email must not be empty")
+    existing = db.execute(select(User).where(User.email == email)).scalar_one_or_none()
+    if existing is not None:
+        raise HTTPException(status_code=400, detail="Email already registered")
+    user = User(
+        email=email,
+        hashed_password=get_password_hash(body.password),
+        is_superuser=False,
+    )
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+    return {"id": str(user.id), "email": user.email}
+
+
+@app.post("/auth/login", response_model=TokenResponse)
+def login(
+    form_data: Annotated[OAuth2PasswordRequestForm, Depends()],
+    db: Annotated[Session, Depends(get_db)],
+) -> TokenResponse:
+    # OAuth2PasswordRequestForm uses "username"; we treat it as the user's email.
+    email = form_data.username.strip().lower()
+    user = db.execute(select(User).where(User.email == email)).scalar_one_or_none()
+    if user is None or not verify_password(form_data.password, user.hashed_password):
+        raise HTTPException(status_code=401, detail="Incorrect email or password")
+    token = create_access_token(subject=str(user.id))
+    return TokenResponse(access_token=token)
+
+
+@app.post("/generate")
+def generate(
+    body: GenerateRequest,
+    background_tasks: BackgroundTasks,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> dict[str, str]:
+    url = body.url.strip()
+    if not url:
+        raise HTTPException(status_code=400, detail="url must not be empty")
+
+    brief = (body.brief or "").strip() or None
+
+    task_id = uuid.uuid4()
+    row = BannerTask(
+        id=task_id,
+        user_id=current_user.id,
+        status="pending",
+        url=url,
+        brief=brief,
+        error=None,
+        headline=None,
+        subhead=None,
+        bullet_points=None,
+        cta=None,
+        brand_color=None,
+        background_url=None,
+        logo_url=None,
+    )
+    db.add(row)
+    db.commit()
+    tid = str(task_id)
+    background_tasks.add_task(run_banner_task, tid, url, brief)
+    return {"task_id": tid}
+
+
+@app.get("/status/{task_id}")
+def get_status(
+    task_id: str,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> dict[str, Any]:
+    try:
+        tid = uuid.UUID(task_id)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Unknown task_id") from None
+
+    row = db.get(BannerTask, tid)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Unknown task_id")
+    if not current_user.is_superuser and row.user_id != current_user.id:
+        raise HTTPException(status_code=404, detail="Unknown task_id")
+
+    status_val: TaskStatus = row.status  # type: ignore[assignment]
+    return {
+        "task_id": task_id,
+        "status": status_val,
+        "error": row.error,
+        "headline": row.headline,
+        "subhead": row.subhead,
+        "bullet_points": row.bullet_points,
+        "cta": row.cta,
+        "brand_color": row.brand_color,
+        "background_url": row.background_url,
+        "logo_url": row.logo_url,
+    }
+
+
+@app.get("/admin/tasks")
+def admin_list_tasks(
+    _: Annotated[User, Depends(get_current_superuser)],
+    db: Annotated[Session, Depends(get_db)],
+) -> list[dict[str, Any]]:
+    stmt = select(BannerTask).options(joinedload(BannerTask.user)).order_by(BannerTask.id)
+    rows = db.scalars(stmt).unique().all()
+    out: list[dict[str, Any]] = []
+    for t in rows:
+        out.append(
+            {
+                "task_id": str(t.id),
+                "user_id": str(t.user_id),
+                "user_email": t.user.email,
+                "status": t.status,
+                "url": t.url,
+                "brief": t.brief,
+                "error": t.error,
+                "headline": t.headline,
+                "subhead": t.subhead,
+                "bullet_points": t.bullet_points,
+                "cta": t.cta,
+                "brand_color": t.brand_color,
+                "background_url": t.background_url,
+                "logo_url": t.logo_url,
+            }
+        )
+    return out
+
+
+@app.get("/admin/ai-banner-context")
+def download_ai_banner_context(_: Annotated[User, Depends(require_primary_admin)]) -> Response:
+    """Regenerate ai-banner-context.txt on disk and return it as a download (primary admin only)."""
+    root = Path(__file__).resolve().parent
+    text = build_document(root)
+    (root / OUTPUT_FILENAME).write_text(text, encoding="utf-8")
+    return Response(
+        content=text.encode("utf-8"),
+        media_type="text/plain; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{OUTPUT_FILENAME}"'},
+    )
+
+
+================================================================================
+FILE: auth.py
+================================================================================
+
+"""Password hashing, JWT helpers, and FastAPI auth dependencies."""
+
+from __future__ import annotations
+
+import os
+from datetime import datetime, timedelta, timezone
+from typing import Annotated, Any
+from uuid import UUID
+
+from fastapi import Depends, HTTPException, status
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from jose import JWTError, jwt
+from passlib.context import CryptContext
+from sqlalchemy.orm import Session
+
+from database import get_db
+from models import User
+
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
+SECRET_KEY = os.environ.get("JWT_SECRET_KEY", "")
+ALGORITHM = os.environ.get("JWT_ALGORITHM", "HS256")
+ACCESS_TOKEN_EXPIRE_MINUTES = int(os.environ.get("ACCESS_TOKEN_EXPIRE_MINUTES", "10080"))
+
+http_bearer = HTTPBearer(auto_error=False)
+
+
+def verify_password(plain_password: str, hashed_password: str) -> bool:
+    return pwd_context.verify(plain_password, hashed_password)
+
+
+def get_password_hash(password: str) -> str:
+    return pwd_context.hash(password)
+
+
+def create_access_token(subject: str, expires_delta: timedelta | None = None) -> str:
+    if not SECRET_KEY:
+        raise RuntimeError("JWT_SECRET_KEY is not set in the environment.")
+    expire = datetime.now(timezone.utc) + (
+        expires_delta if expires_delta is not None else timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    )
+    to_encode: dict[str, Any] = {"sub": subject, "exp": expire}
+    return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+
+
+def decode_access_token(token: str) -> str:
+    if not SECRET_KEY:
+        raise RuntimeError("JWT_SECRET_KEY is not set in the environment.")
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        sub = payload.get("sub")
+        if not isinstance(sub, str) or not sub:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid token payload",
+            )
+        return sub
+    except JWTError:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Could not validate credentials",
+            headers={"WWW-Authenticate": "Bearer"},
+        ) from None
+
+
+def get_current_user(
+    credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(http_bearer)],
+    db: Annotated[Session, Depends(get_db)],
+) -> User:
+    if credentials is None or credentials.scheme.lower() != "bearer":
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Not authenticated",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    user_id_str = decode_access_token(credentials.credentials)
+    try:
+        user_uuid = UUID(user_id_str)
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid token subject",
+        ) from None
+    user = db.get(User, user_uuid)
+    if user is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="User not found",
+        )
+    return user
+
+
+def get_current_superuser(current_user: Annotated[User, Depends(get_current_user)]) -> User:
+    if not current_user.is_superuser:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Superuser privileges required",
+        )
+    return current_user
+
+
+================================================================================
+FILE: composite_banner.py
+================================================================================
+
+"""
+Composite headline and CTA onto background.png using banner_data.json.
+Requires: pip install pillow arabic-reshaper python-bidi
+"""
+
+import json
+import sys
+from pathlib import Path
+
+import arabic_reshaper
+from bidi.algorithm import get_display
+from PIL import Image, ImageDraw, ImageFont
+
+BASE = Path(__file__).resolve().parent
+BACKGROUND_PATH = BASE / "background.png"
+BANNER_JSON_PATH = BASE / "banner_data.json"
+OUTPUT_PATH = BASE / "final_banner.png"
+ARIAL_PATH = Path(r"C:\Windows\Fonts\arial.ttf")
+
+HEADLINE_SIZE = 56
+CTA_SIZE = 38
+MARGIN = 48
+HEADLINE_FILL = (255, 255, 255)
+CTA_FILL = (255, 236, 60)
+STROKE_FILL = (0, 0, 0)
+STROKE_WIDTH = 3
+SHADOW_OFFSET = (3, 3)
+SHADOW_ALPHA = 180
+
+
+def prepare_hebrew(text: str) -> str:
+    reshaped = arabic_reshaper.reshape(text)
+    return get_display(reshaped)
+
+
+def load_font(size: int) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
+    if ARIAL_PATH.is_file():
+        return ImageFont.truetype(str(ARIAL_PATH), size=size)
+    return ImageFont.load_default()
+
+
+def main() -> None:
+    if not BACKGROUND_PATH.is_file():
+        print(f"Error: {BACKGROUND_PATH} not found.", file=sys.stderr)
+        sys.exit(1)
+    if not BANNER_JSON_PATH.is_file():
+        print(f"Error: {BANNER_JSON_PATH} not found.", file=sys.stderr)
+        sys.exit(1)
+
+    with BANNER_JSON_PATH.open(encoding="utf-8") as f:
+        data = json.load(f)
+
+    try:
+        headline_raw = data["headline"]
+        cta_raw = data["cta"]
+    except KeyError as e:
+        print(f"Error: banner JSON missing key {e.args[0]!r}.", file=sys.stderr)
+        sys.exit(1)
+
+    headline = prepare_hebrew(str(headline_raw))
+    cta = prepare_hebrew(str(cta_raw))
+
+    image = Image.open(BACKGROUND_PATH).convert("RGBA")
+    width, height = image.size
+
+    headline_font = load_font(HEADLINE_SIZE)
+    cta_font = load_font(CTA_SIZE)
+
+    overlay = Image.new("RGBA", image.size, (0, 0, 0, 0))
+    draw = ImageDraw.Draw(overlay)
+
+    # Headline: top center (with stroke + soft shadow for contrast)
+    hb = draw.textbbox(
+        (0, 0), headline, font=headline_font, stroke_width=STROKE_WIDTH
+    )
+    hw = hb[2] - hb[0]
+    hh = hb[3] - hb[1]
+    hx = (width - hw) // 2 - hb[0]
+    hy = MARGIN - hb[1]
+
+    sx, sy = SHADOW_OFFSET
+    shadow_color = (*STROKE_FILL, SHADOW_ALPHA)
+    draw.text((hx + sx, hy + sy), headline, font=headline_font, fill=shadow_color)
+    draw.text(
+        (hx, hy),
+        headline,
+        font=headline_font,
+        fill=HEADLINE_FILL,
+        stroke_width=STROKE_WIDTH,
+        stroke_fill=STROKE_FILL,
+    )
+
+    # CTA: bottom right
+    cta_stroke = max(2, STROKE_WIDTH - 1)
+    cb = draw.textbbox((0, 0), cta, font=cta_font, stroke_width=cta_stroke)
+    cw = cb[2] - cb[0]
+    ch = cb[3] - cb[1]
+    cx = width - MARGIN - cw - cb[0]
+    cy = height - MARGIN - ch - cb[1]
+
+    draw.text((cx + sx, cy + sy), cta, font=cta_font, fill=shadow_color)
+    draw.text(
+        (cx, cy),
+        cta,
+        font=cta_font,
+        fill=CTA_FILL,
+        stroke_width=cta_stroke,
+        stroke_fill=STROKE_FILL,
+    )
+
+    composed = Image.alpha_composite(image, overlay).convert("RGB")
+    composed.save(OUTPUT_PATH, format="PNG")
+    print(f"Success: wrote {OUTPUT_PATH}")
+
+
+if __name__ == "__main__":
+    main()
+
+
+================================================================================
+FILE: creative_agent.py
+================================================================================
+
+"""
+Elite marketing-agency banner: GPT-4o copy (any industry), DALL-E 3 background.
+
+Requires:
+  pip install openai requests
+  Env: OPENAI_API_KEY
+
+Inputs:  scraped_content.txt (UTF-8)
+Outputs: creative_campaign.json, background.png
+
+Final raster banner: run main.py (HTML + headless Chrome) or wire html_renderer yourself.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import re
+import sys
+from pathlib import Path
+
+import requests
+from dotenv import load_dotenv
+from openai import OpenAI
+
+BASE = Path(__file__).resolve().parent
+load_dotenv(BASE / ".env")
+SCRAPED_PATH = BASE / "scraped_content.txt"
+BACKGROUND_PNG_PATH = BASE / "background.png"
+CAMPAIGN_JSON_PATH = BASE / "creative_campaign.json"
+
+# Always appended to the model-written image_prompt when calling DALL·E 3 (strict enforcement).
+DALLE_IMAGE_API_ENFORCEMENT = (
+    "STRICT: The image MUST BE an empty environment, abstract background, or still-life object only. "
+    "ABSOLUTELY NO humans, people, avatars, characters, body parts, or hands. "
+    "CRITICAL: The image MUST be completely devoid of any text, letters, numbers, or UI gibberish. "
+    "Use abstract, clean, or depth-of-field styles only; do not render fake text on screens, walls, or devices."
+)
+
+ELITE_AGENCY_SYSTEM = """You are an elite full-service marketing agency: sharp strategy, any vertical, any geography.
+
+INPUTS YOU MUST COMBINE:
+1) SCRAPED WEBSITE TEXT — titles, paragraphs, and on-page signals from the crawl (may include a trailing section).
+2) OPTIONAL USER CAMPAIGN BRIEF — when the document contains a block titled "USER CAMPAIGN BRIEF (goals / target audience — provided by the user)", treat it as authoritative guidance for positioning, tone, and who we are speaking to. Weight it heavily: align headline, subhead, bullets, and CTA with those goals and that audience while staying truthful to the brand inferred from the site. If the brief is absent or empty, rely solely on the scraped site.
+
+If the USER CAMPAIGN BRIEF contains specific hard data (like prices, discounts, numbers, or specific offers), you MUST inject them into the headline, subhead, or bullet_points — use whichever field carries the message most clearly (e.g. a percent-off or price in the headline or a bullet; a bundle or deadline in the subhead). Do not omit, round away, or replace user-supplied figures with vague language unless the brief itself is ambiguous.
+
+Your job is to read the scraped website text and DYNAMICALLY infer:
+• The ACTUAL brand or business name (how customers would recognize them).
+• The CORE business or service (e.g. SaaS, plumbing, law firm, restaurant, publisher, clinic, e-commerce, agency, nonprofit — whatever truly matches the source).
+
+STRICT RULES — IGNORE and do NOT let these steer the brand story:
+• Legal boilerplate, terms of service, cookie notices, disclaimers.
+• Privacy policy content.
+• Accessibility statements-only pages (unless they are the sole signal — prefer product/service pages).
+Focus on real value propositions, offerings, and customer-facing copy.
+
+Then identify the prospect’s main PAIN POINT and the brand’s main SOLUTION or benefit.
+
+The deliverable feeds an HTML-based marketing layout (not a baked-in image overlay). Copy will be placed in the page as structured text; the image is a separate hero/background asset.
+
+LANGUAGE: Write headline, subhead, bullet_points, and cta entirely in natural, marketing-grade Hebrew. image_prompt must be in English (for DALL-E 3).
+
+Output ONLY valid JSON (no markdown, no commentary, no extra keys) with exactly these keys:
+
+- headline (string): A punchy Hebrew line for the main title. You may use a question or a bold statement; weave in the inferred brand or core service where it fits naturally. Default to hero headline length; if the brief includes prices, discounts, or concrete offers, you may extend modestly so those facts fit without feeling cramped (still one line of thought, not a paragraph).
+- subhead (string): One short Hebrew sentence — the main solution, outcome, or differentiator. Confident and clear. If promotional specifics from the brief belong in the subhead, allow an extra short clause or slightly longer sentence so numbers and terms stay accurate and readable.
+- bullet_points (array): Exactly three strings. Each is a concise Hebrew benefit or feature that is SPECIFIC to this scraped business (derive from real offerings, audience, proof signals, or explicit brief details — not generic filler). When the brief names a deal, metric, or guarantee, reflect it in at least one bullet even if that bullet is a bit longer than usual. No duplicates; each bullet adds a distinct angle.
+- cta (string): Hebrew call to action, imperative, about 2–4 words.
+- brand_color (string): A single CSS hex color for the brand accent, exactly 7 characters: "#" plus six hexadecimal digits (e.g. "#1D4ED8"). Infer the dominant brand color from the website copy and context (product category, named colors, industry cues). If the site gives no clear color signal, choose a vibrant, professional accent that fits the brand personality (still as valid hex).
+- image_prompt (string): One detailed ENGLISH prompt for DALL-E 3. Describe a strong hero/background image that matches the identified industry (e.g. workshop and tools for trades; professional office for legal; appetizing setting for food; calm space for wellness; modern workspace for software — adapt to the actual business). The prompt MUST always weave in these exact sensibility keywords/phrases (or very close equivalents): "bright daylight lighting", "clean white or light-gray background", "airy modern aesthetic", "optimistic vibe". Avoid dark, moody, low-key, neon-heavy, or "cyberpunk" tech visuals — no dramatic night scenes, heavy shadows as the dominant look, or dystopian/futuristic noir; the image must harmonize with a light-themed web layout. No requirement to reserve empty zones for text — HTML handles typography.
+
+*** image_prompt — NON-NEGOTIABLE (highest priority) ***
+""" + DALLE_IMAGE_API_ENFORCEMENT + """
+You MUST bake the above into image_prompt: the scene is NEVER allowed to include people, faces, silhouettes, crowds, workers, customers, hands, or any living figures—only empty spaces, props, food/drink/plants/objects without holders, or fully abstract backdrops. Prefer compositions where pseudo-text cannot appear — abstract textures, nature, architecture without signs, heavily blurred backgrounds, macro details, empty/minimal surfaces, or depth-of-field that keeps screens/devices out of focus. Avoid prompts that invite laptops, phones, monitors, whiteboards, posters, books with visible pages, or wall art with glyphs. Reiterate in your own words: NO text, NO numbers, NO UI gibberish, NO logos, watermarks, or readable signage anywhere."""
+
+
+def _require_api_key() -> None:
+    if not os.environ.get("OPENAI_API_KEY"):
+        print(
+            "[creative_agent] ERROR: Set OPENAI_API_KEY "
+            "(e.g. PowerShell: $env:OPENAI_API_KEY='your-key').",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+
+def _read_scraped() -> str:
+    if not SCRAPED_PATH.is_file():
+        raise RuntimeError(f"[creative_agent] ERROR: {SCRAPED_PATH} not found.")
+    text = SCRAPED_PATH.read_text(encoding="utf-8").strip()
+    if not text:
+        raise RuntimeError("[creative_agent] ERROR: scraped content is empty.")
+    return text
+
+
+def fetch_banner_payload(client: OpenAI, user_content: str) -> dict:
+    print("[creative_agent] Step 1/3: Requesting copy + image brief from GPT-4o (Elite Marketing Agency)…")
+    response = client.chat.completions.create(
+        model="gpt-4o",
+        messages=[
+            {"role": "system", "content": ELITE_AGENCY_SYSTEM},
+            {"role": "user", "content": user_content[:16000]},
+        ],
+        response_format={"type": "json_object"},
+    )
+    text = response.choices[0].message.content
+    if not text:
+        raise RuntimeError("[creative_agent] ERROR: Empty response from GPT-4o.")
+    print("[creative_agent] Step 1/3: Parsing JSON…")
+    data = json.loads(text)
+    for key in ("headline", "subhead", "cta", "image_prompt", "brand_color"):
+        if key not in data or not str(data[key]).strip():
+            raise RuntimeError(f"[creative_agent] ERROR: Missing or empty JSON key {key!r}.")
+    bullets = data.get("bullet_points")
+    if not isinstance(bullets, list):
+        raise RuntimeError(
+            "[creative_agent] ERROR: JSON key 'bullet_points' must be an array of exactly 3 strings."
+        )
+    if len(bullets) != 3:
+        raise RuntimeError(
+            f"[creative_agent] ERROR: 'bullet_points' must contain exactly 3 items, got {len(bullets)}."
+        )
+    normalized: list[str] = []
+    for i, item in enumerate(bullets):
+        if not isinstance(item, str) or not item.strip():
+            raise RuntimeError(
+                f"[creative_agent] ERROR: 'bullet_points'[{i}] must be a non-empty string."
+            )
+        normalized.append(item.strip())
+    data["bullet_points"] = normalized
+
+    hex_color = str(data["brand_color"]).strip()
+    if not hex_color.startswith("#"):
+        hex_color = "#" + hex_color
+    if not re.fullmatch(r"#[0-9A-Fa-f]{6}", hex_color):
+        raise RuntimeError(
+            f"[creative_agent] ERROR: 'brand_color' must be #RRGGBB hex, got {data['brand_color']!r}."
+        )
+    data["brand_color"] = hex_color.upper()
+
+    print(
+        "[creative_agent] Step 1/3: OK — headline, subhead, bullet_points (3), cta, brand_color, image_prompt received."
+    )
+    return data
+
+
+def generate_background_dalle3(
+    client: OpenAI, image_prompt: str, *, output_path: Path | None = None
+) -> Path:
+    dest = Path(output_path) if output_path is not None else BACKGROUND_PNG_PATH
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    print("[creative_agent] Step 2/3: Generating background with DALL-E 3 (1024×1024)…")
+    combined_prompt = f"{image_prompt.strip()}\n\n{DALLE_IMAGE_API_ENFORCEMENT}"
+    img_response = client.images.generate(
+        model="dall-e-3",
+        prompt=combined_prompt,
+        size="1024x1024",
+    )
+    image_url = img_response.data[0].url
+    if not image_url:
+        raise RuntimeError("[creative_agent] ERROR: DALL-E returned no image URL.")
+    print("[creative_agent] Step 2/3: Downloading image from OpenAI URL…")
+    img_req = requests.get(image_url, timeout=120)
+    img_req.raise_for_status()
+    dest.write_bytes(img_req.content)
+    print(f"[creative_agent] Step 2/3: Wrote {dest}.")
+    return dest
+
+
+def main() -> None:
+    _require_api_key()
+    try:
+        user_content = _read_scraped()
+    except RuntimeError as exc:
+        print(str(exc), file=sys.stderr)
+        sys.exit(1)
+    client = OpenAI()
+
+    try:
+        payload = fetch_banner_payload(client, user_content)
+        generate_background_dalle3(client, str(payload["image_prompt"]))
+    except RuntimeError as exc:
+        print(str(exc), file=sys.stderr)
+        sys.exit(1)
+
+    print(f"[creative_agent] Step 3/3: Saving payload to {CAMPAIGN_JSON_PATH}…")
+    with CAMPAIGN_JSON_PATH.open("w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False, indent=2)
+
+    print(
+        "[creative_agent] Done — creative_campaign.json and background.png ready. "
+        "Run main.py with OPENAI_API_KEY for background.png + creative_campaign.json (live editor / client export)."
+    )
+
+
+if __name__ == "__main__":
+    main()
+
+
+================================================================================
+FILE: database.py
+================================================================================
+
+"""SQLAlchemy engine, session factory, and FastAPI DB dependency."""
+
+from __future__ import annotations
+
+import os
+
+from sqlalchemy import create_engine
+from sqlalchemy.orm import DeclarativeBase, sessionmaker
+
+DATABASE_URL = os.environ.get("DATABASE_URL")
+if not DATABASE_URL:
+    raise RuntimeError(
+        "DATABASE_URL is not set. Add it to your .env (e.g. mysql+pymysql://user:pass@localhost/dbname)."
+    )
+
+engine = create_engine(
+    DATABASE_URL,
+    pool_pre_ping=True,
+)
+
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+
+class Base(DeclarativeBase):
+    pass
+
+
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+
+================================================================================
+FILE: export_context.py
+================================================================================
+
+"""
+Export project context for AI assistants and other tools.
+
+Scans the *current working directory* (where you run the command) and writes
+``project_context.txt`` with:
+
+  - A tree of the project structure
+  - The full text of every ``.py`` file (recursive)
+  - The contents of every ``banner_data.json`` found (recursive)
+
+Always ignored: ``.git``, ``__pycache__`` (as requested).
+
+Also skipped so the export stays usable (huge / non-source trees): ``node_modules``,
+``.venv``, ``venv``, ``dist``, ``build``, ``.eggs``, and directories whose names end with
+``.egg-info``.
+
+Usage (from the project folder):
+
+    cd c:\\path\\to\\your\\project
+    python path/to/export_context.py
+
+To scan the folder that contains this script instead of cwd:
+
+    python export_context.py --root .
+"""
+
+from __future__ import annotations
+
+import argparse
+import os
+from datetime import datetime, timezone
+from pathlib import Path
+
+RULE = "=" * 80
+IGNORE_DIR_NAMES = frozenset({
+    ".git",
+    "__pycache__",
+    "node_modules",
+    ".venv",
+    "venv",
+    "dist",
+    "build",
+    ".eggs",
+})
+OUTPUT_NAME = "project_context.txt"
+
+
+def _dir_skipped(name: str) -> bool:
+    if name in IGNORE_DIR_NAMES:
+        return True
+    if name.endswith(".egg-info"):
+        return True
+    return False
+
+
+def project_tree_lines(directory: Path, prefix: str = "") -> list[str]:
+    """ASCII tree of files and dirs under ``directory``, skipping ignored dirs."""
+    lines: list[str] = []
+    try:
+        children = sorted(
+            [p for p in directory.iterdir() if not _dir_skipped(p.name)],
+            key=lambda p: (not p.is_dir(), p.name.lower()),
+        )
+    except OSError as exc:
+        return [f"{prefix}[cannot read: {exc}]"]
+
+    for i, path in enumerate(children):
+        last = i == len(children) - 1
+        branch = "└── " if last else "├── "
+        lines.append(f"{prefix}{branch}{path.name}")
+        if path.is_dir():
+            ext = "    " if last else "│   "
+            lines.extend(project_tree_lines(path, prefix + ext))
+    return lines
+
+
+def structure_section(root: Path) -> str:
+    top = f"{root.name}/"
+    body = project_tree_lines(root)
+    return top + ("\n" + "\n".join(body) if body else "")
+
+
+def walk_filtered(root: Path):
+    """Like os.walk but never descends into ignored directory names."""
+    root_s = os.fspath(root.resolve())
+    for dirpath, dirnames, filenames in os.walk(root_s):
+        dirnames[:] = [d for d in dirnames if not _dir_skipped(d)]
+        yield dirpath, dirnames, filenames
+
+
+def iter_py_files(root: Path) -> list[Path]:
+    paths: list[Path] = []
+    for dirpath, _dirnames, filenames in walk_filtered(root):
+        for name in filenames:
+            if name.endswith(".py"):
+                paths.append(Path(dirpath) / name)
+    return sorted(paths)
+
+
+def iter_banner_data_json(root: Path) -> list[Path]:
+    paths: list[Path] = []
+    for dirpath, _dirnames, filenames in walk_filtered(root):
+        if "banner_data.json" in filenames:
+            paths.append(Path(dirpath) / "banner_data.json")
+    return sorted(paths)
+
+
+def read_utf8(path: Path) -> str:
+    return path.read_text(encoding="utf-8", errors="replace")
+
+
+def header_block(title: str) -> list[str]:
+    return ["", RULE, title, RULE, ""]
+
+
+def file_block(label: str, content: str) -> list[str]:
+    return [
+        "",
+        RULE,
+        f"FILE: {label}",
+        RULE,
+        "",
+        content.rstrip("\n"),
+        "",
+    ]
+
+
+def parse_args() -> argparse.Namespace:
+    p = argparse.ArgumentParser(description="Export project tree + Python + banner_data.json to one text file.")
+    p.add_argument(
+        "--root",
+        type=Path,
+        default=None,
+        help="Directory to scan (default: current working directory).",
+    )
+    p.add_argument(
+        "-o",
+        "--output",
+        type=Path,
+        default=None,
+        help=f"Output file path (default: <root>/{OUTPUT_NAME}).",
+    )
+    return p.parse_args()
+
+
+def main() -> None:
+    args = parse_args()
+    root = (args.root or Path.cwd()).resolve()
+    out = (args.output or (root / OUTPUT_NAME)).resolve()
+
+    if not root.is_dir():
+        raise SystemExit(f"Not a directory: {root}")
+
+    stamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    parts: list[str] = [
+        "PROJECT CONTEXT EXPORT",
+        f"Generated (UTC): {stamp}",
+        f"Root (scanned): {root}",
+        f"Output: {out}",
+        "",
+        "Includes: project structure tree, all .py files under root, and all banner_data.json files.",
+        "Ignored: .git, __pycache__, node_modules, venv/.venv, dist, build, .eggs, *.egg-info",
+        "",
+    ]
+
+    parts.extend(header_block("SECTION: PROJECT STRUCTURE"))
+    parts.append(structure_section(root))
+
+    py_paths = iter_py_files(root)
+    parts.extend(header_block(f"SECTION: PYTHON FILES ({len(py_paths)} file(s))"))
+    for path in py_paths:
+        rel = path.relative_to(root).as_posix()
+        parts.extend(file_block(rel, read_utf8(path)))
+
+    json_paths = iter_banner_data_json(root)
+    parts.extend(header_block(f"SECTION: banner_data.json ({len(json_paths)} file(s))"))
+    if json_paths:
+        for path in json_paths:
+            rel = path.relative_to(root).as_posix()
+            parts.extend(file_block(rel, read_utf8(path)))
+    else:
+        parts.extend(
+            file_block(
+                "banner_data.json (none found)",
+                "[No banner_data.json found under the scanned root.]",
+            )
+        )
+
+    out.write_text("\n".join(parts).rstrip() + "\n", encoding="utf-8")
+    print(f"Wrote {out}")
+
+
+if __name__ == "__main__":
+    main()
+
+
+================================================================================
+FILE: generate_copy.py
+================================================================================
+
+"""
+Read scraped_content.txt and ask GPT-4o for social banner copy (JSON).
+Save banner_data.json, generate DALL-E 3 background, save background.png.
+Requires: pip install openai requests
+Set OPENAI_API_KEY in the environment (never commit keys to the repo).
+"""
+
+import json
+import os
+import sys
+from pathlib import Path
+
+import requests
+from openai import OpenAI
+
+SCRAPED_PATH = Path(__file__).resolve().parent / "scraped_content.txt"
+BANNER_JSON_PATH = Path(__file__).resolve().parent / "banner_data.json"
+BACKGROUND_PNG_PATH = Path(__file__).resolve().parent / "background.png"
+
+SYSTEM_PROMPT = (
+    "You are an expert marketing copywriter. Analyze the provided text from a "
+    "business website. Create copy for a social media banner. Output ONLY a valid "
+    "JSON object with 3 keys: headline (a catchy short Hebrew title, max 6 words), "
+    "cta (call to action in Hebrew, max 4 words), and image_prompt (a detailed prompt "
+    "in English for an AI image generator to create a professional background image "
+    "WITHOUT any text, matching the business vibe)."
+)
+
+
+def main() -> None:
+    if not os.environ.get("OPENAI_API_KEY"):
+        print(
+            "Error: Set OPENAI_API_KEY (e.g. in PowerShell: "
+            "$env:OPENAI_API_KEY='your-key-here').",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    if not SCRAPED_PATH.is_file():
+        print(f"Error: {SCRAPED_PATH} not found.", file=sys.stderr)
+        sys.exit(1)
+
+    user_content = SCRAPED_PATH.read_text(encoding="utf-8")
+    if not user_content.strip():
+        print("Error: scraped content is empty.", file=sys.stderr)
+        sys.exit(1)
+
+    client = OpenAI()
+
+    print("Requesting banner copy from gpt-4o…")
+    response = client.chat.completions.create(
+        model="gpt-4o",
+        messages=[
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": user_content},
+        ],
+        response_format={"type": "json_object"},
+    )
+
+    text = response.choices[0].message.content
+    if not text:
+        print("Error: Empty response from API.", file=sys.stderr)
+        sys.exit(1)
+
+    print("Parsing JSON response…")
+    data = json.loads(text)
+
+    print(f"Saving banner data to {BANNER_JSON_PATH}…")
+    with BANNER_JSON_PATH.open("w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
+    print("Generated banner JSON:")
+    print(json.dumps(data, ensure_ascii=False, indent=2))
+
+    try:
+        image_prompt = data["image_prompt"]
+    except KeyError:
+        print("Error: JSON missing required key 'image_prompt'.", file=sys.stderr)
+        sys.exit(1)
+
+    print("Calling DALL-E 3 (1024×1024)…")
+    img_response = client.images.generate(
+        model="dall-e-3",
+        prompt=image_prompt,
+        size="1024x1024",
+    )
+    image_url = img_response.data[0].url
+    if not image_url:
+        print("Error: DALL-E response had no image URL.", file=sys.stderr)
+        sys.exit(1)
+
+    print("Downloading image from URL…")
+    img_req = requests.get(image_url, timeout=120)
+    img_req.raise_for_status()
+
+    print(f"Writing {BACKGROUND_PNG_PATH}…")
+    BACKGROUND_PNG_PATH.write_bytes(img_req.content)
+    print("Done.")
+
+
+if __name__ == "__main__":
+    main()
+
+
+================================================================================
+FILE: html_renderer.py
+================================================================================
+
+"""
+Render a premium full-bleed RTL marketing banner as HTML (Tailwind CDN, Heebo, Font Awesome).
+"""
+
+from __future__ import annotations
+
+import html
+import re
+from pathlib import Path
+from typing import Any, Mapping
+
+DEFAULT_OUTPUT = Path(__file__).resolve().parent / "banner_temp.html"
+
+_DEFAULT_BRAND = "#4F46E5"
+
+# Font Awesome icon classes for the three bullets
+_BULLET_ICONS = (
+    "fa-solid fa-star",
+    "fa-solid fa-bolt",
+    "fa-solid fa-shield-halved",
+)
+
+_HEX_RE = re.compile(r"^#?([0-9A-Fa-f]{6})$")
+
+
+def _normalize_brand_hex(raw: Any) -> str:
+    s = str(raw or "").strip()
+    m = _HEX_RE.match(s)
+    if not m:
+        return _DEFAULT_BRAND
+    return f"#{m.group(1).upper()}"
+
+
+def _hex_to_rgb(hex_color: str) -> tuple[int, int, int]:
+    h = hex_color.lstrip("#")
+    if len(h) != 6:
+        return (79, 70, 229)
+    return int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+
+
+def _asset_url(asset: Path, html_path: Path) -> str:
+    """Path usable in HTML (relative to html file, or file URI if needed)."""
+    import os
+
+    asset = asset.resolve()
+    html_dir = html_path.parent.resolve()
+    try:
+        rel = Path(os.path.relpath(asset, html_dir))
+    except ValueError:
+        return asset.as_uri()
+    return rel.as_posix()
+
+
+def render_banner_html(
+    data: Mapping[str, Any],
+    background_path: str | Path,
+    logo_path: str | Path,
+    output_path: str | Path | None = None,
+) -> str:
+    """
+    Build a full-bleed hero banner HTML and save to ``banner_temp.html`` by default.
+
+    ``data`` must include: headline, subhead, bullet_points (3 strings), cta.
+    Optional: brand_color (#RRGGBB) for CTA, bullet accents, and gradient overlay.
+
+    Layout: background image covers the entire viewport; a left→right gradient overlay
+    (heavier toward the physical right) keeps RTL copy readable; content is a premium
+    single-column block aligned to the start edge (right under ``dir=rtl``).
+    """
+    headline = html.escape(str(data["headline"]).strip())
+    subhead = html.escape(str(data["subhead"]).strip())
+    cta = html.escape(str(data["cta"]).strip())
+    bullets = data["bullet_points"]
+    if not isinstance(bullets, (list, tuple)) or len(bullets) != 3:
+        raise ValueError("data['bullet_points'] must be a sequence of exactly 3 strings")
+
+    brand_hex = _normalize_brand_hex(data.get("brand_color"))
+    r, g, b = _hex_to_rgb(brand_hex)
+    brand_hex_esc = html.escape(brand_hex, quote=True)
+
+    # Readable panel on the right: dark + brand wash, fading to transparent on the left.
+    overlay_gradient = (
+        f"linear-gradient(to left, "
+        f"rgba(15,23,42,0.93) 0%, "
+        f"rgba(15,23,42,0.78) 18%, "
+        f"rgba({r},{g},{b},0.55) 42%, "
+        f"rgba({r},{g},{b},0.12) 62%, "
+        f"transparent 78%)"
+    )
+    overlay_esc = html.escape(overlay_gradient, quote=True)
+
+    bg = Path(background_path)
+    logo = Path(logo_path)
+    out = Path(output_path) if output_path else DEFAULT_OUTPUT
+    out.parent.mkdir(parents=True, exist_ok=True)
+
+    bg_url = html.escape(_asset_url(bg, out), quote=True)
+    logo_url = html.escape(_asset_url(logo, out), quote=True)
+
+    bullet_rows: list[str] = []
+    for i, raw in enumerate(bullets):
+        text = html.escape(str(raw).strip())
+        icon = _BULLET_ICONS[i]
+        bullet_rows.append(
+            f"""<li class="flex items-start gap-4">
+      <span
+        class="flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl shadow-lg ring-1 ring-white/10"
+        style="background: linear-gradient(145deg, rgba({r},{g},{b},0.45), rgba({r},{g},{b},0.2)); color: {brand_hex};"
+        aria-hidden="true"
+      >
+        <i class="{icon} text-xl"></i>
+      </span>
+      <span class="min-w-0 flex-1 pt-2 text-base font-semibold leading-snug text-white/95 md:text-lg">{text}</span>
+    </li>"""
+        )
+    bullets_html = "\n    ".join(bullet_rows)
+
+    doc = f"""<!DOCTYPE html>
+<html lang="he" dir="rtl" class="h-full antialiased">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>Banner</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Heebo:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css" crossorigin="anonymous" referrerpolicy="no-referrer">
+  <script>
+    tailwind.config = {{
+      theme: {{
+        extend: {{
+          fontFamily: {{ sans: ["Heebo", "ui-sans-serif", "system-ui", "sans-serif"] }}
+        }}
+      }}
+    }};
+  </script>
+</head>
+<body class="m-0 min-h-screen bg-slate-900 font-sans text-white">
+  <div class="relative min-h-screen w-full overflow-hidden">
+    <div
+      class="absolute inset-0 bg-cover bg-center bg-no-repeat"
+      style="background-image: url('{bg_url}');"
+      role="img"
+      aria-label="רקע"
+    ></div>
+    <div
+      class="pointer-events-none absolute inset-0"
+      style="background: {overlay_esc};"
+      aria-hidden="true"
+    ></div>
+    <div class="pointer-events-none absolute inset-0 bg-gradient-to-t from-black/50 via-transparent to-black/20" aria-hidden="true"></div>
+
+    <div class="relative z-10 flex min-h-screen flex-col px-6 py-10 md:px-12 md:py-14 lg:px-16 lg:py-16">
+      <div class="ms-auto flex w-full max-w-xl flex-col">
+        <div class="flex justify-center md:justify-start">
+          <img
+            src="{logo_url}"
+            alt="לוגו"
+            class="h-16 w-auto max-w-[240px] object-contain drop-shadow-lg md:h-[4.75rem]"
+            width="240"
+            height="80"
+            style="filter: drop-shadow(0 4px 24px rgba(0,0,0,0.35));"
+          />
+        </div>
+        <header class="mt-10 space-y-5 text-center md:mt-12 md:text-right">
+          <h1 class="text-3xl font-extrabold leading-[1.15] tracking-tight text-white md:text-4xl lg:text-5xl" style="text-shadow: 0 2px 32px rgba(0,0,0,0.45);">
+            {headline}
+          </h1>
+          <p class="text-lg font-medium leading-relaxed text-white/90 md:text-xl">
+            {subhead}
+          </p>
+        </header>
+        <div class="mt-auto flex w-full flex-col gap-8 pt-12 md:pt-16">
+          <ul class="m-0 flex list-none flex-col gap-5 p-0" role="list">
+    {bullets_html}
+          </ul>
+          <div class="w-full pb-2 md:max-w-md md:ms-0">
+            <a
+              href="#"
+              class="flex w-full items-center justify-center rounded-2xl px-8 py-4 text-lg font-bold text-white shadow-xl transition focus:outline-none focus:ring-2 focus:ring-white/40 focus:ring-offset-2 focus:ring-offset-slate-900/0"
+              style="background-color: {brand_hex_esc}; box-shadow: 0 12px 40px rgba({r},{g},{b},0.45);"
+            >
+              {cta}
+            </a>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</body>
+</html>
+"""
+    out.write_text(doc, encoding="utf-8")
+    return doc
+
+
+================================================================================
+FILE: main.py
+================================================================================
+
+"""
+Crawl up to 10 unique internal pages; save title and <p> text to scraped_content.txt.
+Skips legal/accessibility junk links; downloads homepage logo to logo.png.
+Uses Selenium (headless Chrome) for JS-rendered sites (WordPress, Shopify, SPAs, custom stacks).
+Requires: pip install selenium requests pillow openai
+Chrome must be installed; Selenium Manager resolves ChromeDriver automatically.
+After crawl, if OPENAI_API_KEY is set and logo.png exists, runs creative_agent: OpenAI JSON,
+DALL-E background.png, and creative_campaign.json (no HTML/screenshot step).
+"""
+from __future__ import annotations
+
+import io
+import json
+import os
+import random
+import sys
+import time
+from collections import deque
+from pathlib import Path
+from urllib.parse import unquote, urljoin, urlparse, urlunparse
+
+import requests
+from PIL import Image, UnidentifiedImageError
+from selenium import webdriver
+from selenium.common.exceptions import WebDriverException
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.common.by import By
+
+BASE_DIR = Path(__file__).resolve().parent
+MAX_PAGES = 10
+OUTPUT_FILE = BASE_DIR / "scraped_content.txt"
+LOGO_FILE = BASE_DIR / "logo.png"
+SEPARATOR = "=" * 80
+RENDER_WAIT_SECONDS = 10
+
+# Case-insensitive for ASCII; Hebrew phrases matched as literal substrings.
+JUNK_KEYWORDS = (
+    "privacy",
+    "terms",
+    "policy",
+    "accessibility",
+    "cookie",
+    "תקנון",
+    "פרטיות",
+    "נגישות",
+    "תנאי שימוש",
+)
+
+REQUEST_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/131.0.0.0 Safari/537.36"
+    ),
+    "Accept": "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
+}
+
+
+def normalize_url(url: str) -> str:
+    """Add https:// when no scheme is given."""
+    url = url.strip()
+    if not url:
+        return url
+    parsed = urlparse(url)
+    if not parsed.scheme:
+        return "https://" + url
+    return url
+
+
+def strip_fragment(url: str) -> str:
+    """Remove #fragment for stable deduplication."""
+    p = urlparse(url)
+    return urlunparse((p.scheme, p.netloc, p.path or "/", p.params, p.query, ""))
+
+
+def same_site(url: str, base_netloc: str) -> bool:
+    """True if url is http(s) and host matches the crawl root (internal link)."""
+    p = urlparse(url)
+    if p.scheme not in ("http", "https"):
+        return False
+    return p.netloc.lower() == base_netloc.lower()
+
+
+def link_contains_junk(url: str, anchor_text: str) -> bool:
+    """
+    True if URL (decoded) or visible anchor/label text should be excluded from crawl.
+    English keywords: case-insensitive. Hebrew: substring match on decoded URL and anchor.
+    """
+    decoded_url = unquote(url)
+    haystacks = (
+        decoded_url.lower(),
+        anchor_text.lower(),
+        decoded_url,
+        anchor_text,
+    )
+    for kw in JUNK_KEYWORDS:
+        if not kw:
+            continue
+        ascii_kw = kw.isascii()
+        for h in haystacks:
+            if ascii_kw:
+                if kw in h.lower():
+                    return True
+            else:
+                if kw in h:
+                    return True
+    return False
+
+
+def format_page_block(page_url: str, title: str, paragraphs: list[str]) -> str:
+    """One nicely separated section for the output file."""
+    lines = [
+        SEPARATOR,
+        f"URL: {page_url}",
+        SEPARATOR,
+        f"Title: {title}",
+        "",
+        "Paragraphs (<p>):",
+    ]
+    if paragraphs:
+        lines.append("")
+        lines.append("\n\n".join(paragraphs))
+    else:
+        lines.append("(no <p> tags with text found)")
+    lines.append("")
+    lines.append("")
+    return "\n".join(lines)
+
+
+def build_headless_chrome() -> webdriver.Chrome:
+    options = Options()
+    options.add_argument("--headless=new")
+    options.add_argument("--disable-gpu")
+    options.add_argument("--no-sandbox")
+    options.add_argument("--disable-dev-shm-usage")
+    options.add_argument("--window-size=1920,1080")
+    options.add_argument(
+        "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+    )
+    return webdriver.Chrome(options=options)
+
+
+def run_agency_banner_pipeline(work_dir: Path | None = None) -> None:
+    """
+    GPT-4o + DALL-E 3 (via creative_agent): writes creative_campaign.json,
+    background.png, and uses existing logo.png. No HTML render or Selenium screenshot.
+
+    If ``work_dir`` is set, all artifacts live under that directory (for API jobs).
+    When ``work_dir`` is set, missing scraped content or logo raises ``RuntimeError``.
+    """
+    from openai import OpenAI
+
+    from creative_agent import fetch_banner_payload, generate_background_dalle3
+
+    root = work_dir if work_dir is not None else BASE_DIR
+    output_file = root / "scraped_content.txt"
+    logo_file = root / "logo.png"
+    background_png = root / "background.png"
+    campaign_json = root / "creative_campaign.json"
+
+    if work_dir is not None:
+        work_dir.mkdir(parents=True, exist_ok=True)
+
+    if not output_file.is_file() or not output_file.read_text(encoding="utf-8").strip():
+        msg = "Agency banner: skipped (no scraped content)."
+        if work_dir is not None:
+            raise RuntimeError(msg)
+        print(msg, file=sys.stderr)
+        return
+    if not logo_file.is_file():
+        msg = (
+            "Agency banner: skipped (logo.png missing; homepage logo was not saved)."
+        )
+        if work_dir is not None:
+            raise RuntimeError(msg)
+        print(msg, file=sys.stderr)
+        return
+
+    print("Agency banner: requesting copy + generating background (OpenAI)...")
+    client = OpenAI()
+    user_content = output_file.read_text(encoding="utf-8")
+    payload = fetch_banner_payload(client, user_content)
+    generate_background_dalle3(
+        client, str(payload["image_prompt"]), output_path=background_png
+    )
+
+    with campaign_json.open("w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False, indent=2)
+
+    if not background_png.is_file():
+        err = "background.png was not created."
+        if work_dir is not None:
+            raise RuntimeError(err)
+        print(f"[main] ERROR: {err}", file=sys.stderr)
+        return
+
+    print(f"Agency banner: saved {campaign_json.name} and {background_png.name}")
+
+
+def extract_title_and_paragraphs(driver: webdriver.Chrome) -> tuple[str, list[str]]:
+    """Return document title and non-empty stripped text from all <p> elements in the live DOM."""
+    title_text = (driver.title or "").strip()
+    if not title_text:
+        title_text = "(no title found)"
+
+    paras = driver.find_elements(By.TAG_NAME, "p")
+    texts: list[str] = []
+    for p in paras:
+        t = (p.text or "").strip()
+        if t:
+            texts.append(t)
+    return title_text, texts
+
+
+def _anchor_label(el) -> str:
+    parts = [
+        (el.text or "").strip(),
+        (el.get_attribute("aria-label") or "").strip(),
+        (el.get_attribute("title") or "").strip(),
+    ]
+    return " ".join(p for p in parts if p)
+
+
+def discover_internal_links(driver: webdriver.Chrome, base_host: str) -> list[str]:
+    """Same-site http(s) hrefs only; skip junk URLs and junk anchor text (blocklist)."""
+    current = driver.current_url
+    found: list[str] = []
+    for el in driver.find_elements(By.CSS_SELECTOR, "a[href]"):
+        href = el.get_attribute("href")
+        if not href:
+            continue
+        absolute = strip_fragment(urljoin(current, href))
+        if not same_site(absolute, base_host):
+            continue
+        label = _anchor_label(el)
+        if link_contains_junk(absolute, label):
+            continue
+        found.append(absolute)
+    return found
+
+
+def _resolve_img_url(driver: webdriver.Chrome, img) -> str | None:
+    """Best-effort absolute image URL from src, lazy attrs, or srcset."""
+    base = driver.current_url
+    src = (img.get_attribute("src") or "").strip()
+    if src.startswith("data:"):
+        src = ""
+    if not src:
+        for attr in ("data-src", "data-lazy-src", "data-original", "data-srcset"):
+            v = (img.get_attribute(attr) or "").strip()
+            if v and not v.startswith("data:"):
+                src = v
+                break
+    if not src:
+        srcset = (img.get_attribute("srcset") or "").strip()
+        if srcset:
+            first = srcset.split(",")[0].strip()
+            src = first.split()[0] if first else ""
+    if not src or src.startswith("data:"):
+        return None
+    return urljoin(base, src)
+
+
+def _img_element_priority(img) -> int:
+    """Higher = stronger logo candidate."""
+    score = 0
+    try:
+        if img.find_elements(By.XPATH, "./ancestor::header"):
+            score += 100
+        if img.find_elements(By.XPATH, "./ancestor::nav"):
+            score += 90
+    except WebDriverException:
+        pass
+
+    cls = (img.get_attribute("class") or "").lower()
+    eid = (img.get_attribute("id") or "").lower()
+    alt = (img.get_attribute("alt") or "").lower()
+    src = (img.get_attribute("src") or "").lower()
+    blob = f"{cls} {eid} {alt} {src}"
+    if "custom-logo" in cls or "site-logo" in cls:
+        score += 85
+    if "logo" in blob:
+        score += 50
+
+    try:
+        w = img.size.get("width", 0)
+        h = img.size.get("height", 0)
+        if w >= 80 and h >= 24:
+            score += 20
+        elif w < 16 or h < 16:
+            score -= 50
+    except WebDriverException:
+        pass
+
+    return score
+
+
+def extract_and_save_homepage_logo(driver: webdriver.Chrome, logo_file: Path) -> bool:
+    """
+    Heuristic logo detection (header/nav, logo in attributes, custom-logo / site-logo).
+    Download with requests; save as RGBA PNG for correct transparency.
+    """
+    imgs: list = []
+    seen_ids: set[str] = set()
+
+    xpaths = [
+        "//header//img",
+        "//nav//img",
+        "//*[contains(translate(@class,'LOGO','logo'),'logo')]//img",
+        "//img[contains(translate(@class,'LOGO','logo'),'logo')]",
+        "//*[contains(@class,'custom-logo')]//img",
+        "//img[contains(@class,'custom-logo')]",
+        "//*[contains(@class,'site-logo')]//img",
+        "//img[contains(@class,'site-logo')]",
+    ]
+    for xp in xpaths:
+        try:
+            for img in driver.find_elements(By.XPATH, xp):
+                eid = img.id
+                if eid in seen_ids:
+                    continue
+                seen_ids.add(eid)
+                imgs.append(img)
+        except WebDriverException:
+            continue
+
+    for img in driver.find_elements(By.TAG_NAME, "img"):
+        eid = img.id
+        if eid in seen_ids:
+            continue
+        attrs = " ".join(
+            filter(
+                None,
+                [
+                    img.get_attribute("class"),
+                    img.get_attribute("id"),
+                    img.get_attribute("src"),
+                    img.get_attribute("alt"),
+                ],
+            )
+        ).lower()
+        if "logo" in attrs:
+            seen_ids.add(eid)
+            imgs.append(img)
+
+    scored: list[tuple[int, object]] = [(_img_element_priority(im), im) for im in imgs]
+    scored.sort(key=lambda x: -x[0])
+
+    tried_urls: set[str] = set()
+    for _pri, img in scored:
+        url = _resolve_img_url(driver, img)
+        if not url:
+            continue
+        if urlparse(url).scheme not in ("http", "https"):
+            continue
+        if url in tried_urls:
+            continue
+        tried_urls.add(url)
+        try:
+            r = requests.get(url, timeout=45, headers=REQUEST_HEADERS)
+            r.raise_for_status()
+            if len(r.content) < 80:
+                continue
+            try:
+                im = Image.open(io.BytesIO(r.content))
+                im = im.convert("RGBA")
+                im.save(logo_file, format="PNG", optimize=True)
+                print(f"Saved homepage logo to {logo_file}")
+                return True
+            except (UnidentifiedImageError, OSError, ValueError):
+                continue
+        except requests.RequestException:
+            continue
+
+    print("Warning: could not detect or download a homepage logo (logo.png not written).")
+    return False
+
+
+def crawl_from_url(
+    raw_url: str,
+    *,
+    work_dir: Path | None = None,
+    campaign_brief: str | None = None,
+) -> None:
+    """
+    Crawl up to MAX_PAGES internal pages; write scraped_content.txt and best-effort logo.png.
+    If ``work_dir`` is set, files are written there (isolated API jobs); otherwise BASE_DIR.
+    If ``campaign_brief`` is non-empty, it is appended to scraped_content.txt for the creative step.
+    """
+    output_file = work_dir / "scraped_content.txt" if work_dir else OUTPUT_FILE
+    logo_file = work_dir / "logo.png" if work_dir else LOGO_FILE
+    if work_dir is not None:
+        work_dir.mkdir(parents=True, exist_ok=True)
+
+    start_url = strip_fragment(normalize_url(raw_url))
+    base_host = urlparse(start_url).netloc.lower()
+    if not base_host:
+        raise ValueError("That URL is not valid.")
+
+    queue: deque[str] = deque([start_url])
+    visited: set[str] = set()
+    pages_fetched = 0
+    file_chunks: list[str] = []
+    logo_saved = False
+
+    print("Starting headless Chrome (Selenium Manager)...")
+    driver = build_headless_chrome()
+    try:
+        while queue and pages_fetched < MAX_PAGES:
+            url = queue.popleft()
+            if url in visited:
+                continue
+            visited.add(url)
+
+            if pages_fetched > 0:
+                time.sleep(random.uniform(1, 3))
+
+            try:
+                driver.get(url)
+            except WebDriverException as e:
+                print(f"Skip (navigation failed): {url} — {e}")
+                continue
+
+            time.sleep(RENDER_WAIT_SECONDS)
+
+            final_url = strip_fragment(driver.current_url)
+
+            try:
+                title_text, paragraph_texts = extract_title_and_paragraphs(driver)
+            except WebDriverException as e:
+                print(f"Skip (extract failed): {final_url} — {e}")
+                continue
+
+            file_chunks.append(format_page_block(final_url, title_text, paragraph_texts))
+            pages_fetched += 1
+            print(f"Scraped ({pages_fetched}/{MAX_PAGES}): {final_url}")
+
+            if not logo_saved:
+                logo_saved = extract_and_save_homepage_logo(driver, logo_file)
+
+            try:
+                for absolute in discover_internal_links(driver, base_host):
+                    if absolute not in visited:
+                        queue.append(absolute)
+            except WebDriverException as e:
+                print(f"Warning: link discovery failed on {final_url} — {e}")
+    finally:
+        driver.quit()
+
+    with open(output_file, "w", encoding="utf-8") as f:
+        f.write(f"Crawl summary: {pages_fetched} page(s), starting from {start_url}\n\n")
+        f.write("".join(file_chunks))
+        if campaign_brief and str(campaign_brief).strip():
+            f.write("\n\n")
+            f.write(SEPARATOR + "\n")
+            f.write(
+                "USER CAMPAIGN BRIEF (goals / target audience — provided by the user)\n"
+            )
+            f.write(SEPARATOR + "\n\n")
+            f.write(str(campaign_brief).strip() + "\n")
+
+    print(f"Done. Content saved to {output_file} ({pages_fetched} page(s)).")
+
+
+def main() -> None:
+    raw_url = input("Enter a URL: ")
+    if not raw_url.strip():
+        print("Error: URL cannot be empty.")
+        return
+
+    try:
+        crawl_from_url(raw_url)
+    except ValueError as e:
+        print(f"Error: {e}")
+        return
+
+    if os.environ.get("OPENAI_API_KEY"):
+        run_agency_banner_pipeline()
+    else:
+        print(
+            "Tip: set OPENAI_API_KEY to generate creative_campaign.json and background.png "
+            "after crawl (requires logo.png)."
+        )
+
+
+if __name__ == "__main__":
+    main()
+
+
+================================================================================
+FILE: models.py
+================================================================================
+
+"""ORM models: User and BannerTask."""
+
+from __future__ import annotations
+
+import uuid
+from datetime import datetime, timezone
+
+from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, String, Text, Uuid
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+
+from database import Base
+
+
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+class User(Base):
+    __tablename__ = "users"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    email: Mapped[str] = mapped_column(String(255), unique=True, nullable=False, index=True)
+    hashed_password: Mapped[str] = mapped_column(String(255), nullable=False)
+    is_superuser: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utc_now, nullable=False
+    )
+
+    tasks: Mapped[list["BannerTask"]] = relationship(
+        "BannerTask", back_populates="user", cascade="all, delete-orphan"
+    )
+
+
+class BannerTask(Base):
+    __tablename__ = "banner_tasks"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    status: Mapped[str] = mapped_column(String(64), nullable=False)
+    url: Mapped[str] = mapped_column(Text, nullable=False)
+    brief: Mapped[str | None] = mapped_column(Text, nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    headline: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    subhead: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    bullet_points: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    cta: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    brand_color: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    background_url: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    logo_url: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+
+    user: Mapped["User"] = relationship("User", back_populates="tasks")
+
+
+================================================================================
+SECTION: CLIENT SOURCE FILES (14)
+================================================================================
+
+
+================================================================================
+FILE: client/eslint.config.js
+================================================================================
+
+import js from '@eslint/js'
+import globals from 'globals'
+import reactHooks from 'eslint-plugin-react-hooks'
+import reactRefresh from 'eslint-plugin-react-refresh'
+import { defineConfig, globalIgnores } from 'eslint/config'
+
+export default defineConfig([
+  globalIgnores(['dist']),
+  {
+    files: ['**/*.{js,jsx}'],
+    extends: [
+      js.configs.recommended,
+      reactHooks.configs.flat.recommended,
+      reactRefresh.configs.vite,
+    ],
+    languageOptions: {
+      ecmaVersion: 2020,
+      globals: globals.browser,
+      parserOptions: {
+        ecmaVersion: 'latest',
+        ecmaFeatures: { jsx: true },
+        sourceType: 'module',
+      },
+    },
+    rules: {
+      'no-unused-vars': ['error', { varsIgnorePattern: '^[A-Z_]' }],
+    },
+  },
+])
+
+
+================================================================================
+FILE: client/index.html
+================================================================================
+
+<!doctype html>
+<html lang="he" dir="rtl">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>מחולל באנרים</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.jsx"></script>
+  </body>
+</html>
+
+
+================================================================================
+FILE: client/package.json
+================================================================================
+
+{
+  "name": "client",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "lint": "eslint .",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "axios": "^1.14.0",
+    "framer-motion": "^12.38.0",
+    "html-to-image": "^1.11.13",
+    "re-resizable": "^6.11.2",
+    "react": "^19.2.4",
+    "react-dom": "^19.2.4",
+    "react-router-dom": "^7.14.0"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.4",
+    "@tailwindcss/vite": "^4.2.2",
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^6.0.1",
+    "eslint": "^9.39.4",
+    "eslint-plugin-react-hooks": "^7.0.1",
+    "eslint-plugin-react-refresh": "^0.5.2",
+    "globals": "^17.4.0",
+    "tailwindcss": "^4.2.2",
+    "vite": "^8.0.1"
+  }
+}
+
+
+================================================================================
+FILE: client/src/api.js
+================================================================================
+
+import axios from 'axios'
+
+export const API_BASE_URL =
+  import.meta.env.VITE_API_URL?.replace(/\/$/, '') || 'http://localhost:8888'
+
+export const api = axios.create({
+  baseURL: API_BASE_URL,
+  headers: {
+    'Content-Type': 'application/json',
+  },
+})
+
+api.interceptors.request.use((config) => {
+  const token = localStorage.getItem('token')
+  if (token) {
+    config.headers.Authorization = `Bearer ${token}`
+  }
+  return config
+})
+
+export default api
+
+
+================================================================================
+FILE: client/src/App.css
+================================================================================
+
+.app {
+  max-width: 40rem;
+  margin: 0 auto;
+  padding: 2rem 1.25rem 3rem;
+  text-align: left;
+}
+
+.app--editor {
+  max-width: min(52rem, 100%);
+}
+
+.header {
+  margin-bottom: 1.75rem;
+}
+
+.header h1 {
+  margin: 0 0 0.5rem;
+  font-size: 1.75rem;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+
+.lede {
+  margin: 0;
+  color: var(--muted, #5c5f66);
+  font-size: 0.95rem;
+  line-height: 1.5;
+}
+
+.form {
+  margin-bottom: 2rem;
+}
+
+.label {
+  display: block;
+  font-size: 0.875rem;
+  font-weight: 500;
+  margin-bottom: 0.35rem;
+}
+
+.label--textarea {
+  margin-top: 1rem;
+}
+
+.row {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.input {
+  flex: 1 1 12rem;
+  min-width: 0;
+  padding: 0.55rem 0.75rem;
+  font-size: 1rem;
+  border: 1px solid var(--border, #d1d5db);
+  border-radius: 8px;
+  background: var(--input-bg, #fff);
+  color: inherit;
+}
+
+.input:focus {
+  outline: 2px solid var(--focus, #6366f1);
+  outline-offset: 1px;
+}
+
+.input:disabled {
+  opacity: 0.65;
+  cursor: not-allowed;
+}
+
+.textarea {
+  width: 100%;
+  min-height: 5.5rem;
+  margin-top: 0.25rem;
+  padding: 0.55rem 0.75rem;
+  font-size: 0.95rem;
+  line-height: 1.45;
+  border: 1px solid var(--border, #d1d5db);
+  border-radius: 8px;
+  background: var(--input-bg, #fff);
+  color: inherit;
+  resize: vertical;
+  box-sizing: border-box;
+}
+
+.textarea:focus {
+  outline: 2px solid var(--focus, #6366f1);
+  outline-offset: 1px;
+}
+
+.textarea:disabled {
+  opacity: 0.65;
+  cursor: not-allowed;
+}
+
+.btn {
+  padding: 0.55rem 1.1rem;
+  font-size: 1rem;
+  font-weight: 600;
+  border: none;
+  border-radius: 8px;
+  background: var(--btn, #4f46e5);
+  color: #fff;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.btn:hover:not(:disabled) {
+  filter: brightness(1.06);
+}
+
+.btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.hint {
+  margin: 0.75rem 0 0;
+  font-size: 0.8rem;
+  color: var(--muted, #6b7280);
+}
+
+.hint code {
+  font-size: 0.85em;
+  padding: 0.1em 0.35em;
+  border-radius: 4px;
+  background: var(--code-bg, #f3f4f6);
+}
+
+.error {
+  margin: 0.75rem 0 0;
+  color: #b91c1c;
+  font-size: 0.9rem;
+}
+
+.error.detail {
+  margin-top: 0.5rem;
+}
+
+.status-section,
+.result-section {
+  margin-top: 1.75rem;
+  padding-top: 1.5rem;
+  border-top: 1px solid var(--border, #e5e7eb);
+}
+
+.status-section h2,
+.result-section h2 {
+  margin: 0 0 0.75rem;
+  font-size: 1.1rem;
+  font-weight: 600;
+}
+
+.status-dl {
+  margin: 0;
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 0.35rem 1rem;
+  font-size: 0.9rem;
+}
+
+.status-dl dt {
+  margin: 0;
+  color: var(--muted, #6b7280);
+  font-weight: 500;
+}
+
+.status-dl dd {
+  margin: 0;
+}
+
+.status-dl code {
+  font-size: 0.85em;
+  word-break: break-all;
+}
+
+.status-value {
+  font-weight: 600;
+  text-transform: capitalize;
+}
+
+.canvas-hint {
+  margin: 0 0 1rem;
+  font-size: 0.88rem;
+  color: var(--muted, #5c5f66);
+  line-height: 1.45;
+}
+
+@media (prefers-color-scheme: dark) {
+  .input,
+  .textarea {
+    --input-bg: #1f2937;
+    --border: #374151;
+  }
+
+  .hint code {
+    background: #374151;
+  }
+
+  .error {
+    color: #fca5a5;
+  }
+}
+
+
+================================================================================
+FILE: client/src/App.jsx
+================================================================================
+
+import { Navigate, Route, Routes, useLocation } from 'react-router-dom'
+import BannerWorkspace from './BannerWorkspace.jsx'
+import { useAuth } from './AuthContext.jsx'
+import Login from './Login.jsx'
+
+function ProtectedRoute({ children }) {
+  const { user, ready } = useAuth()
+  const location = useLocation()
+
+  if (!ready) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-slate-950 text-slate-400 text-sm" dir="rtl" lang="he">
+        טוען…
+      </div>
+    )
+  }
+
+  if (!user) {
+    return <Navigate to="/login" replace state={{ from: location }} />
+  }
+
+  return children
+}
+
+export default function App() {
+  return (
+    <div className="min-h-screen" dir="rtl" lang="he">
+      <Routes>
+        <Route path="/login" element={<Login />} />
+        <Route
+          path="/"
+          element={
+            <ProtectedRoute>
+              <BannerWorkspace />
+            </ProtectedRoute>
+          }
+        />
+        <Route path="*" element={<Navigate to="/" replace />} />
+      </Routes>
+    </div>
+  )
+}
+
+
+================================================================================
+FILE: client/src/AuthContext.jsx
+================================================================================
+
+import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react'
+import api from './api.js'
+
+const AuthContext = createContext(null)
+
+const USER_KEY = 'user'
+
+export function AuthProvider({ children }) {
+  const [user, setUser] = useState(null)
+  const [ready, setReady] = useState(false)
+
+  useEffect(() => {
+    const token = localStorage.getItem('token')
+    const raw = localStorage.getItem(USER_KEY)
+    if (token && raw) {
+      try {
+        setUser(JSON.parse(raw))
+      } catch {
+        localStorage.removeItem(USER_KEY)
+        localStorage.removeItem('token')
+      }
+    }
+    setReady(true)
+  }, [])
+
+  const login = useCallback(async (email, password) => {
+    const body = new URLSearchParams()
+    body.set('username', email.trim())
+    body.set('password', password)
+
+    const { data } = await api.post('/auth/login', body, {
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    })
+
+    const accessToken = data?.access_token
+    if (!accessToken) {
+      throw new Error('No access token in response')
+    }
+
+    const normalizedEmail = email.trim().toLowerCase()
+    const nextUser = { email: normalizedEmail }
+
+    localStorage.setItem('token', accessToken)
+    localStorage.setItem(USER_KEY, JSON.stringify(nextUser))
+    setUser(nextUser)
+    return nextUser
+  }, [])
+
+  const logout = useCallback(() => {
+    localStorage.removeItem('token')
+    localStorage.removeItem(USER_KEY)
+    setUser(null)
+  }, [])
+
+  const value = useMemo(
+    () => ({
+      user,
+      ready,
+      login,
+      logout,
+      isAuthenticated: Boolean(user),
+    }),
+    [user, ready, login, logout],
+  )
+
+  return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>
+}
+
+export function useAuth() {
+  const ctx = useContext(AuthContext)
+  if (!ctx) {
+    throw new Error('useAuth must be used within an AuthProvider')
+  }
+  return ctx
+}
+
+
+================================================================================
+FILE: client/src/BannerCanvas.css
+================================================================================
+
+.banner-viewport {
+  width: 100%;
+  max-width: min(92vw, 720px);
+  margin: 0 auto;
+  aspect-ratio: 1 / 1;
+  position: relative;
+  background: #111;
+  border-radius: 12px;
+  overflow: hidden;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.18);
+}
+
+.banner-viewport-inner {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+}
+
+.banner-canvas {
+  /* position: absolute top-0 left-0 in JSX — avoids RTL viewport flipping scaled canvas */
+  transform-origin: top left;
+  color-scheme: light;
+  direction: ltr;
+  font-family: system-ui, 'Segoe UI', 'Helvetica Neue', Arial, sans-serif;
+}
+
+/* Export: explicit light canvas + white fallback (avoids black PNG from transparency / dark mode). */
+.banner-canvas.capture-mode {
+  color-scheme: light !important;
+  background-color: #ffffff !important;
+}
+
+.banner-canvas.capture-mode .banner-resize-handle-root {
+  visibility: hidden !important;
+  opacity: 0 !important;
+  pointer-events: none !important;
+}
+
+/* Backdrop + overlay: Tailwind in BannerCanvas.jsx */
+
+/* Block shell inside Resizable — no flex on layer fill (avoids column squish). */
+.banner-layer-inner {
+  width: 100%;
+  height: 100%;
+  box-sizing: border-box;
+  display: block;
+}
+
+.banner-text-shell {
+  box-sizing: border-box;
+  direction: rtl;
+  text-align: right;
+  unicode-bidi: isolate;
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.banner-layer {
+  box-sizing: border-box;
+  cursor: grab;
+  outline: 2px dashed transparent;
+  outline-offset: 2px;
+  border-radius: 4px;
+  transition:
+    outline-color 0.15s ease,
+    box-shadow 0.15s ease;
+}
+
+.banner-layer--text .banner-layer-inner,
+.banner-layer--cta .banner-layer-inner {
+  padding: 6px;
+}
+
+.banner-layer--logo .banner-layer-inner {
+  padding: 6px;
+}
+
+.banner-canvas:not(.capture-mode) .banner-layer:hover:not(.banner-layer--dragging) {
+  outline-color: rgba(255, 255, 255, 0.45);
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.12);
+}
+
+.banner-canvas:not(.capture-mode) .banner-layer.banner-layer--dragging {
+  outline-color: rgba(255, 255, 255, 0.92);
+  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.2);
+}
+
+.banner-canvas.capture-mode .banner-layer {
+  outline: none !important;
+  box-shadow: none !important;
+  cursor: default;
+}
+
+.banner-layer--text .banner-text,
+.banner-layer--text .banner-bullets,
+.banner-layer--cta .banner-text {
+  cursor: text;
+}
+
+.banner-layer--dragging.banner-layer--text .banner-text,
+.banner-layer--dragging.banner-layer--text .banner-bullets,
+.banner-layer--dragging.banner-layer--cta .banner-text {
+  cursor: grabbing !important;
+}
+
+.banner-layer-logo-img {
+  display: block;
+  max-width: 100%;
+  max-height: 100%;
+  width: auto;
+  height: auto;
+  object-fit: contain;
+  pointer-events: none;
+  user-select: none;
+}
+
+.banner-text {
+  width: 100%;
+  min-height: 1.2em;
+  outline: none;
+  cursor: text;
+  direction: rtl;
+  text-align: right;
+  color: #fff;
+  text-shadow:
+    0 0 1px rgba(0, 0, 0, 0.9),
+    0 2px 12px rgba(0, 0, 0, 0.65);
+  line-height: 1.25;
+  word-break: break-word;
+}
+
+.banner-headline {
+  font-size: 52px;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+}
+
+.banner-subhead {
+  font-size: 28px;
+  font-weight: 500;
+  opacity: 0.98;
+}
+
+.banner-bullets {
+  margin: 0;
+  padding: 0.35em 0 0.35em 1em;
+  list-style: disc;
+  list-style-position: outside;
+  font-size: 26px;
+  font-weight: 600;
+  direction: rtl;
+  text-align: right;
+}
+
+.banner-bullets li {
+  margin: 0.35em 0;
+  padding-inline-end: 0.25em;
+}
+
+.banner-bullets .banner-text {
+  display: inline;
+  font-size: inherit;
+  font-weight: inherit;
+}
+
+.banner-cta-drag-handle {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.35rem;
+  min-height: 26px;
+  padding: 4px 8px;
+  margin-bottom: 4px;
+  cursor: grab;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.14);
+  border: 1px dashed rgba(255, 255, 255, 0.45);
+  direction: rtl;
+  user-select: none;
+}
+
+.banner-cta-drag-grip {
+  display: block;
+  width: 22px;
+  height: 4px;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.75);
+  box-shadow:
+    0 6px 0 rgba(255, 255, 255, 0.45),
+    0 12px 0 rgba(255, 255, 255, 0.25);
+}
+
+.banner-cta-drag-label {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: rgba(255, 255, 255, 0.85);
+}
+
+.banner-layer--dragging.banner-layer--cta .banner-cta-drag-handle {
+  cursor: grabbing !important;
+}
+
+.banner-canvas.capture-mode .banner-cta-drag-handle {
+  display: none !important;
+}
+
+.banner-cta {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  text-align: right;
+  direction: rtl;
+  font-size: 30px;
+  font-weight: 700;
+  /* Fill comes from inline brandColor on EditableText */
+  border-radius: 999px;
+  padding: 0.35em 0.75em;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.35);
+  vertical-align: middle;
+}
+
+.banner-cta.banner-text {
+  text-shadow: none;
+}
+
+.banner-download-row {
+  margin-top: 1.25rem;
+  display: flex;
+  justify-content: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.banner-download-row .btn-download {
+  padding: 0.65rem 1.35rem;
+  font-size: 1rem;
+  font-weight: 600;
+  border: none;
+  border-radius: 10px;
+  background: var(--btn, #4f46e5);
+  color: #fff;
+  cursor: pointer;
+}
+
+.banner-download-row .btn-download:hover:not(:disabled) {
+  filter: brightness(1.06);
+}
+
+.banner-download-row .btn-download:disabled {
+  opacity: 0.65;
+  cursor: wait;
+}
+
+.banner-download-error {
+  margin: 0.5rem 0 0;
+  text-align: center;
+  color: #b91c1c;
+  font-size: 0.9rem;
+}
+
+@media (prefers-color-scheme: dark) {
+  .banner-download-error {
+    color: #fca5a5;
+  }
+}
+
+
+================================================================================
+FILE: client/src/BannerCanvas.jsx
+================================================================================
+
+import { useCallback, useEffect, useId, useRef, useState } from 'react'
+import { motion as Motion, useDragControls } from 'framer-motion'
+import { Resizable } from 're-resizable'
+import { toPng } from 'html-to-image'
+import './BannerCanvas.css'
+
+const DEFAULT_BRAND_HEX = '#4F46E5'
+const BANNER_PX = 1080
+
+/** Spread layout; wide min sizes so Hebrew copy is not column-cramped */
+const DEFAULT_LOGO = { x: 50, y: 50, width: 280, height: 120 }
+const DEFAULT_HEADLINE = { x: 50, y: 200, width: 920, height: 200 }
+const DEFAULT_SUBHEAD = { x: 50, y: 420, width: 920, height: 150 }
+const DEFAULT_BULLETS = { x: 50, y: 590, width: 920, height: 260 }
+const DEFAULT_CTA = { x: 50, y: 900, width: 480, height: 140 }
+
+function clamp(n, lo, hi) {
+  return Math.min(hi, Math.max(lo, n))
+}
+
+/** Normalize drag end to banner px using canvas root rect (handles outer scale transform). */
+function commitPositionInBanner(canvasEl, layerEl, setBox) {
+  if (!canvasEl || !layerEl) return
+  const cr = canvasEl.getBoundingClientRect()
+  const lr = layerEl.getBoundingClientRect()
+  if (cr.width <= 0 || cr.height <= 0) return
+  const nx = ((lr.left - cr.left) / cr.width) * BANNER_PX
+  const ny = ((lr.top - cr.top) / cr.height) * BANNER_PX
+  setBox((b) => ({
+    ...b,
+    x: clamp(Math.round(nx), 0, Math.max(0, BANNER_PX - b.width)),
+    y: clamp(Math.round(ny), 0, Math.max(0, BANNER_PX - b.height)),
+  }))
+}
+
+function normalizeBrandHex(input) {
+  if (!input || typeof input !== 'string') return DEFAULT_BRAND_HEX
+  let s = input.trim()
+  if (!s.startsWith('#')) s = `#${s}`
+  if (/^#[0-9A-Fa-f]{6}$/.test(s)) return s.toUpperCase()
+  return DEFAULT_BRAND_HEX
+}
+
+function contrastingTextColor(bgHex) {
+  const h = (bgHex && bgHex.startsWith('#') ? bgHex : DEFAULT_BRAND_HEX).slice(1)
+  if (h.length !== 6) return '#ffffff'
+  const r = parseInt(h.slice(0, 2), 16) / 255
+  const g = parseInt(h.slice(2, 4), 16) / 255
+  const b = parseInt(h.slice(4, 6), 16) / 255
+  const lum = 0.2126 * r + 0.7152 * g + 0.0722 * b
+  return lum > 0.55 ? '#0f172a' : '#ffffff'
+}
+
+function waitForImagesInNode(root) {
+  const imgs = root.querySelectorAll('img')
+  return Promise.all(
+    [...imgs].map(
+      (img) =>
+        new Promise((resolve) => {
+          const done = () => {
+            if (typeof img.decode === 'function') {
+              img.decode().then(resolve).catch(resolve)
+            } else {
+              resolve()
+            }
+          }
+          if (img.complete) done()
+          else {
+            img.addEventListener('load', done, { once: true })
+            img.addEventListener('error', () => resolve(), { once: true })
+          }
+        }),
+    ),
+  )
+}
+
+function EditableText({
+  className,
+  style,
+  text,
+  resetKey,
+  onTextChange,
+  dir = 'rtl',
+  as = 'div',
+}) {
+  const ref = useRef(null)
+
+  useEffect(() => {
+    const el = ref.current
+    if (!el) return
+    el.textContent = text ?? ''
+  }, [text, resetKey])
+
+  const common = {
+    ref,
+    dir,
+    className,
+    style,
+    contentEditable: true,
+    suppressContentEditableWarning: true,
+    spellCheck: false,
+    onMouseDown: (e) => e.stopPropagation(),
+    onBlur: (e) => onTextChange?.(e.currentTarget.textContent ?? ''),
+  }
+
+  return as === 'span' ? (
+    <span {...common} />
+  ) : (
+    <div {...common} />
+  )
+}
+
+const RESIZE_ENABLE = {
+  top: false,
+  left: false,
+  topLeft: false,
+  topRight: false,
+  bottomLeft: false,
+  right: true,
+  bottom: true,
+  bottomRight: true,
+}
+
+/**
+ * Motion.div is a direct child of the 1080 canvas root (absolute playground).
+ * No flex/grid wrappers around the draggable shell — only block layout inside Resizable.
+ */
+function BannerLayer({
+  canvasRef,
+  box,
+  setBox,
+  className,
+  layerKey,
+  setDraggingKey,
+  viewportScale,
+  minWidth,
+  minHeight,
+  lockAspectRatio,
+  dragHandleOnly,
+  dragControls,
+  children,
+}) {
+  const layerRef = useRef(null)
+
+  return (
+    <Motion.div
+      ref={layerRef}
+      layout={false}
+      className={`z-10 box-border ${className}`}
+      drag
+      dragElastic={0}
+      dragMomentum={false}
+      dragConstraints={canvasRef}
+      dragListener={!dragHandleOnly}
+      dragControls={dragControls}
+      whileDrag={{ zIndex: 50, cursor: 'grabbing' }}
+      style={{
+        position: 'absolute',
+        left: box.x,
+        top: box.y,
+        width: box.width,
+        height: box.height,
+      }}
+      onDragStart={() => setDraggingKey(layerKey)}
+      onDragEnd={() => {
+        commitPositionInBanner(canvasRef.current, layerRef.current, setBox)
+        setDraggingKey(null)
+      }}
+    >
+      <Resizable
+        size={{ width: box.width, height: box.height }}
+        scale={viewportScale}
+        minWidth={minWidth}
+        minHeight={minHeight}
+        lockAspectRatio={lockAspectRatio}
+        enable={RESIZE_ENABLE}
+        handleWrapperClass="banner-resize-handle-root"
+        onResizeStop={(_e, _dir, ref) => {
+          setBox((b) => ({
+            ...b,
+            width: ref.offsetWidth,
+            height: ref.offsetHeight,
+          }))
+        }}
+        className="box-border h-full w-full"
+        style={{
+          display: 'block',
+          boxSizing: 'border-box',
+        }}
+      >
+        <div className="banner-layer-inner box-border h-full w-full overflow-visible p-1">
+          {children}
+        </div>
+      </Resizable>
+    </Motion.div>
+  )
+}
+
+export default function BannerCanvas({
+  apiBase,
+  taskId,
+  backgroundUrl,
+  logoUrl,
+  headline: headlineInitial,
+  subhead: subheadInitial,
+  bulletPoints,
+  cta: ctaInitial,
+  brandColor,
+}) {
+  const viewportRef = useRef(null)
+  const captureRef = useRef(null)
+  const reactSurfaceSuffix = useId().replace(/:/g, '')
+  const boundsSurfaceId = taskId
+    ? `banner-surface-${taskId}`
+    : `banner-surface-${reactSurfaceSuffix}`
+
+  const ctaDragControls = useDragControls()
+
+  const [scale, setScale] = useState(1)
+  const [exporting, setExporting] = useState(false)
+  const [downloadError, setDownloadError] = useState(null)
+
+  const [headline, setHeadline] = useState(headlineInitial ?? '')
+  const [subhead, setSubhead] = useState(subheadInitial ?? '')
+  const [bullets, setBullets] = useState(() => [...(bulletPoints || [])])
+  const [cta, setCta] = useState(ctaInitial ?? '')
+
+  const [logoBox, setLogoBox] = useState(() => ({ ...DEFAULT_LOGO }))
+  const [headlineBox, setHeadlineBox] = useState(() => ({ ...DEFAULT_HEADLINE }))
+  const [subheadBox, setSubheadBox] = useState(() => ({ ...DEFAULT_SUBHEAD }))
+  const [bulletsBox, setBulletsBox] = useState(() => ({ ...DEFAULT_BULLETS }))
+  const [ctaBox, setCtaBox] = useState(() => ({ ...DEFAULT_CTA }))
+  const [draggingKey, setDraggingKey] = useState(null)
+
+  useEffect(() => {
+    setHeadline(headlineInitial ?? '')
+    setSubhead(subheadInitial ?? '')
+    setBullets([...(bulletPoints || [])])
+    setCta(ctaInitial ?? '')
+    setLogoBox({ ...DEFAULT_LOGO })
+    setHeadlineBox({ ...DEFAULT_HEADLINE })
+    setSubheadBox({ ...DEFAULT_SUBHEAD })
+    setBulletsBox({ ...DEFAULT_BULLETS })
+    setCtaBox({ ...DEFAULT_CTA })
+    setDraggingKey(null)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [taskId])
+
+  const setBulletAt = useCallback((index, value) => {
+    setBullets((prev) => {
+      const next = [...prev]
+      next[index] = value
+      return next
+    })
+  }, [])
+
+  const bgSrc = backgroundUrl ? `${apiBase}${backgroundUrl}` : ''
+  const logoSrc = logoUrl ? `${apiBase}${logoUrl}` : ''
+  const ctaBgHex = normalizeBrandHex(brandColor)
+  const ctaFgHex = contrastingTextColor(ctaBgHex)
+
+  useEffect(() => {
+    const el = viewportRef.current
+    if (!el) return
+    const ro = new ResizeObserver(() => {
+      const w = el.clientWidth
+      if (w > 0) setScale(w / BANNER_PX)
+    })
+    ro.observe(el)
+    setScale(el.clientWidth / BANNER_PX)
+    return () => ro.disconnect()
+  }, [])
+
+  const handleDownload = useCallback(async () => {
+    const node = captureRef.current
+    if (!node) return
+    setDownloadError(null)
+    setExporting(true)
+    await new Promise((r) => requestAnimationFrame(r))
+    await new Promise((r) => requestAnimationFrame(r))
+    try {
+      await waitForImagesInNode(node)
+      await new Promise((r) => requestAnimationFrame(r))
+
+      const dataUrl = await toPng(node, {
+        cacheBust: true,
+        pixelRatio: 1,
+        width: BANNER_PX,
+        height: BANNER_PX,
+        backgroundColor: '#ffffff',
+        style: {
+          transform: 'scale(1)',
+          backgroundColor: '#ffffff',
+          colorScheme: 'light',
+        },
+        filter: (el) => {
+          if (el.classList?.contains('banner-resize-handle-root')) return false
+          if (el.closest?.('.banner-resize-handle-root')) return false
+          if (el.classList?.contains('banner-cta-drag-handle')) return false
+          return true
+        },
+      })
+      const a = document.createElement('a')
+      a.href = dataUrl
+      a.download = `banner-${(taskId || 'export').slice(0, 8)}.png`
+      a.click()
+    } catch (e) {
+      setDownloadError(e.message || String(e))
+    } finally {
+      setExporting(false)
+    }
+  }, [taskId])
+
+  const layerClass = (id) =>
+    `banner-layer banner-layer--${id}${draggingKey === id ? ' banner-layer--dragging' : ''}`
+
+  const bgImageStyle =
+    bgSrc !== '' ? { backgroundImage: `url(${JSON.stringify(bgSrc)})` } : undefined
+
+  return (
+    <div className="banner-canvas-root w-full max-w-full">
+      <div className="banner-viewport" ref={viewportRef} dir="ltr">
+        <div
+          className="banner-viewport-inner"
+          style={{
+            width: BANNER_PX * scale,
+            height: BANNER_PX * scale,
+          }}
+        >
+          <div
+            ref={captureRef}
+            id={boundsSurfaceId}
+            dir="ltr"
+            className={`absolute left-0 top-0 w-[1080px] h-[1080px] shrink-0 origin-top-left overflow-hidden bg-slate-100 banner-canvas${
+              exporting ? ' capture-mode' : ''
+            }`}
+            style={{
+              transform: `scale(${scale})`,
+            }}
+          >
+            <div
+              className={`absolute inset-0 w-full h-full bg-cover bg-center bg-no-repeat pointer-events-none ${
+                bgSrc ? '' : 'bg-slate-700'
+              }`}
+              style={bgImageStyle}
+              aria-hidden
+            />
+            {bgSrc ? (
+              <img
+                src={bgSrc}
+                alt=""
+                crossOrigin="anonymous"
+                referrerPolicy="no-referrer"
+                loading="eager"
+                decoding="async"
+                className="pointer-events-none absolute left-0 top-0 h-px w-px opacity-0"
+                aria-hidden
+              />
+            ) : null}
+            <div
+              className="absolute inset-0 w-full h-full bg-black/50 pointer-events-none z-0"
+              aria-hidden
+            />
+
+            <BannerLayer
+              canvasRef={captureRef}
+              box={logoBox}
+              setBox={setLogoBox}
+              className={layerClass('logo')}
+              layerKey="logo"
+              setDraggingKey={setDraggingKey}
+              viewportScale={scale}
+              minWidth={80}
+              minHeight={48}
+              lockAspectRatio
+            >
+              <img
+                src={logoSrc}
+                alt=""
+                crossOrigin="anonymous"
+                referrerPolicy="no-referrer"
+                loading="eager"
+                decoding="async"
+                draggable={false}
+                className="banner-layer-logo-img mx-auto block max-h-full max-w-full object-contain"
+              />
+            </BannerLayer>
+
+            <BannerLayer
+              canvasRef={captureRef}
+              box={headlineBox}
+              setBox={setHeadlineBox}
+              className={`${layerClass('headline')} banner-layer--text`}
+              layerKey="headline"
+              setDraggingKey={setDraggingKey}
+              viewportScale={scale}
+              minWidth={280}
+              minHeight={56}
+            >
+              <div className="banner-text-shell min-w-[280px] text-right" dir="rtl">
+                <EditableText
+                  className="banner-text banner-headline min-w-[260px] whitespace-normal"
+                  text={headline}
+                  resetKey={taskId}
+                  onTextChange={setHeadline}
+                />
+              </div>
+            </BannerLayer>
+
+            <BannerLayer
+              canvasRef={captureRef}
+              box={subheadBox}
+              setBox={setSubheadBox}
+              className={`${layerClass('subhead')} banner-layer--text`}
+              layerKey="subhead"
+              setDraggingKey={setDraggingKey}
+              viewportScale={scale}
+              minWidth={280}
+              minHeight={48}
+            >
+              <div className="banner-text-shell min-w-[280px] text-right" dir="rtl">
+                <EditableText
+                  className="banner-text banner-subhead min-w-[260px] whitespace-normal"
+                  text={subhead}
+                  resetKey={taskId}
+                  onTextChange={setSubhead}
+                />
+              </div>
+            </BannerLayer>
+
+            <BannerLayer
+              canvasRef={captureRef}
+              box={bulletsBox}
+              setBox={setBulletsBox}
+              className={`${layerClass('bullets')} banner-layer--text`}
+              layerKey="bullets"
+              setDraggingKey={setDraggingKey}
+              viewportScale={scale}
+              minWidth={280}
+              minHeight={100}
+            >
+              <div className="banner-text-shell min-w-[280px] text-right" dir="rtl">
+                <ul className="banner-bullets min-w-[260px] list-disc whitespace-normal" dir="rtl">
+                  {bullets.map((b, i) => (
+                    <li key={`${taskId}-b-${i}`}>
+                      <EditableText
+                        as="span"
+                        className="banner-text whitespace-normal"
+                        text={b}
+                        resetKey={`${taskId}-${i}`}
+                        onTextChange={(t) => setBulletAt(i, t)}
+                      />
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            </BannerLayer>
+
+            <BannerLayer
+              canvasRef={captureRef}
+              box={ctaBox}
+              setBox={setCtaBox}
+              className={`${layerClass('cta')} banner-layer--cta`}
+              layerKey="cta"
+              setDraggingKey={setDraggingKey}
+              viewportScale={scale}
+              minWidth={160}
+              minHeight={52}
+              dragHandleOnly
+              dragControls={ctaDragControls}
+            >
+              <div className="banner-text-shell min-w-[160px]">
+                <div
+                  className="banner-cta-drag-handle"
+                  title="גרור להזזה"
+                  onPointerDown={(e) => ctaDragControls.start(e)}
+                >
+                  <span className="banner-cta-drag-grip" aria-hidden />
+                  <span className="banner-cta-drag-label">גרור</span>
+                </div>
+                <div className="mt-1 text-right" dir="rtl">
+                  <EditableText
+                    className="banner-text banner-cta inline-block min-w-[120px] max-w-full whitespace-nowrap"
+                    text={cta}
+                    resetKey={taskId}
+                    onTextChange={setCta}
+                    style={{
+                      backgroundColor: ctaBgHex,
+                      color: ctaFgHex,
+                      boxShadow: `0 10px 36px ${ctaBgHex}66`,
+                    }}
+                  />
+                </div>
+              </div>
+            </BannerLayer>
+          </div>
+        </div>
+      </div>
+      <div className="banner-download-row">
+        <button
+          type="button"
+          className="btn-download"
+          onClick={handleDownload}
+          disabled={exporting}
+        >
+          {exporting ? 'Preparing PNG…' : 'Download Banner'}
+        </button>
+      </div>
+      {downloadError && (
+        <p className="banner-download-error" role="alert">
+          {downloadError}
+        </p>
+      )}
+    </div>
+  )
+}
+
+
+================================================================================
+FILE: client/src/BannerWorkspace.jsx
+================================================================================
+
+import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
+import api, { API_BASE_URL } from './api.js'
+import { useAuth } from './AuthContext.jsx'
+import BannerCanvas from './BannerCanvas.jsx'
+
+// ─── helpers ─────────────────────────────────────────────────────────────────
+
+function formatStatus(status) {
+  if (!status) return 'מתחיל…'
+  const map = {
+    pending: 'ממתין…',
+    scraped: 'סורק את האתר…',
+    generating_image: 'מייצר ויז׳ואל וקופי…',
+    completed: 'הושלם',
+    failed: 'נכשל',
+  }
+  return map[status] || status.replace(/_/g, ' ')
+}
+
+function axiosErrorMessage(err) {
+  const d = err.response?.data?.detail
+  if (typeof d === 'string') return d
+  if (Array.isArray(d)) return d.map((x) => x.msg || JSON.stringify(x)).join(' ')
+  return err.message || 'הבקשה נכשלה'
+}
+
+// ─── Sub-components ───────────────────────────────────────────────────────────
+
+function StatusSkeleton() {
+  return (
+    <div className="rounded-2xl border border-slate-200/80 dark:border-slate-700/80 bg-white/80 dark:bg-slate-900/80 p-6 animate-pulse space-y-4">
+      <div className="h-4 w-1/3 rounded bg-slate-200 dark:bg-slate-700 ms-auto" />
+      <div className="h-3 w-full rounded bg-slate-100 dark:bg-slate-800" />
+      <div className="h-3 w-5/6 rounded bg-slate-100 dark:bg-slate-800 ms-auto" />
+      <div className="flex gap-3 pt-4">
+        <div className="h-24 flex-1 rounded-xl bg-slate-100 dark:bg-slate-800" />
+        <div className="h-24 flex-1 rounded-xl bg-slate-100 dark:bg-slate-800" />
+      </div>
+    </div>
+  )
+}
+
+/** Must match api.SUPERUSER_EMAIL (primary admin only). */
+const PRIMARY_ADMIN_EMAIL = 'gal0673@gmail.com'
+
+function Spinner({ className = '' }) {
+  return (
+    <span
+      className={`inline-block size-5 rounded-full border-2 border-indigo-500/30 border-t-indigo-500 animate-spin ${className}`}
+      aria-hidden
+    />
+  )
+}
+
+
+// ─── Main workspace ───────────────────────────────────────────────────────────
+
+export default function BannerWorkspace() {
+  const { user, logout } = useAuth()
+  const navigate = useNavigate()
+
+  const [url,           setUrl]           = useState('')
+  const [brief,         setBrief]         = useState('')
+  const [taskId,        setTaskId]        = useState(null)
+  const [statusPayload, setStatusPayload] = useState(null)
+  const [submitError,   setSubmitError]   = useState(null)
+  const [isPosting,     setIsPosting]     = useState(false)
+  const [aiContextBusy, setAiContextBusy] = useState(false)
+  const [aiContextErr,  setAiContextErr]  = useState(null)
+
+  const terminal  = statusPayload?.status === 'completed' || statusPayload?.status === 'failed'
+  const isPolling = Boolean(taskId && !terminal)
+  const completed =
+    statusPayload?.status === 'completed' &&
+    statusPayload?.background_url &&
+    statusPayload?.logo_url
+
+  useEffect(() => {
+    if (!taskId) { setStatusPayload(null); return undefined }
+
+    let alive = true
+    let intervalId
+
+    const tick = async () => {
+      try {
+        const { data } = await api.get(`/status/${taskId}`)
+        if (!alive) return
+        setStatusPayload(data)
+        if (data.status === 'completed' || data.status === 'failed') clearInterval(intervalId)
+      } catch (err) {
+        if (!alive) return
+        setStatusPayload({
+          task_id: taskId, status: 'failed', error: axiosErrorMessage(err),
+          headline: null, subhead: null, bullet_points: null,
+          cta: null, brand_color: null, background_url: null, logo_url: null,
+        })
+        clearInterval(intervalId)
+      }
+    }
+
+    tick()
+    intervalId = setInterval(tick, 3000)
+    return () => { alive = false; clearInterval(intervalId) }
+  }, [taskId])
+
+  const handleLogout = () => { logout(); navigate('/login', { replace: true }) }
+
+  const isPrimaryAdmin = user?.email?.toLowerCase() === PRIMARY_ADMIN_EMAIL
+
+  const handleDownloadAiContext = useCallback(async () => {
+    setAiContextErr(null)
+    setAiContextBusy(true)
+    try {
+      const res = await api.get('/admin/ai-banner-context', { responseType: 'blob' })
+      const blob = res.data instanceof Blob ? res.data : new Blob([res.data], { type: 'text/plain;charset=utf-8' })
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = 'ai-banner-context.txt'
+      a.rel = 'noopener'
+      document.body.appendChild(a)
+      a.click()
+      a.remove()
+      URL.revokeObjectURL(url)
+    } catch (err) {
+      setAiContextErr(axiosErrorMessage(err))
+    } finally {
+      setAiContextBusy(false)
+    }
+  }, [])
+
+  const handleGenerate = async (e) => {
+    e.preventDefault()
+    const trimmed = url.trim()
+    if (!trimmed) { setSubmitError('נא להזין כתובת אתר.'); return }
+
+    setSubmitError(null)
+    setStatusPayload(null)
+    setTaskId(null)
+    setIsPosting(true)
+
+    try {
+      const { data } = await api.post('/generate', { url: trimmed, brief: brief.trim() || null })
+      const id = data?.task_id
+      if (!id) throw new Error('לא התקבל מזהה משימה מהשרת')
+      setTaskId(id)
+    } catch (err) {
+      setSubmitError(axiosErrorMessage(err))
+    } finally {
+      setIsPosting(false)
+    }
+  }
+
+  const formLocked = isPosting || isPolling
+
+  const statusChip = useMemo(() => {
+    const s = statusPayload?.status
+    if (!taskId) return null
+    const tone =
+      s === 'failed'      ? 'bg-red-500/15 text-red-700 dark:text-red-300 ring-red-500/25'
+      : s === 'completed' ? 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 ring-emerald-500/25'
+      : 'bg-indigo-500/15 text-indigo-700 dark:text-indigo-200 ring-indigo-500/25'
+    return (
+      <span className={`inline-flex items-center gap-2 rounded-full px-3 py-1 text-xs font-medium ring-1 ${tone}`}>
+        {isPolling && <Spinner className="!size-3.5 border-indigo-400/40 border-t-indigo-300" />}
+        <span className="opacity-90">{formatStatus(s)}</span>
+        <span className="font-mono uppercase tracking-wide opacity-70" dir="ltr">({s ?? '…'})</span>
+      </span>
+    )
+  }, [taskId, statusPayload?.status, isPolling])
+
+  return (
+    <div
+      className="min-h-screen bg-slate-100 dark:bg-slate-950 text-slate-900 dark:text-slate-100"
+      dir="rtl"
+      lang="he"
+    >
+      {/* ── Top nav ─────────────────────────────────────────────── */}
+      <header className="sticky top-0 z-20 border-b border-slate-200/80 dark:border-slate-800 bg-white/90 dark:bg-slate-900/90 backdrop-blur-md">
+        <div className="mx-auto flex max-w-7xl items-center justify-between gap-4 px-4 py-3 sm:px-6">
+          <div className="text-start">
+            <h1 className="text-lg font-semibold tracking-tight text-slate-900 dark:text-white">
+              סטודיו באנרים
+            </h1>
+            <p className="text-xs text-slate-500 dark:text-slate-400">
+              ייצור אוטומטי של קופי, ויז׳ואל ועיצובים מוכנים לייצוא
+            </p>
+          </div>
+          <div className="flex items-center gap-3">
+            {user?.email && (
+              <span className="hidden text-sm text-slate-600 dark:text-slate-400 sm:inline max-w-[200px] truncate">
+                {user.email}
+              </span>
+            )}
+            {isPrimaryAdmin && (
+              <button
+                type="button"
+                onClick={handleDownloadAiContext}
+                disabled={aiContextBusy}
+                className="rounded-lg border border-indigo-300/80 dark:border-indigo-500/50 bg-indigo-50 dark:bg-indigo-950/50 px-3 py-2 text-sm font-medium text-indigo-800 dark:text-indigo-200 hover:bg-indigo-100 dark:hover:bg-indigo-900/60 disabled:opacity-50 transition"
+                title="מייצר מחדש את הקובץ בשורש הפרויקט ומוריד אותו"
+              >
+                {aiContextBusy ? 'מייצא…' : 'הורד ai-banner-context'}
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={handleLogout}
+              className="rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 px-3 py-2 text-sm font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-700 transition"
+            >
+              התנתקות
+            </button>
+          </div>
+        </div>
+        {isPrimaryAdmin && aiContextErr && (
+          <div
+            className="mx-auto max-w-7xl px-4 pb-2 sm:px-6 text-end text-xs text-red-600 dark:text-red-400"
+            role="alert"
+          >
+            {aiContextErr}
+          </div>
+        )}
+      </header>
+
+      {/* ── Two-column layout ────────────────────────────────────── */}
+      <div className="mx-auto grid max-w-7xl gap-6 px-4 py-6 lg:grid-cols-[minmax(280px,340px)_1fr] sm:px-6 lg:py-8">
+
+        {/* ── Sidebar: form ─────────────────────────────────────── */}
+        <aside className="space-y-4 lg:sticky lg:top-24 lg:self-start">
+          <div className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-5 shadow-sm text-right">
+            <h2 className="text-sm font-semibold text-slate-800 dark:text-slate-100">
+              יצירת באנר חדש
+            </h2>
+            <p className="mt-1 text-xs text-slate-500 dark:text-slate-400 leading-relaxed">
+              הזן כתובת אתר והמערכת תייצר עבורך באנר מותאם אישית.
+            </p>
+
+            <form className="mt-5 space-y-4" onSubmit={handleGenerate}>
+              <div>
+                <label
+                  htmlFor="bw-url"
+                  className="block text-xs font-medium text-slate-600 dark:text-slate-300 mb-1.5"
+                >
+                  <span className="text-red-500">*</span> כתובת אתר (URL)
+                </label>
+                <input
+                  id="bw-url"
+                  name="url"
+                  type="text"
+                  required
+                  placeholder="https://www.domein.co.il"
+                  value={url}
+                  onChange={(ev) => setUrl(ev.target.value)}
+                  disabled={formLocked}
+                  className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 px-3 py-2.5 text-sm text-right outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/20 disabled:opacity-60 transition"
+                  autoComplete="url"
+                />
+              </div>
+
+              <div>
+                <label
+                  htmlFor="bw-brief"
+                  className="block text-xs font-medium text-slate-600 dark:text-slate-300 mb-1.5"
+                >
+                  בריף / מטרת הקמפיין{' '}
+                  <span className="text-slate-400 font-normal">(אופציונלי)</span>
+                </label>
+                <textarea
+                  id="bw-brief"
+                  name="brief"
+                  rows={5}
+                  placeholder="לדוגמה: הגדלת מכירות, קהל יעד צעיר, טון תקשורתי חברותי…"
+                  value={brief}
+                  onChange={(ev) => setBrief(ev.target.value)}
+                  disabled={formLocked}
+                  className="w-full resize-y rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 px-3 py-2.5 text-sm text-right outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/20 disabled:opacity-60 min-h-[100px] transition"
+                />
+              </div>
+
+              {submitError && (
+                <div
+                  role="alert"
+                  className="rounded-xl border border-red-200 dark:border-red-900/50 bg-red-50 dark:bg-red-950/40 px-3 py-2 text-xs text-red-800 dark:text-red-200 text-right"
+                >
+                  {submitError}
+                </div>
+              )}
+
+              <button
+                type="submit"
+                disabled={formLocked}
+                className="w-full rounded-xl bg-indigo-600 px-4 py-3 text-sm font-semibold text-white shadow-md shadow-indigo-900/20 hover:bg-indigo-500 disabled:opacity-50 disabled:pointer-events-none transition"
+              >
+                {isPosting ? 'מתחיל…' : isPolling ? 'העבודה רצה…' : 'צור באנר'}
+              </button>
+            </form>
+
+            <p className="mt-4 text-[10px] text-slate-400 dark:text-slate-500 text-right">
+              כתובת API:{' '}
+              <code className="rounded bg-slate-100 dark:bg-slate-800 px-1" dir="ltr">
+                {API_BASE_URL}
+              </code>
+            </p>
+          </div>
+        </aside>
+
+        {/* ── Main area ─────────────────────────────────────────── */}
+        <main className="min-h-[320px] space-y-6">
+          {!taskId && (
+            <div className="flex flex-col items-center justify-center rounded-2xl border border-dashed border-slate-300 dark:border-slate-700 bg-white/50 dark:bg-slate-900/40 px-6 py-20 text-center">
+              <p className="text-sm text-slate-500 dark:text-slate-400 max-w-md leading-relaxed">
+                הזן כתובת אתר ולחץ על &quot;צור באנר&quot;. ההתקדמות והתוצאה יופיעו כאן בזמן אמת.
+              </p>
+            </div>
+          )}
+
+          {taskId && (
+            <section aria-live="polite" className="space-y-4 text-right">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <h2 className="text-sm font-semibold text-slate-800 dark:text-slate-100">
+                  סטטוס משימה
+                </h2>
+                {statusChip}
+              </div>
+              <p className="text-sm text-slate-600 dark:text-slate-300">
+                {formatStatus(statusPayload?.status)}
+              </p>
+              <p className="text-xs text-slate-500 font-mono break-all" dir="ltr">
+                מזהה משימה: {taskId}
+              </p>
+
+              {isPolling && <StatusSkeleton />}
+
+              {statusPayload?.status === 'failed' && (
+                <div
+                  role="alert"
+                  className="rounded-2xl border border-red-300 dark:border-red-800 bg-red-50 dark:bg-red-950/50 px-4 py-3 text-sm text-red-900 dark:text-red-100 text-right"
+                >
+                  <strong className="font-semibold">משהו השתבש.</strong>
+                  <p className="mt-1">{statusPayload.error || 'שגיאה לא ידועה'}</p>
+                </div>
+              )}
+
+              {completed && (
+                <div className="space-y-8">
+                  {/* Copy metadata (read-only reference) */}
+                  <div className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-6 shadow-sm">
+                    <h3 className="text-sm font-semibold text-slate-800 dark:text-slate-100 mb-4">
+                      קופי שנוצר
+                    </h3>
+                    <dl className="grid gap-4 sm:grid-cols-2 text-sm">
+                      <div>
+                        <dt className="text-xs uppercase tracking-wide text-slate-500">כותרת ראשית</dt>
+                        <dd className="mt-1 font-medium text-slate-900 dark:text-white" dir="rtl">{statusPayload.headline}</dd>
+                      </div>
+                      <div>
+                        <dt className="text-xs uppercase tracking-wide text-slate-500">כותרת משנה</dt>
+                        <dd className="mt-1 text-slate-700 dark:text-slate-300" dir="rtl">{statusPayload.subhead}</dd>
+                      </div>
+                      <div className="sm:col-span-2">
+                        <dt className="text-xs uppercase tracking-wide text-slate-500">נקודות מפתח</dt>
+                        <dd className="mt-2">
+                          <ul className="list-disc list-inside space-y-1 text-slate-700 dark:text-slate-300" dir="rtl">
+                            {(statusPayload.bullet_points || []).map((b, i) => <li key={i}>{b}</li>)}
+                          </ul>
+                        </dd>
+                      </div>
+                      <div>
+                        <dt className="text-xs uppercase tracking-wide text-slate-500">קריאה לפעולה</dt>
+                        <dd className="mt-1 font-medium text-slate-900 dark:text-white" dir="rtl">{statusPayload.cta}</dd>
+                      </div>
+                      <div>
+                        <dt className="text-xs uppercase tracking-wide text-slate-500">צבע מותג</dt>
+                        <dd className="mt-1 flex items-center gap-2 flex-row-reverse justify-end">
+                          <span
+                            className="inline-block size-6 rounded-md border border-slate-200 dark:border-slate-600 shadow-inner"
+                            style={{ backgroundColor: statusPayload.brand_color || '#ccc' }}
+                            title={statusPayload.brand_color}
+                          />
+                          <code className="text-xs" dir="ltr">{statusPayload.brand_color}</code>
+                        </dd>
+                      </div>
+                    </dl>
+                  </div>
+
+                  {/* Interactive preview + download */}
+                  <div>
+                    <h3 className="text-sm font-semibold text-slate-800 dark:text-slate-100 mb-3">
+                      עריכה ותצוגה מקדימה
+                    </h3>
+                    <div className="overflow-hidden rounded-2xl border border-slate-200 dark:border-slate-700 shadow-2xl">
+                      <BannerCanvas
+                        apiBase={API_BASE_URL}
+                        taskId={taskId}
+                        backgroundUrl={statusPayload.background_url}
+                        logoUrl={statusPayload.logo_url}
+                        headline={statusPayload.headline}
+                        subhead={statusPayload.subhead}
+                        bulletPoints={statusPayload.bullet_points}
+                        cta={statusPayload.cta}
+                        brandColor={statusPayload.brand_color}
+                      />
+                    </div>
+                  </div>
+                </div>
+              )}
+            </section>
+          )}
+        </main>
+      </div>
+    </div>
+  )
+}
+
+
+================================================================================
+FILE: client/src/index.css
+================================================================================
+
+@import 'tailwindcss';
+
+/* ── Editable content fields inside the banner preview ── */
+.ce-field {
+  cursor: text;
+  outline: none;
+  transition: outline 0.12s;
+  border-radius: 3px;
+}
+.ce-field:hover {
+  outline: 2px dashed #93c5fd;
+  outline-offset: 3px;
+}
+.ce-field:focus {
+  outline: 2px solid #3b82f6;
+  outline-offset: 3px;
+}
+
+/* ── Drag grip indicator inside draggable Rnd blocks ── */
+.drag-handle-ui {
+  cursor: grab;
+  user-select: none;
+}
+.drag-handle-ui:active {
+  cursor: grabbing;
+}
+
+:root {
+  font-family: system-ui, 'Segoe UI', Roboto, sans-serif;
+  line-height: 1.5;
+  font-weight: 400;
+  color: #111827;
+  background-color: #f9fafb;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    color: #f3f4f6;
+    background-color: #111827;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+}
+
+#root {
+  min-height: 100vh;
+}
+
+
+================================================================================
+FILE: client/src/Login.jsx
+================================================================================
+
+import { useEffect, useState } from 'react'
+import { useNavigate, useLocation } from 'react-router-dom'
+import { useAuth } from './AuthContext.jsx'
+
+export default function Login() {
+  const { login, isAuthenticated, ready } = useAuth()
+  const navigate = useNavigate()
+  const location = useLocation()
+  const from = location.state?.from?.pathname || '/'
+
+  const [email, setEmail] = useState('')
+  const [password, setPassword] = useState('')
+  const [error, setError] = useState(null)
+  const [submitting, setSubmitting] = useState(false)
+
+  useEffect(() => {
+    if (!ready || !isAuthenticated) return
+    navigate(from, { replace: true })
+  }, [ready, isAuthenticated, from, navigate])
+
+  const handleSubmit = async (e) => {
+    e.preventDefault()
+    setError(null)
+    setSubmitting(true)
+    try {
+      await login(email, password)
+    } catch (err) {
+      const detail = err.response?.data?.detail
+      const message =
+        typeof detail === 'string'
+          ? detail
+          : Array.isArray(detail)
+            ? detail.map((d) => d.msg || JSON.stringify(d)).join(' ')
+            : err.message || 'ההתחברות נכשלה'
+      setError(message)
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  return (
+    <div
+      className="min-h-screen bg-gradient-to-bl from-slate-900 via-indigo-950 to-slate-900 flex items-center justify-center p-6"
+      dir="rtl"
+      lang="he"
+    >
+      <div className="w-full max-w-md">
+        <div className="rounded-2xl border border-white/10 bg-white/5 backdrop-blur-xl shadow-2xl shadow-indigo-950/50 p-8 sm:p-10">
+          <div className="text-center mb-8">
+            <div className="inline-flex h-12 w-12 items-center justify-center rounded-xl bg-indigo-500/20 text-indigo-300 ring-1 ring-indigo-400/30 mb-4">
+              <svg
+                xmlns="http://www.w3.org/2000/svg"
+                viewBox="0 0 24 24"
+                fill="currentColor"
+                className="h-6 w-6"
+                aria-hidden
+              >
+                <path
+                  fillRule="evenodd"
+                  d="M12 1.5a5.25 5.25 0 00-5.25 5.25v3a3 3 0 00-3 3v6.75a3 3 0 003 3h10.5a3 3 0 003-3v-6.75a3 3 0 00-3-3v-3c0-2.9-2.35-5.25-5.25-5.25zm3.75 8.25v-3a3.75 3.75 0 10-7.5 0v3h7.5z"
+                  clipRule="evenodd"
+                />
+              </svg>
+            </div>
+            <h1 className="text-2xl font-semibold tracking-tight text-white">
+              התחברות למערכת
+            </h1>
+            <p className="mt-2 text-sm text-slate-400 leading-relaxed">
+              מחולל הבאנרים מבוסס AI — הזינו את פרטי החשבון שלכם
+            </p>
+          </div>
+
+          <form onSubmit={handleSubmit} className="space-y-5">
+            <div>
+              <label
+                htmlFor="login-email"
+                className="block text-sm font-medium text-slate-300 mb-1.5"
+              >
+                דואר אלקטרוני
+              </label>
+              <input
+                id="login-email"
+                name="email"
+                type="email"
+                autoComplete="email"
+                required
+                value={email}
+                onChange={(ev) => setEmail(ev.target.value)}
+                disabled={submitting}
+                className="w-full rounded-xl border border-white/10 bg-slate-950/50 px-4 py-3 text-slate-100 text-right placeholder:text-slate-500 outline-none ring-indigo-500/0 focus:border-indigo-400/50 focus:ring-2 focus:ring-indigo-500/30 transition disabled:opacity-50"
+                placeholder="שם@דומיין.co.il"
+              />
+            </div>
+            <div>
+              <label
+                htmlFor="login-password"
+                className="block text-sm font-medium text-slate-300 mb-1.5"
+              >
+                סיסמה
+              </label>
+              <input
+                id="login-password"
+                name="password"
+                type="password"
+                autoComplete="current-password"
+                required
+                value={password}
+                onChange={(ev) => setPassword(ev.target.value)}
+                disabled={submitting}
+                className="w-full rounded-xl border border-white/10 bg-slate-950/50 px-4 py-3 text-slate-100 text-right placeholder:text-slate-500 outline-none focus:border-indigo-400/50 focus:ring-2 focus:ring-indigo-500/30 transition disabled:opacity-50"
+                placeholder="••••••••"
+              />
+            </div>
+
+            {error && (
+              <div
+                role="alert"
+                className="rounded-xl border border-red-500/30 bg-red-950/40 px-4 py-3 text-sm text-red-200 text-right"
+              >
+                {error}
+              </div>
+            )}
+
+            <button
+              type="submit"
+              disabled={submitting}
+              className="w-full rounded-xl bg-indigo-600 px-4 py-3 text-sm font-semibold text-white shadow-lg shadow-indigo-900/40 hover:bg-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-400 focus:ring-offset-2 focus:ring-offset-slate-900 disabled:opacity-60 disabled:pointer-events-none transition"
+            >
+              {submitting ? 'מתחבר…' : 'התחבר'}
+            </button>
+          </form>
+        </div>
+        <p className="mt-6 text-center text-xs text-slate-500 leading-relaxed">
+          אימות JWT — בסביבת ייצור מומלץ לשלוח פרטים רק דרך HTTPS
+        </p>
+      </div>
+    </div>
+  )
+}
+
+
+================================================================================
+FILE: client/src/main.jsx
+================================================================================
+
+import { StrictMode } from 'react'
+import { createRoot } from 'react-dom/client'
+import { BrowserRouter } from 'react-router-dom'
+import { AuthProvider } from './AuthContext.jsx'
+import './index.css'
+import App from './App.jsx'
+
+createRoot(document.getElementById('root')).render(
+  <StrictMode>
+    <BrowserRouter>
+      <AuthProvider>
+        <App />
+      </AuthProvider>
+    </BrowserRouter>
+  </StrictMode>,
+)
+
+
+================================================================================
+FILE: client/vite.config.js
+================================================================================
+
+import tailwindcss from '@tailwindcss/vite'
+import { defineConfig } from 'vite'
+import react from '@vitejs/plugin-react'
+
+// https://vite.dev/config/
+export default defineConfig({
+  plugins: [react(), tailwindcss()],
+})
+
+
+================================================================================
+SECTION: ROOT CONFIG (1)
+================================================================================
+
+
+================================================================================
+FILE: requirements.txt
+================================================================================
+
+# Backend (api + crawl + creative pipeline)
+fastapi
+python-multipart
+uvicorn[standard]
+python-dotenv
+openai
+requests
+selenium
+pillow
+
+# API: SQLAlchemy + auth (install one DB driver: pymysql for MySQL, psycopg[binary] for PostgreSQL)
+sqlalchemy>=2.0
+passlib[bcrypt]
+bcrypt==4.0.1
+python-jose[cryptography]
+pymysql
+# PostgreSQL: pip install "psycopg[binary]" and set DATABASE_URL=postgresql+psycopg://user:pass@host/dbname

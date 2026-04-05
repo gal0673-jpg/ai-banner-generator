@@ -1,121 +1,193 @@
 """
-Scan the project directory (folder containing this script), export all .py sources,
-banner_data.json, and a directory tree into project_context.txt for AI / tooling context.
+Export project context for AI assistants and other tools.
 
-Ignores .git and __pycache__ everywhere.
+Scans the *current working directory* (where you run the command) and writes
+``project_context.txt`` with:
 
-Usage: python export_context.py
+  - A tree of the project structure
+  - The full text of every ``.py`` file (recursive)
+  - The contents of every ``banner_data.json`` found (recursive)
+
+Always ignored: ``.git``, ``__pycache__`` (as requested).
+
+Also skipped so the export stays usable (huge / non-source trees): ``node_modules``,
+``.venv``, ``venv``, ``dist``, ``build``, ``.eggs``, and directories whose names end with
+``.egg-info``.
+
+Usage (from the project folder):
+
+    cd c:\\path\\to\\your\\project
+    python path/to/export_context.py
+
+To scan the folder that contains this script instead of cwd:
+
+    python export_context.py --root .
 """
 
 from __future__ import annotations
 
+import argparse
 import os
 from datetime import datetime, timezone
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent
-OUTPUT_FILE = ROOT / "project_context.txt"
+RULE = "=" * 80
+IGNORE_DIR_NAMES = frozenset({
+    ".git",
+    "__pycache__",
+    "node_modules",
+    ".venv",
+    "venv",
+    "dist",
+    "build",
+    ".eggs",
+})
+OUTPUT_NAME = "project_context.txt"
 
-IGNORE_DIRS = frozenset({".git", "__pycache__"})
 
-FILE_HEADER_LINE = "=" * 80
+def _dir_skipped(name: str) -> bool:
+    if name in IGNORE_DIR_NAMES:
+        return True
+    if name.endswith(".egg-info"):
+        return True
+    return False
 
 
-def _tree_lines(directory: Path, prefix: str) -> list[str]:
+def project_tree_lines(directory: Path, prefix: str = "") -> list[str]:
+    """ASCII tree of files and dirs under ``directory``, skipping ignored dirs."""
     lines: list[str] = []
     try:
-        entries = [
-            p
-            for p in directory.iterdir()
-            if not (p.is_dir() and p.name in IGNORE_DIRS)
-        ]
-        entries.sort(key=lambda p: (not p.is_dir(), p.name.lower()))
+        children = sorted(
+            [p for p in directory.iterdir() if not _dir_skipped(p.name)],
+            key=lambda p: (not p.is_dir(), p.name.lower()),
+        )
     except OSError as exc:
-        return [f"{prefix}[Error reading directory: {exc}]"]
+        return [f"{prefix}[cannot read: {exc}]"]
 
-    for i, entry in enumerate(entries):
-        is_last = i == len(entries) - 1
-        branch = "└── " if is_last else "├── "
-        lines.append(f"{prefix}{branch}{entry.name}")
-        if entry.is_dir():
-            extension = "    " if is_last else "│   "
-            lines.extend(_tree_lines(entry, prefix + extension))
+    for i, path in enumerate(children):
+        last = i == len(children) - 1
+        branch = "└── " if last else "├── "
+        lines.append(f"{prefix}{branch}{path.name}")
+        if path.is_dir():
+            ext = "    " if last else "│   "
+            lines.extend(project_tree_lines(path, prefix + ext))
     return lines
 
 
-def build_project_structure(root: Path) -> str:
-    header = f"{root.name}/"
-    body_lines = _tree_lines(root, "")
-    return header + ("\n" + "\n".join(body_lines) if body_lines else "")
+def structure_section(root: Path) -> str:
+    top = f"{root.name}/"
+    body = project_tree_lines(root)
+    return top + ("\n" + "\n".join(body) if body else "")
 
 
-def collect_py_files(root: Path) -> list[Path]:
+def walk_filtered(root: Path):
+    """Like os.walk but never descends into ignored directory names."""
+    root_s = os.fspath(root.resolve())
+    for dirpath, dirnames, filenames in os.walk(root_s):
+        dirnames[:] = [d for d in dirnames if not _dir_skipped(d)]
+        yield dirpath, dirnames, filenames
+
+
+def iter_py_files(root: Path) -> list[Path]:
     paths: list[Path] = []
-    root_str = os.fspath(root)
-    for dirpath, dirnames, filenames in os.walk(root_str):
-        dirnames[:] = [d for d in dirnames if d not in IGNORE_DIRS]
+    for dirpath, _dirnames, filenames in walk_filtered(root):
         for name in filenames:
             if name.endswith(".py"):
                 paths.append(Path(dirpath) / name)
     return sorted(paths)
 
 
-def read_text_file(path: Path) -> str:
+def iter_banner_data_json(root: Path) -> list[Path]:
+    paths: list[Path] = []
+    for dirpath, _dirnames, filenames in walk_filtered(root):
+        if "banner_data.json" in filenames:
+            paths.append(Path(dirpath) / "banner_data.json")
+    return sorted(paths)
+
+
+def read_utf8(path: Path) -> str:
     return path.read_text(encoding="utf-8", errors="replace")
 
 
-def file_section(relative_display: str, body: str) -> list[str]:
+def header_block(title: str) -> list[str]:
+    return ["", RULE, title, RULE, ""]
+
+
+def file_block(label: str, content: str) -> list[str]:
     return [
         "",
-        FILE_HEADER_LINE,
-        f"FILE: {relative_display}",
-        FILE_HEADER_LINE,
+        RULE,
+        f"FILE: {label}",
+        RULE,
         "",
-        body.rstrip("\n"),
+        content.rstrip("\n"),
         "",
     ]
+
+
+def parse_args() -> argparse.Namespace:
+    p = argparse.ArgumentParser(description="Export project tree + Python + banner_data.json to one text file.")
+    p.add_argument(
+        "--root",
+        type=Path,
+        default=None,
+        help="Directory to scan (default: current working directory).",
+    )
+    p.add_argument(
+        "-o",
+        "--output",
+        type=Path,
+        default=None,
+        help=f"Output file path (default: <root>/{OUTPUT_NAME}).",
+    )
+    return p.parse_args()
 
 
 def main() -> None:
-    generated_at = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
-    chunks: list[str] = [
+    args = parse_args()
+    root = (args.root or Path.cwd()).resolve()
+    out = (args.output or (root / OUTPUT_NAME)).resolve()
+
+    if not root.is_dir():
+        raise SystemExit(f"Not a directory: {root}")
+
+    stamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    parts: list[str] = [
         "PROJECT CONTEXT EXPORT",
-        f"Generated: {generated_at}",
-        f"Root directory: {ROOT}",
+        f"Generated (UTC): {stamp}",
+        f"Root (scanned): {root}",
+        f"Output: {out}",
         "",
-        FILE_HEADER_LINE,
-        "SECTION: PROJECT STRUCTURE",
-        FILE_HEADER_LINE,
+        "Includes: project structure tree, all .py files under root, and all banner_data.json files.",
+        "Ignored: .git, __pycache__, node_modules, venv/.venv, dist, build, .eggs, *.egg-info",
         "",
-        build_project_structure(ROOT),
     ]
 
-    py_files = collect_py_files(ROOT)
-    chunks.append("")
-    chunks.append(FILE_HEADER_LINE)
-    chunks.append(f"SECTION: PYTHON SOURCES ({len(py_files)} file(s))")
-    chunks.append(FILE_HEADER_LINE)
+    parts.extend(header_block("SECTION: PROJECT STRUCTURE"))
+    parts.append(structure_section(root))
 
-    for py_path in py_files:
-        rel = py_path.relative_to(ROOT)
-        chunks.extend(file_section(rel.as_posix(), read_text_file(py_path)))
+    py_paths = iter_py_files(root)
+    parts.extend(header_block(f"SECTION: PYTHON FILES ({len(py_paths)} file(s))"))
+    for path in py_paths:
+        rel = path.relative_to(root).as_posix()
+        parts.extend(file_block(rel, read_utf8(path)))
 
-    json_path = ROOT / "banner_data.json"
-    chunks.append(FILE_HEADER_LINE)
-    chunks.append("SECTION: banner_data.json")
-    chunks.append(FILE_HEADER_LINE)
-    if json_path.is_file():
-        chunks.extend(file_section("banner_data.json", read_text_file(json_path)))
+    json_paths = iter_banner_data_json(root)
+    parts.extend(header_block(f"SECTION: banner_data.json ({len(json_paths)} file(s))"))
+    if json_paths:
+        for path in json_paths:
+            rel = path.relative_to(root).as_posix()
+            parts.extend(file_block(rel, read_utf8(path)))
     else:
-        chunks.extend(
-            file_section(
-                "banner_data.json (missing)",
-                "[This file was not found in the project root.]",
+        parts.extend(
+            file_block(
+                "banner_data.json (none found)",
+                "[No banner_data.json found under the scanned root.]",
             )
         )
 
-    OUTPUT_FILE.write_text("\n".join(chunks).rstrip() + "\n", encoding="utf-8")
-    print(f"Wrote {OUTPUT_FILE}")
+    out.write_text("\n".join(parts).rstrip() + "\n", encoding="utf-8")
+    print(f"Wrote {out}")
 
 
 if __name__ == "__main__":

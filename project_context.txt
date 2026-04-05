@@ -1,31 +1,569 @@
 PROJECT CONTEXT EXPORT
-Generated: 2026-04-04 09:57:17 UTC
-Root directory: C:\laragon\www\python
+Generated (UTC): 2026-04-05 07:41:37 UTC
+Root (scanned): C:\laragon\www\python
+Output: C:\laragon\www\python\project_context.txt
+
+Includes: project structure tree, all .py files under root, and all banner_data.json files.
+Ignored: .git, __pycache__, node_modules, venv/.venv, dist, build, .eggs, *.egg-info
+
 
 ================================================================================
 SECTION: PROJECT STRUCTURE
 ================================================================================
 
 python/
+├── client
+│   ├── public
+│   │   ├── favicon.svg
+│   │   └── icons.svg
+│   ├── src
+│   │   ├── assets
+│   │   │   ├── hero.png
+│   │   │   ├── react.svg
+│   │   │   └── vite.svg
+│   │   ├── api.js
+│   │   ├── App.css
+│   │   ├── App.jsx
+│   │   ├── AuthContext.jsx
+│   │   ├── BannerCanvas.css
+│   │   ├── BannerCanvas.jsx
+│   │   ├── BannerWorkspace.jsx
+│   │   ├── index.css
+│   │   ├── Login.jsx
+│   │   └── main.jsx
+│   ├── .env.example
+│   ├── .gitignore
+│   ├── eslint.config.js
+│   ├── index.html
+│   ├── package-lock.json
+│   ├── package.json
+│   ├── README.md
+│   └── vite.config.js
+├── tasks
+│   ├── 11c01e80-76bb-4a69-9eda-88b6bdbe57ec
+│   │   └── scraped_content.txt
+│   ├── 2ba884bc-a72c-425c-a59f-57731759c884
+│   │   ├── background.png
+│   │   ├── creative_campaign.json
+│   │   ├── logo.png
+│   │   └── scraped_content.txt
+│   ├── 43f32628-b16e-4e50-90fb-fc4e9772236d
+│   │   ├── background.png
+│   │   ├── creative_campaign.json
+│   │   ├── logo.png
+│   │   └── scraped_content.txt
+│   ├── 48c6cc92-9988-4f73-aad4-d387fb8bd176
+│   │   ├── background.png
+│   │   ├── creative_campaign.json
+│   │   ├── logo.png
+│   │   └── scraped_content.txt
+│   ├── 688f7e43-edde-441b-94f6-cb775d57895d
+│   │   ├── logo.png
+│   │   └── scraped_content.txt
+│   ├── 90846750-045a-4e3d-92c2-b93217bb941a
+│   │   ├── background.png
+│   │   ├── creative_campaign.json
+│   │   ├── logo.png
+│   │   └── scraped_content.txt
+│   ├── ae04d802-22dd-49cd-aaf3-664540b1f237
+│   │   ├── background.png
+│   │   ├── creative_campaign.json
+│   │   ├── logo.png
+│   │   └── scraped_content.txt
+│   ├── ae7c48e0-0d3c-4cc3-aa55-e327bcc4278d
+│   │   ├── background.png
+│   │   ├── creative_campaign.json
+│   │   ├── logo.png
+│   │   └── scraped_content.txt
+│   ├── bb7a8c10-3a4a-497d-8668-c535a0a3d675
+│   │   ├── background.png
+│   │   ├── creative_campaign.json
+│   │   ├── logo.png
+│   │   └── scraped_content.txt
+│   ├── db4092f8-9345-40ba-a5a0-def3e530741a
+│   │   ├── background.png
+│   │   ├── creative_campaign.json
+│   │   ├── logo.png
+│   │   └── scraped_content.txt
+│   └── f5a33a4d-7d95-42bf-a7ca-9c6ebcd5b5c0
+│       ├── background.png
+│       ├── creative_campaign.json
+│       ├── final_agency_banner.png
+│       ├── logo.png
+│       └── scraped_content.txt
+├── .env
+├── .gitignore
+├── _smoke_api.db
 ├── agency_banner.png
 ├── agency_banner_v2.png
 ├── ai-banner-generator.txt
+├── api.py
+├── auth.py
 ├── background.png
 ├── banner_data.json
 ├── composite_banner.py
 ├── creative_agent.py
 ├── creative_campaign.json
+├── database.py
 ├── export_context.py
+├── final_agency_banner.png
 ├── final_banner.png
 ├── generate_copy.py
 ├── Heebo-Bold.ttf
 ├── Heebo-VariableFont_wght.ttf
+├── html_renderer.py
+├── logo.png
 ├── main.py
+├── models.py
+├── project_context.txt
+├── requirements.txt
 └── scraped_content.txt
 
 ================================================================================
-SECTION: PYTHON SOURCES (5 file(s))
+SECTION: PYTHON FILES (10 file(s))
 ================================================================================
+
+
+================================================================================
+FILE: api.py
+================================================================================
+
+"""
+FastAPI backend for the banner generator React app.
+
+Run: uvicorn api:app --reload --host 0.0.0.0 --port 8000
+
+Requires: see requirements.txt (fastapi, uvicorn, sqlalchemy, auth libs, DB driver).
+"""
+
+from __future__ import annotations
+
+from contextlib import asynccontextmanager
+from pathlib import Path
+from typing import Annotated, Any, Literal
+import json
+import os
+import re
+import secrets
+import uuid
+
+from dotenv import load_dotenv
+
+load_dotenv(Path(__file__).resolve().parent / ".env")
+
+from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.security import OAuth2PasswordRequestForm
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, Field
+from sqlalchemy import select
+from sqlalchemy.orm import Session, joinedload
+
+from auth import create_access_token, get_current_superuser, get_current_user, get_password_hash, verify_password
+from database import Base, SessionLocal, engine, get_db
+from main import BASE_DIR, crawl_from_url, run_agency_banner_pipeline
+from models import BannerTask, User
+
+TASKS_DIR = BASE_DIR / "tasks"
+TASKS_DIR.mkdir(parents=True, exist_ok=True)
+
+TaskStatus = Literal["pending", "scraped", "generating_image", "completed", "failed"]
+
+SUPERUSER_EMAIL = "gal0673@gmail.com".lower()
+
+_BRAND_HEX = re.compile(r"^#[0-9A-Fa-f]{6}$")
+
+
+def _persist_task(task_uuid: uuid.UUID, **kwargs: Any) -> None:
+    with SessionLocal() as db:
+        row = db.get(BannerTask, task_uuid)
+        if row is None:
+            return
+        for key, value in kwargs.items():
+            setattr(row, key, value)
+        db.commit()
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    Base.metadata.create_all(bind=engine)
+    if not os.environ.get("JWT_SECRET_KEY"):
+        print(
+            "[startup] WARNING: JWT_SECRET_KEY is not set; login and protected routes will fail until it is set."
+        )
+
+    with SessionLocal() as db:
+        existing = db.execute(select(User).where(User.email == SUPERUSER_EMAIL)).scalar_one_or_none()
+        if existing is None:
+            initial_password = secrets.token_urlsafe(24)
+            su = User(
+                email=SUPERUSER_EMAIL,
+                hashed_password=get_password_hash(initial_password),
+                is_superuser=True,
+            )
+            db.add(su)
+            db.commit()
+            print(
+                f"[bootstrap] Created superuser {SUPERUSER_EMAIL}; "
+                f"initial password (rotate after first login): {initial_password}"
+            )
+    yield
+
+
+app = FastAPI(title="Banner generator API", lifespan=lifespan)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+        "http://localhost:5174",    # <-- הוספנו את זה
+        "http://127.0.0.1:5174",
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+app.mount("/task-files", StaticFiles(directory=str(TASKS_DIR)), name="task_files")
+
+
+class RegisterRequest(BaseModel):
+    email: str = Field(..., min_length=3, max_length=255)
+    password: str = Field(..., min_length=8, max_length=128)
+
+
+class TokenResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+
+
+class GenerateRequest(BaseModel):
+    url: str = Field(..., min_length=1, description="Site URL to crawl")
+    brief: str | None = Field(
+        default=None,
+        max_length=12000,
+        description="Optional campaign goal / target audience for the creative model",
+    )
+
+
+def run_banner_task(task_id: str, url: str, brief: str | None) -> None:
+    task_uuid = uuid.UUID(task_id)
+    work_dir = TASKS_DIR / task_id
+    try:
+        crawl_from_url(url, work_dir=work_dir, campaign_brief=brief)
+        _persist_task(task_uuid, status="scraped")
+
+        if not os.environ.get("OPENAI_API_KEY"):
+            _persist_task(task_uuid, status="failed", error="OPENAI_API_KEY is not set")
+            return
+
+        _persist_task(task_uuid, status="generating_image")
+        run_agency_banner_pipeline(work_dir=work_dir)
+
+        campaign_path = work_dir / "creative_campaign.json"
+        background = work_dir / "background.png"
+        logo = work_dir / "logo.png"
+        if not campaign_path.is_file() or not background.is_file() or not logo.is_file():
+            _persist_task(
+                task_uuid,
+                status="failed",
+                error="Missing creative_campaign.json, background.png, or logo.png after pipeline.",
+            )
+            return
+
+        with campaign_path.open(encoding="utf-8") as f:
+            data = json.load(f)
+
+        for key in ("headline", "subhead", "cta"):
+            if key not in data or not str(data[key]).strip():
+                _persist_task(
+                    task_uuid,
+                    status="failed",
+                    error=f"Invalid creative_campaign.json: missing or empty {key!r}",
+                )
+                return
+        bullets = data.get("bullet_points")
+        if not isinstance(bullets, list) or len(bullets) != 3:
+            _persist_task(
+                task_uuid,
+                status="failed",
+                error="Invalid creative_campaign.json: bullet_points must be 3 strings.",
+            )
+            return
+
+        bc_raw = data.get("brand_color")
+        if not isinstance(bc_raw, str) or not bc_raw.strip():
+            _persist_task(
+                task_uuid,
+                status="failed",
+                error="Invalid creative_campaign.json: missing or empty brand_color.",
+            )
+            return
+        bc = bc_raw.strip()
+        if not bc.startswith("#"):
+            bc = "#" + bc
+        if not _BRAND_HEX.match(bc):
+            _persist_task(
+                task_uuid,
+                status="failed",
+                error="Invalid creative_campaign.json: brand_color must be #RRGGBB hex.",
+            )
+            return
+
+        _persist_task(
+            task_uuid,
+            status="completed",
+            error=None,
+            headline=str(data["headline"]).strip(),
+            subhead=str(data["subhead"]).strip(),
+            bullet_points=[str(b).strip() for b in bullets],
+            cta=str(data["cta"]).strip(),
+            brand_color=bc.upper(),
+            background_url=f"/task-files/{task_id}/background.png",
+            logo_url=f"/task-files/{task_id}/logo.png",
+        )
+    except Exception as exc:  # noqa: BLE001 — surface any pipeline failure to the client
+        _persist_task(task_uuid, status="failed", error=str(exc))
+
+
+@app.post("/auth/register", status_code=201)
+def register(body: RegisterRequest, db: Annotated[Session, Depends(get_db)]) -> dict[str, str]:
+    email = body.email.strip().lower()
+    if not email:
+        raise HTTPException(status_code=400, detail="email must not be empty")
+    existing = db.execute(select(User).where(User.email == email)).scalar_one_or_none()
+    if existing is not None:
+        raise HTTPException(status_code=400, detail="Email already registered")
+    user = User(
+        email=email,
+        hashed_password=get_password_hash(body.password),
+        is_superuser=False,
+    )
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+    return {"id": str(user.id), "email": user.email}
+
+
+@app.post("/auth/login", response_model=TokenResponse)
+def login(
+    form_data: Annotated[OAuth2PasswordRequestForm, Depends()],
+    db: Annotated[Session, Depends(get_db)],
+) -> TokenResponse:
+    # OAuth2PasswordRequestForm uses "username"; we treat it as the user's email.
+    email = form_data.username.strip().lower()
+    user = db.execute(select(User).where(User.email == email)).scalar_one_or_none()
+    if user is None or not verify_password(form_data.password, user.hashed_password):
+        raise HTTPException(status_code=401, detail="Incorrect email or password")
+    token = create_access_token(subject=str(user.id))
+    return TokenResponse(access_token=token)
+
+
+@app.post("/generate")
+def generate(
+    body: GenerateRequest,
+    background_tasks: BackgroundTasks,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> dict[str, str]:
+    url = body.url.strip()
+    if not url:
+        raise HTTPException(status_code=400, detail="url must not be empty")
+
+    brief = (body.brief or "").strip() or None
+
+    task_id = uuid.uuid4()
+    row = BannerTask(
+        id=task_id,
+        user_id=current_user.id,
+        status="pending",
+        url=url,
+        brief=brief,
+        error=None,
+        headline=None,
+        subhead=None,
+        bullet_points=None,
+        cta=None,
+        brand_color=None,
+        background_url=None,
+        logo_url=None,
+    )
+    db.add(row)
+    db.commit()
+    tid = str(task_id)
+    background_tasks.add_task(run_banner_task, tid, url, brief)
+    return {"task_id": tid}
+
+
+@app.get("/status/{task_id}")
+def get_status(
+    task_id: str,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> dict[str, Any]:
+    try:
+        tid = uuid.UUID(task_id)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Unknown task_id") from None
+
+    row = db.get(BannerTask, tid)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Unknown task_id")
+    if not current_user.is_superuser and row.user_id != current_user.id:
+        raise HTTPException(status_code=404, detail="Unknown task_id")
+
+    status_val: TaskStatus = row.status  # type: ignore[assignment]
+    return {
+        "task_id": task_id,
+        "status": status_val,
+        "error": row.error,
+        "headline": row.headline,
+        "subhead": row.subhead,
+        "bullet_points": row.bullet_points,
+        "cta": row.cta,
+        "brand_color": row.brand_color,
+        "background_url": row.background_url,
+        "logo_url": row.logo_url,
+    }
+
+
+@app.get("/admin/tasks")
+def admin_list_tasks(
+    _: Annotated[User, Depends(get_current_superuser)],
+    db: Annotated[Session, Depends(get_db)],
+) -> list[dict[str, Any]]:
+    stmt = select(BannerTask).options(joinedload(BannerTask.user)).order_by(BannerTask.id)
+    rows = db.scalars(stmt).unique().all()
+    out: list[dict[str, Any]] = []
+    for t in rows:
+        out.append(
+            {
+                "task_id": str(t.id),
+                "user_id": str(t.user_id),
+                "user_email": t.user.email,
+                "status": t.status,
+                "url": t.url,
+                "brief": t.brief,
+                "error": t.error,
+                "headline": t.headline,
+                "subhead": t.subhead,
+                "bullet_points": t.bullet_points,
+                "cta": t.cta,
+                "brand_color": t.brand_color,
+                "background_url": t.background_url,
+                "logo_url": t.logo_url,
+            }
+        )
+    return out
+
+
+================================================================================
+FILE: auth.py
+================================================================================
+
+"""Password hashing, JWT helpers, and FastAPI auth dependencies."""
+
+from __future__ import annotations
+
+import os
+from datetime import datetime, timedelta, timezone
+from typing import Annotated, Any
+from uuid import UUID
+
+from fastapi import Depends, HTTPException, status
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from jose import JWTError, jwt
+from passlib.context import CryptContext
+from sqlalchemy.orm import Session
+
+from database import get_db
+from models import User
+
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
+SECRET_KEY = os.environ.get("JWT_SECRET_KEY", "")
+ALGORITHM = os.environ.get("JWT_ALGORITHM", "HS256")
+ACCESS_TOKEN_EXPIRE_MINUTES = int(os.environ.get("ACCESS_TOKEN_EXPIRE_MINUTES", "10080"))
+
+http_bearer = HTTPBearer(auto_error=False)
+
+
+def verify_password(plain_password: str, hashed_password: str) -> bool:
+    return pwd_context.verify(plain_password, hashed_password)
+
+
+def get_password_hash(password: str) -> str:
+    return pwd_context.hash(password)
+
+
+def create_access_token(subject: str, expires_delta: timedelta | None = None) -> str:
+    if not SECRET_KEY:
+        raise RuntimeError("JWT_SECRET_KEY is not set in the environment.")
+    expire = datetime.now(timezone.utc) + (
+        expires_delta if expires_delta is not None else timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    )
+    to_encode: dict[str, Any] = {"sub": subject, "exp": expire}
+    return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+
+
+def decode_access_token(token: str) -> str:
+    if not SECRET_KEY:
+        raise RuntimeError("JWT_SECRET_KEY is not set in the environment.")
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        sub = payload.get("sub")
+        if not isinstance(sub, str) or not sub:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid token payload",
+            )
+        return sub
+    except JWTError:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Could not validate credentials",
+            headers={"WWW-Authenticate": "Bearer"},
+        ) from None
+
+
+def get_current_user(
+    credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(http_bearer)],
+    db: Annotated[Session, Depends(get_db)],
+) -> User:
+    if credentials is None or credentials.scheme.lower() != "bearer":
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Not authenticated",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    user_id_str = decode_access_token(credentials.credentials)
+    try:
+        user_uuid = UUID(user_id_str)
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid token subject",
+        ) from None
+    user = db.get(User, user_uuid)
+    if user is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="User not found",
+        )
+    return user
+
+
+def get_current_superuser(current_user: Annotated[User, Depends(get_current_user)]) -> User:
+    if not current_user.is_superuser:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Superuser privileges required",
+        )
+    return current_user
+
 
 ================================================================================
 FILE: composite_banner.py
@@ -155,69 +693,49 @@ FILE: creative_agent.py
 ================================================================================
 
 """
-Elite marketing-agency banner: GPT-4o copy (any industry), DALL-E 3 background,
-right-half panel + brand logo — save agency_banner_with_logo.png.
+Elite marketing-agency banner: GPT-4o copy (any industry), DALL-E 3 background.
 
 Requires:
-  pip install openai requests pillow arabic-reshaper python-bidi
+  pip install openai requests
   Env: OPENAI_API_KEY
 
-Inputs:  scraped_content.txt (UTF-8), logo.png (same folder)
-Outputs: creative_campaign.json, background.png, agency_banner_with_logo.png
-Font:    Heebo-Bold.ttf next to this script (same folder).
+Inputs:  scraped_content.txt (UTF-8)
+Outputs: creative_campaign.json, background.png
+
+Final raster banner: run main.py (HTML + headless Chrome) or wire html_renderer yourself.
 """
 
 from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 from pathlib import Path
 
-import arabic_reshaper
 import requests
-from bidi.algorithm import get_display
+from dotenv import load_dotenv
 from openai import OpenAI
-from PIL import Image, ImageDraw, ImageFont
 
 BASE = Path(__file__).resolve().parent
+load_dotenv(BASE / ".env")
 SCRAPED_PATH = BASE / "scraped_content.txt"
-HEEBO_FONT_PATH = BASE / "Heebo-Bold.ttf"
-LOGO_PATH = BASE / "logo.png"
 BACKGROUND_PNG_PATH = BASE / "background.png"
 CAMPAIGN_JSON_PATH = BASE / "creative_campaign.json"
-FINAL_BANNER_PATH = BASE / "agency_banner_with_logo.png"
 
-BANNER_SIZE = 1024
-
-# Panel (right half)
-PANEL_PAD_X = 40
-PANEL_PAD_Y = 36
-LOGO_TARGET_WIDTH = 200
-LOGO_TOP_Y = 28
-LOGO_GAP_BELOW = 22
-PANEL_OPACITY = 0.80
-# Dark blue panel (80% opacity applied via alpha)
-PANEL_FILL = (12, 20, 38)
-
-# Typography (Heebo-Bold for all; weights simulated by size)
-HEADLINE_FONT_SIZE = 42
-SUBHEAD_FONT_SIZE = 26
-CTA_FONT_SIZE = 28
-HEADLINE_SUBHEAD_GAP = 20
-TEXT_BUTTON_GAP = 36
-BUTTON_PAD_X = 36
-BUTTON_PAD_Y = 18
-BUTTON_RADIUS = 14
-BOTTOM_PAD = 44
-
-GOLD_FILL = (247, 200, 48, 255)
-GOLD_OUTLINE = (255, 235, 160, 255)
-GOLD_SHADOW = (180, 130, 10, 255)
-CTA_TEXT_BLACK = (12, 14, 18, 255)
-SUBHEAD_GRAY = (210, 215, 225, 255)
+# Always appended to the model-written image_prompt when calling DALL·E 3 (strict enforcement).
+DALLE_IMAGE_API_ENFORCEMENT = (
+    "STRICT: The image MUST BE an empty environment, abstract background, or still-life object only. "
+    "ABSOLUTELY NO humans, people, avatars, characters, body parts, or hands. "
+    "CRITICAL: The image MUST be completely devoid of any text, letters, numbers, or UI gibberish. "
+    "Use abstract, clean, or depth-of-field styles only; do not render fake text on screens, walls, or devices."
+)
 
 ELITE_AGENCY_SYSTEM = """You are an elite full-service marketing agency: sharp strategy, any vertical, any geography.
+
+INPUTS YOU MUST COMBINE:
+1) SCRAPED WEBSITE TEXT — titles, paragraphs, and on-page signals from the crawl (may include a trailing section).
+2) OPTIONAL USER CAMPAIGN BRIEF — when the document contains a block titled "USER CAMPAIGN BRIEF (goals / target audience — provided by the user)", treat it as authoritative guidance for positioning, tone, and who we are speaking to. Weight it heavily: align headline, subhead, bullets, and CTA with those goals and that audience while staying truthful to the brand inferred from the site. If the brief is absent or empty, rely solely on the scraped site.
 
 Your job is to read the scraped website text and DYNAMICALLY infer:
 • The ACTUAL brand or business name (how customers would recognize them).
@@ -231,12 +749,22 @@ Focus on real value propositions, offerings, and customer-facing copy.
 
 Then identify the prospect’s main PAIN POINT and the brand’s main SOLUTION or benefit.
 
-Output ONLY valid JSON (no markdown, no extra keys) with exactly these four string fields:
+The deliverable feeds an HTML-based marketing layout (not a baked-in image overlay). Copy will be placed in the page as structured text; the image is a separate hero/background asset.
 
-- headline: A punchy Hebrew QUESTION that highlights the customer’s pain. Cleverly weave in the inferred BRAND NAME and/or CORE SERVICE where it feels natural (not forced). Keep it banner-short.
-- subhead: One short Hebrew sentence — the main solution, outcome, or benefit (not a question). Confident and clear.
-- cta: Hebrew call to action, exactly 2–3 words (imperative).
-- image_prompt: One detailed ENGLISH prompt for DALL-E 3. The visual scene must match the IDENTIFIED INDUSTRY and mood (e.g. workshop & van for trades; courtroom or office for legal; kitchen for food; calm studio for wellness; desks & screens for software — adapt freely). CRITICAL COMPOSITION: The entire RIGHT HALF of the square frame (from the vertical centerline to the right edge) must be CLEAN NEGATIVE SPACE only — smooth wall, soft gradient, or empty minimal backdrop — NO objects, people, equipment, or busy detail there; reserved for overlay text. Main subject and environment occupy the LEFT half only. Absolutely NO text, letters, numbers, logos, watermarks, or readable signage anywhere in the image."""
+LANGUAGE: Write headline, subhead, bullet_points, and cta entirely in natural, marketing-grade Hebrew. image_prompt must be in English (for DALL-E 3).
+
+Output ONLY valid JSON (no markdown, no commentary, no extra keys) with exactly these keys:
+
+- headline (string): A punchy Hebrew line for the main title. You may use a question or a bold statement; weave in the inferred brand or core service where it fits naturally. Keep it short (hero headline length).
+- subhead (string): One short Hebrew sentence — the main solution, outcome, or differentiator. Confident and clear.
+- bullet_points (array): Exactly three strings. Each is a very short Hebrew benefit or feature that is SPECIFIC to this scraped business (derive from real offerings, audience, or proof signals in the source — not generic filler). No duplicates; each bullet adds a distinct angle.
+- cta (string): Hebrew call to action, imperative, about 2–4 words.
+- brand_color (string): A single CSS hex color for the brand accent, exactly 7 characters: "#" plus six hexadecimal digits (e.g. "#1D4ED8"). Infer the dominant brand color from the website copy and context (product category, named colors, industry cues). If the site gives no clear color signal, choose a vibrant, professional accent that fits the brand personality (still as valid hex).
+- image_prompt (string): One detailed ENGLISH prompt for DALL-E 3. Describe a strong hero/background image that matches the identified industry (e.g. workshop and tools for trades; professional office for legal; appetizing setting for food; calm space for wellness; modern workspace for software — adapt to the actual business). The prompt MUST always weave in these exact sensibility keywords/phrases (or very close equivalents): "bright daylight lighting", "clean white or light-gray background", "airy modern aesthetic", "optimistic vibe". Avoid dark, moody, low-key, neon-heavy, or "cyberpunk" tech visuals — no dramatic night scenes, heavy shadows as the dominant look, or dystopian/futuristic noir; the image must harmonize with a light-themed web layout. No requirement to reserve empty zones for text — HTML handles typography.
+
+*** image_prompt — NON-NEGOTIABLE (highest priority) ***
+""" + DALLE_IMAGE_API_ENFORCEMENT + """
+You MUST bake the above into image_prompt: the scene is NEVER allowed to include people, faces, silhouettes, crowds, workers, customers, hands, or any living figures—only empty spaces, props, food/drink/plants/objects without holders, or fully abstract backdrops. Prefer compositions where pseudo-text cannot appear — abstract textures, nature, architecture without signs, heavily blurred backgrounds, macro details, empty/minimal surfaces, or depth-of-field that keeps screens/devices out of focus. Avoid prompts that invite laptops, phones, monitors, whiteboards, posters, books with visible pages, or wall art with glyphs. Reiterate in your own words: NO text, NO numbers, NO UI gibberish, NO logos, watermarks, or readable signage anywhere."""
 
 
 def _require_api_key() -> None:
@@ -251,92 +779,15 @@ def _require_api_key() -> None:
 
 def _read_scraped() -> str:
     if not SCRAPED_PATH.is_file():
-        print(f"[creative_agent] ERROR: {SCRAPED_PATH} not found.", file=sys.stderr)
-        sys.exit(1)
+        raise RuntimeError(f"[creative_agent] ERROR: {SCRAPED_PATH} not found.")
     text = SCRAPED_PATH.read_text(encoding="utf-8").strip()
     if not text:
-        print("[creative_agent] ERROR: scraped content is empty.", file=sys.stderr)
-        sys.exit(1)
+        raise RuntimeError("[creative_agent] ERROR: scraped content is empty.")
     return text
 
 
-def _require_font() -> None:
-    if not HEEBO_FONT_PATH.is_file():
-        print(
-            f"[creative_agent] ERROR: Hebrew font not found: {HEEBO_FONT_PATH}\n"
-            "Place Heebo-Bold.ttf in the same folder as creative_agent.py.",
-            file=sys.stderr,
-        )
-        sys.exit(1)
-
-
-def _require_logo() -> None:
-    if not LOGO_PATH.is_file():
-        print(
-            f"[creative_agent] ERROR: Logo not found: {LOGO_PATH}\n"
-            "Place logo.png in the same folder as creative_agent.py.",
-            file=sys.stderr,
-        )
-        sys.exit(1)
-
-
-def load_resized_logo_rgba() -> Image.Image:
-    """Resize logo to ~LOGO_TARGET_WIDTH px wide; preserve aspect ratio; keep alpha."""
-    im = Image.open(LOGO_PATH).convert("RGBA")
-    lw, lh = im.size
-    if lw <= 0:
-        print("[creative_agent] ERROR: logo.png has invalid width.", file=sys.stderr)
-        sys.exit(1)
-    if lw == LOGO_TARGET_WIDTH:
-        return im
-    scale = LOGO_TARGET_WIDTH / float(lw)
-    nw = LOGO_TARGET_WIDTH
-    nh = max(1, int(round(lh * scale)))
-    return im.resize((nw, nh), Image.Resampling.LANCZOS)
-
-
-def prepare_hebrew(text: str) -> str:
-    reshaped = arabic_reshaper.reshape(text)
-    return get_display(reshaped)
-
-
-def _load_heebo(size: int) -> ImageFont.FreeTypeFont:
-    return ImageFont.truetype(str(HEEBO_FONT_PATH), size=size)
-
-
-def wrap_hebrew_paragraph(
-    raw: str,
-    draw: ImageDraw.ImageDraw,
-    font: ImageFont.FreeTypeFont,
-    max_width: int,
-) -> list[str]:
-    """Word-wrap raw Hebrew (before bidi) to fit max_width using prepared line widths."""
-    words = raw.split()
-    if not words:
-        return []
-    lines: list[str] = []
-    current: list[str] = []
-    for w in words:
-        trial = " ".join(current + [w])
-        prep = prepare_hebrew(trial)
-        bbox = draw.textbbox((0, 0), prep, font=font)
-        tw = bbox[2] - bbox[0]
-        if tw <= max_width:
-            current.append(w)
-        else:
-            if current:
-                lines.append(" ".join(current))
-                current = [w]
-            else:
-                lines.append(w)
-                current = []
-    if current:
-        lines.append(" ".join(current))
-    return lines
-
-
 def fetch_banner_payload(client: OpenAI, user_content: str) -> dict:
-    print("[creative_agent] Step 1/4: Requesting copy + image brief from GPT-4o (Elite Marketing Agency)…")
+    print("[creative_agent] Step 1/3: Requesting copy + image brief from GPT-4o (Elite Marketing Agency)…")
     response = client.chat.completions.create(
         model="gpt-4o",
         messages=[
@@ -347,185 +798,92 @@ def fetch_banner_payload(client: OpenAI, user_content: str) -> dict:
     )
     text = response.choices[0].message.content
     if not text:
-        print("[creative_agent] ERROR: Empty response from GPT-4o.", file=sys.stderr)
-        sys.exit(1)
-    print("[creative_agent] Step 1/4: Parsing JSON…")
+        raise RuntimeError("[creative_agent] ERROR: Empty response from GPT-4o.")
+    print("[creative_agent] Step 1/3: Parsing JSON…")
     data = json.loads(text)
-    for key in ("headline", "subhead", "cta", "image_prompt"):
+    for key in ("headline", "subhead", "cta", "image_prompt", "brand_color"):
         if key not in data or not str(data[key]).strip():
-            print(f"[creative_agent] ERROR: Missing or empty JSON key {key!r}.", file=sys.stderr)
-            sys.exit(1)
-    print("[creative_agent] Step 1/4: OK — headline, subhead, cta, image_prompt received.")
+            raise RuntimeError(f"[creative_agent] ERROR: Missing or empty JSON key {key!r}.")
+    bullets = data.get("bullet_points")
+    if not isinstance(bullets, list):
+        raise RuntimeError(
+            "[creative_agent] ERROR: JSON key 'bullet_points' must be an array of exactly 3 strings."
+        )
+    if len(bullets) != 3:
+        raise RuntimeError(
+            f"[creative_agent] ERROR: 'bullet_points' must contain exactly 3 items, got {len(bullets)}."
+        )
+    normalized: list[str] = []
+    for i, item in enumerate(bullets):
+        if not isinstance(item, str) or not item.strip():
+            raise RuntimeError(
+                f"[creative_agent] ERROR: 'bullet_points'[{i}] must be a non-empty string."
+            )
+        normalized.append(item.strip())
+    data["bullet_points"] = normalized
+
+    hex_color = str(data["brand_color"]).strip()
+    if not hex_color.startswith("#"):
+        hex_color = "#" + hex_color
+    if not re.fullmatch(r"#[0-9A-Fa-f]{6}", hex_color):
+        raise RuntimeError(
+            f"[creative_agent] ERROR: 'brand_color' must be #RRGGBB hex, got {data['brand_color']!r}."
+        )
+    data["brand_color"] = hex_color.upper()
+
+    print(
+        "[creative_agent] Step 1/3: OK — headline, subhead, bullet_points (3), cta, brand_color, image_prompt received."
+    )
     return data
 
 
-def generate_background_dalle3(client: OpenAI, image_prompt: str) -> None:
-    print("[creative_agent] Step 2/4: Generating background with DALL-E 3 (1024×1024)…")
+def generate_background_dalle3(
+    client: OpenAI, image_prompt: str, *, output_path: Path | None = None
+) -> Path:
+    dest = Path(output_path) if output_path is not None else BACKGROUND_PNG_PATH
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    print("[creative_agent] Step 2/3: Generating background with DALL-E 3 (1024×1024)…")
+    combined_prompt = f"{image_prompt.strip()}\n\n{DALLE_IMAGE_API_ENFORCEMENT}"
     img_response = client.images.generate(
         model="dall-e-3",
-        prompt=image_prompt,
+        prompt=combined_prompt,
         size="1024x1024",
     )
     image_url = img_response.data[0].url
     if not image_url:
-        print("[creative_agent] ERROR: DALL-E returned no image URL.", file=sys.stderr)
-        sys.exit(1)
-    print("[creative_agent] Step 2/4: Downloading image from OpenAI URL…")
+        raise RuntimeError("[creative_agent] ERROR: DALL-E returned no image URL.")
+    print("[creative_agent] Step 2/3: Downloading image from OpenAI URL…")
     img_req = requests.get(image_url, timeout=120)
     img_req.raise_for_status()
-    BACKGROUND_PNG_PATH.write_bytes(img_req.content)
-    print(f"[creative_agent] Step 2/4: Wrote {BACKGROUND_PNG_PATH}.")
-
-
-def run_panel_design_engine(
-    headline_raw: str,
-    subhead_raw: str,
-    cta_raw: str,
-    out_path: Path,
-) -> None:
-    """
-    Right-half dark panel (~80% opacity), logo top-center, then Heebo headline + subhead,
-    gold CTA at bottom.
-    """
-    if not BACKGROUND_PNG_PATH.is_file():
-        print(f"[creative_agent] ERROR: {BACKGROUND_PNG_PATH} not found.", file=sys.stderr)
-        sys.exit(1)
-
-    print("[creative_agent] Step 4/4: Panel design — loading background…")
-    base = Image.open(BACKGROUND_PNG_PATH).convert("RGBA")
-    w, h = base.size
-    if (w, h) != (BANNER_SIZE, BANNER_SIZE):
-        print(
-            f"[creative_agent] Step 4/4: Resizing background {w}×{h} → {BANNER_SIZE}×{BANNER_SIZE}…"
-        )
-        base = base.resize((BANNER_SIZE, BANNER_SIZE), Image.Resampling.LANCZOS)
-        w = h = BANNER_SIZE
-
-    panel_x0 = w // 2
-    alpha = int(round(255 * PANEL_OPACITY))
-    r, g, b = PANEL_FILL
-    overlay = Image.new("RGBA", (w, h), (0, 0, 0, 0))
-    panel_draw = ImageDraw.Draw(overlay)
-    panel_draw.rectangle([panel_x0, 0, w, h], fill=(r, g, b, alpha))
-    canvas = Image.alpha_composite(base, overlay)
-
-    panel_center_x = (panel_x0 + w) // 2
-    print("[creative_agent] Step 4/4: Placing logo (top-center of panel, alpha mask)…")
-    logo_img = load_resized_logo_rgba()
-    logo_w, logo_h = logo_img.size
-    logo_x = panel_center_x - logo_w // 2
-    logo_x = max(panel_x0 + PANEL_PAD_X, min(logo_x, w - PANEL_PAD_X - logo_w))
-    logo_y = LOGO_TOP_Y
-    canvas.paste(logo_img, (logo_x, logo_y), logo_img)
-    content_top_y = logo_y + logo_h + LOGO_GAP_BELOW
-
-    draw = ImageDraw.Draw(canvas)
-
-    inner_left = panel_x0 + PANEL_PAD_X
-    inner_right = w - PANEL_PAD_X
-    text_max_w = inner_right - inner_left
-
-    cta = prepare_hebrew(str(cta_raw))
-
-    head_sz = HEADLINE_FONT_SIZE
-    font_head = _load_heebo(head_sz)
-    for _ in range(4):
-        raw_h = wrap_hebrew_paragraph(str(headline_raw), draw, font_head, text_max_w)
-        if len(raw_h) <= 4:
-            break
-        head_sz = max(26, head_sz - 4)
-        font_head = _load_heebo(head_sz)
-    h_lines = [prepare_hebrew(line) for line in raw_h]
-
-    font_sub = _load_heebo(SUBHEAD_FONT_SIZE)
-    font_cta = _load_heebo(CTA_FONT_SIZE)
-    s_lines = [prepare_hebrew(line) for line in wrap_hebrew_paragraph(str(subhead_raw), draw, font_sub, text_max_w)]
-
-    cb = draw.textbbox((0, 0), cta, font=font_cta)
-    ctw = cb[2] - cb[0]
-    cth = cb[3] - cb[1]
-    btn_w = ctw + 2 * BUTTON_PAD_X
-    btn_h = cth + 2 * BUTTON_PAD_Y
-    bx0 = panel_center_x - btn_w // 2
-    bx0 = max(inner_left, min(bx0, inner_right - btn_w))
-    by1 = h - BOTTOM_PAD
-    by0 = by1 - btn_h
-
-    # Stack text below logo, stop above button
-    y = content_top_y
-    text_ceiling = by0 - TEXT_BUTTON_GAP
-
-    def line_height(font: ImageFont.FreeTypeFont, line: str) -> int:
-        bb = draw.textbbox((0, 0), line, font=font)
-        return bb[3] - bb[1]
-
-    def draw_rtl_line(line: str, font: ImageFont.FreeTypeFont, fill: tuple[int, int, int, int]) -> float:
-        nonlocal y
-        bbox = draw.textbbox((0, 0), line, font=font)
-        line_w = bbox[2] - bbox[0]
-        x = inner_right - line_w - bbox[0]
-        shadow = (0, 0, 0, 90)
-        for dx, dy in ((2, 2), (1, 1)):
-            draw.text((x + dx, y + dy), line, font=font, fill=shadow)
-        draw.text((x, y), line, font=font, fill=fill)
-        y += line_height(font, line) + 8
-        return y
-
-    print("[creative_agent] Step 4/4: Drawing headline + subhead on panel (Heebo)…")
-    for line in h_lines:
-        if y > text_ceiling - line_height(font_head, line):
-            break
-        draw_rtl_line(line, font_head, (255, 255, 255, 255))
-
-    y += HEADLINE_SUBHEAD_GAP - 8
-    for line in s_lines:
-        if y > text_ceiling - line_height(font_sub, line):
-            break
-        draw_rtl_line(line, font_sub, SUBHEAD_GRAY)
-
-    print("[creative_agent] Step 4/4: Drawing gold CTA button…")
-    draw.rounded_rectangle(
-        [bx0, by0 + 3, bx0 + btn_w, by1],
-        radius=BUTTON_RADIUS,
-        fill=GOLD_SHADOW,
-    )
-    draw.rounded_rectangle(
-        [bx0, by0, bx0 + btn_w, by1],
-        radius=BUTTON_RADIUS,
-        fill=GOLD_FILL,
-        outline=GOLD_OUTLINE,
-        width=2,
-    )
-    tx = bx0 + BUTTON_PAD_X - cb[0]
-    ty = by0 + BUTTON_PAD_Y - cb[1]
-    draw.text((tx, ty), cta, font=font_cta, fill=CTA_TEXT_BLACK)
-
-    print("[creative_agent] Step 4/4: Saving agency_banner_with_logo.png…")
-    canvas.convert("RGB").save(out_path, format="PNG", optimize=True)
-    print(f"[creative_agent] Step 4/4: Wrote {out_path}.")
+    dest.write_bytes(img_req.content)
+    print(f"[creative_agent] Step 2/3: Wrote {dest}.")
+    return dest
 
 
 def main() -> None:
     _require_api_key()
-    _require_font()
-    _require_logo()
-    user_content = _read_scraped()
+    try:
+        user_content = _read_scraped()
+    except RuntimeError as exc:
+        print(str(exc), file=sys.stderr)
+        sys.exit(1)
     client = OpenAI()
 
-    payload = fetch_banner_payload(client, user_content)
-    generate_background_dalle3(client, str(payload["image_prompt"]))
+    try:
+        payload = fetch_banner_payload(client, user_content)
+        generate_background_dalle3(client, str(payload["image_prompt"]))
+    except RuntimeError as exc:
+        print(str(exc), file=sys.stderr)
+        sys.exit(1)
 
-    print(f"[creative_agent] Step 3/4: Saving payload to {CAMPAIGN_JSON_PATH}…")
+    print(f"[creative_agent] Step 3/3: Saving payload to {CAMPAIGN_JSON_PATH}…")
     with CAMPAIGN_JSON_PATH.open("w", encoding="utf-8") as f:
         json.dump(payload, f, ensure_ascii=False, indent=2)
 
-    run_panel_design_engine(
-        str(payload["headline"]),
-        str(payload["subhead"]),
-        str(payload["cta"]),
-        FINAL_BANNER_PATH,
+    print(
+        "[creative_agent] Done — creative_campaign.json and background.png ready. "
+        "Run main.py with OPENAI_API_KEY for background.png + creative_campaign.json (live editor / client export)."
     )
-    print("[creative_agent] Pipeline complete — agency_banner_with_logo.png is ready.")
 
 
 if __name__ == "__main__":
@@ -533,127 +891,237 @@ if __name__ == "__main__":
 
 
 ================================================================================
-FILE: export_context.py
+FILE: database.py
 ================================================================================
 
-"""
-Scan the project directory (folder containing this script), export all .py sources,
-banner_data.json, and a directory tree into project_context.txt for AI / tooling context.
-
-Ignores .git and __pycache__ everywhere.
-
-Usage: python export_context.py
-"""
+"""SQLAlchemy engine, session factory, and FastAPI DB dependency."""
 
 from __future__ import annotations
 
 import os
+
+from sqlalchemy import create_engine
+from sqlalchemy.orm import DeclarativeBase, sessionmaker
+
+DATABASE_URL = os.environ.get("DATABASE_URL")
+if not DATABASE_URL:
+    raise RuntimeError(
+        "DATABASE_URL is not set. Add it to your .env (e.g. mysql+pymysql://user:pass@localhost/dbname)."
+    )
+
+engine = create_engine(
+    DATABASE_URL,
+    pool_pre_ping=True,
+)
+
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+
+class Base(DeclarativeBase):
+    pass
+
+
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+
+================================================================================
+FILE: export_context.py
+================================================================================
+
+"""
+Export project context for AI assistants and other tools.
+
+Scans the *current working directory* (where you run the command) and writes
+``project_context.txt`` with:
+
+  - A tree of the project structure
+  - The full text of every ``.py`` file (recursive)
+  - The contents of every ``banner_data.json`` found (recursive)
+
+Ignored everywhere: ``.git``, ``__pycache__``.
+
+Also skipped (optional noise / huge trees): ``node_modules``, ``.venv``, ``venv``, ``dist``, ``build``,
+``.eggs``, ``*.egg-info`` (directory names ending with ``.egg-info``).
+
+Usage (from the project folder):
+
+    cd c:\\path\\to\\your\\project
+    python path/to/export_context.py
+
+To scan the folder that contains this script instead of cwd:
+
+    python export_context.py --root .
+"""
+
+from __future__ import annotations
+
+import argparse
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent
-OUTPUT_FILE = ROOT / "project_context.txt"
+RULE = "=" * 80
+IGNORE_DIR_NAMES = frozenset({
+    ".git",
+    "__pycache__",
+    "node_modules",
+    ".venv",
+    "venv",
+    "dist",
+    "build",
+    ".eggs",
+})
+OUTPUT_NAME = "project_context.txt"
 
-IGNORE_DIRS = frozenset({".git", "__pycache__"})
 
-FILE_HEADER_LINE = "=" * 80
+def _dir_skipped(name: str) -> bool:
+    if name in IGNORE_DIR_NAMES:
+        return True
+    if name.endswith(".egg-info"):
+        return True
+    return False
 
 
-def _tree_lines(directory: Path, prefix: str) -> list[str]:
+def project_tree_lines(directory: Path, prefix: str = "") -> list[str]:
+    """ASCII tree of files and dirs under ``directory``, skipping ignored dirs."""
     lines: list[str] = []
     try:
-        entries = [
-            p
-            for p in directory.iterdir()
-            if not (p.is_dir() and p.name in IGNORE_DIRS)
-        ]
-        entries.sort(key=lambda p: (not p.is_dir(), p.name.lower()))
+        children = sorted(
+            [p for p in directory.iterdir() if not _dir_skipped(p.name)],
+            key=lambda p: (not p.is_dir(), p.name.lower()),
+        )
     except OSError as exc:
-        return [f"{prefix}[Error reading directory: {exc}]"]
+        return [f"{prefix}[cannot read: {exc}]"]
 
-    for i, entry in enumerate(entries):
-        is_last = i == len(entries) - 1
-        branch = "└── " if is_last else "├── "
-        lines.append(f"{prefix}{branch}{entry.name}")
-        if entry.is_dir():
-            extension = "    " if is_last else "│   "
-            lines.extend(_tree_lines(entry, prefix + extension))
+    for i, path in enumerate(children):
+        last = i == len(children) - 1
+        branch = "└── " if last else "├── "
+        lines.append(f"{prefix}{branch}{path.name}")
+        if path.is_dir():
+            ext = "    " if last else "│   "
+            lines.extend(project_tree_lines(path, prefix + ext))
     return lines
 
 
-def build_project_structure(root: Path) -> str:
-    header = f"{root.name}/"
-    body_lines = _tree_lines(root, "")
-    return header + ("\n" + "\n".join(body_lines) if body_lines else "")
+def structure_section(root: Path) -> str:
+    top = f"{root.name}/"
+    body = project_tree_lines(root)
+    return top + ("\n" + "\n".join(body) if body else "")
 
 
-def collect_py_files(root: Path) -> list[Path]:
+def walk_filtered(root: Path):
+    """Like os.walk but never descends into ignored directory names."""
+    root_s = os.fspath(root.resolve())
+    for dirpath, dirnames, filenames in os.walk(root_s):
+        dirnames[:] = [d for d in dirnames if not _dir_skipped(d)]
+        yield dirpath, dirnames, filenames
+
+
+def iter_py_files(root: Path) -> list[Path]:
     paths: list[Path] = []
-    root_str = os.fspath(root)
-    for dirpath, dirnames, filenames in os.walk(root_str):
-        dirnames[:] = [d for d in dirnames if d not in IGNORE_DIRS]
+    for dirpath, _dirnames, filenames in walk_filtered(root):
         for name in filenames:
             if name.endswith(".py"):
                 paths.append(Path(dirpath) / name)
     return sorted(paths)
 
 
-def read_text_file(path: Path) -> str:
+def iter_banner_data_json(root: Path) -> list[Path]:
+    paths: list[Path] = []
+    for dirpath, _dirnames, filenames in walk_filtered(root):
+        if "banner_data.json" in filenames:
+            paths.append(Path(dirpath) / "banner_data.json")
+    return sorted(paths)
+
+
+def read_utf8(path: Path) -> str:
     return path.read_text(encoding="utf-8", errors="replace")
 
 
-def file_section(relative_display: str, body: str) -> list[str]:
+def header_block(title: str) -> list[str]:
+    return ["", RULE, title, RULE, ""]
+
+
+def file_block(label: str, content: str) -> list[str]:
     return [
         "",
-        FILE_HEADER_LINE,
-        f"FILE: {relative_display}",
-        FILE_HEADER_LINE,
+        RULE,
+        f"FILE: {label}",
+        RULE,
         "",
-        body.rstrip("\n"),
+        content.rstrip("\n"),
         "",
     ]
+
+
+def parse_args() -> argparse.Namespace:
+    p = argparse.ArgumentParser(description="Export project tree + Python + banner_data.json to one text file.")
+    p.add_argument(
+        "--root",
+        type=Path,
+        default=None,
+        help="Directory to scan (default: current working directory).",
+    )
+    p.add_argument(
+        "-o",
+        "--output",
+        type=Path,
+        default=None,
+        help=f"Output file path (default: <root>/{OUTPUT_NAME}).",
+    )
+    return p.parse_args()
 
 
 def main() -> None:
-    generated_at = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
-    chunks: list[str] = [
+    args = parse_args()
+    root = (args.root or Path.cwd()).resolve()
+    out = (args.output or (root / OUTPUT_NAME)).resolve()
+
+    if not root.is_dir():
+        raise SystemExit(f"Not a directory: {root}")
+
+    stamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    parts: list[str] = [
         "PROJECT CONTEXT EXPORT",
-        f"Generated: {generated_at}",
-        f"Root directory: {ROOT}",
+        f"Generated (UTC): {stamp}",
+        f"Root (scanned): {root}",
+        f"Output: {out}",
         "",
-        FILE_HEADER_LINE,
-        "SECTION: PROJECT STRUCTURE",
-        FILE_HEADER_LINE,
+        "Includes: project structure tree, all .py files under root, and all banner_data.json files.",
+        "Ignored: .git, __pycache__, node_modules, venv/.venv, dist, build, .eggs, *.egg-info",
         "",
-        build_project_structure(ROOT),
     ]
 
-    py_files = collect_py_files(ROOT)
-    chunks.append("")
-    chunks.append(FILE_HEADER_LINE)
-    chunks.append(f"SECTION: PYTHON SOURCES ({len(py_files)} file(s))")
-    chunks.append(FILE_HEADER_LINE)
+    parts.extend(header_block("SECTION: PROJECT STRUCTURE"))
+    parts.append(structure_section(root))
 
-    for py_path in py_files:
-        rel = py_path.relative_to(ROOT)
-        chunks.extend(file_section(rel.as_posix(), read_text_file(py_path)))
+    py_paths = iter_py_files(root)
+    parts.extend(header_block(f"SECTION: PYTHON FILES ({len(py_paths)} file(s))"))
+    for path in py_paths:
+        rel = path.relative_to(root).as_posix()
+        parts.extend(file_block(rel, read_utf8(path)))
 
-    json_path = ROOT / "banner_data.json"
-    chunks.append(FILE_HEADER_LINE)
-    chunks.append("SECTION: banner_data.json")
-    chunks.append(FILE_HEADER_LINE)
-    if json_path.is_file():
-        chunks.extend(file_section("banner_data.json", read_text_file(json_path)))
+    json_paths = iter_banner_data_json(root)
+    parts.extend(header_block(f"SECTION: banner_data.json ({len(json_paths)} file(s))"))
+    if json_paths:
+        for path in json_paths:
+            rel = path.relative_to(root).as_posix()
+            parts.extend(file_block(rel, read_utf8(path)))
     else:
-        chunks.extend(
-            file_section(
-                "banner_data.json (missing)",
-                "[This file was not found in the project root.]",
+        parts.extend(
+            file_block(
+                "banner_data.json (none found)",
+                "[No banner_data.json found under the scanned root.]",
             )
         )
 
-    OUTPUT_FILE.write_text("\n".join(chunks).rstrip() + "\n", encoding="utf-8")
-    print(f"Wrote {OUTPUT_FILE}")
+    out.write_text("\n".join(parts).rstrip() + "\n", encoding="utf-8")
+    print(f"Wrote {out}")
 
 
 if __name__ == "__main__":
@@ -769,23 +1237,176 @@ if __name__ == "__main__":
 
 
 ================================================================================
+FILE: html_renderer.py
+================================================================================
+
+"""
+Render a responsive RTL split-screen banner as HTML (Tailwind CDN, Heebo, Font Awesome).
+"""
+
+from __future__ import annotations
+
+import html
+from pathlib import Path
+from typing import Any, Mapping
+
+DEFAULT_OUTPUT = Path(__file__).resolve().parent / "banner_temp.html"
+
+# Font Awesome icon classes for the three bullets (placeholders)
+_BULLET_ICONS = (
+    "fa-solid fa-star",
+    "fa-solid fa-bolt",
+    "fa-solid fa-shield-halved",
+)
+
+
+def _asset_url(asset: Path, html_path: Path) -> str:
+    """Path usable in HTML (relative to html file, or file URI if needed)."""
+    import os
+
+    asset = asset.resolve()
+    html_dir = html_path.parent.resolve()
+    try:
+        rel = Path(os.path.relpath(asset, html_dir))
+    except ValueError:
+        return asset.as_uri()
+    return rel.as_posix()
+
+
+def render_banner_html(
+    data: Mapping[str, Any],
+    background_path: str | Path,
+    logo_path: str | Path,
+    output_path: str | Path | None = None,
+) -> str:
+    """
+    Build responsive split-screen banner HTML and save to ``banner_temp.html`` by default.
+
+    ``data`` must include: headline, subhead, bullet_points (3 strings), cta.
+    Left column: full-bleed background image. Right column (RTL): logo, copy, bullets, CTA.
+    """
+    headline = html.escape(str(data["headline"]).strip())
+    subhead = html.escape(str(data["subhead"]).strip())
+    cta = html.escape(str(data["cta"]).strip())
+    bullets = data["bullet_points"]
+    if not isinstance(bullets, (list, tuple)) or len(bullets) != 3:
+        raise ValueError("data['bullet_points'] must be a sequence of exactly 3 strings")
+
+    bg = Path(background_path)
+    logo = Path(logo_path)
+    out = Path(output_path) if output_path else DEFAULT_OUTPUT
+    out.parent.mkdir(parents=True, exist_ok=True)
+
+    bg_url = html.escape(_asset_url(bg, out), quote=True)
+    logo_url = html.escape(_asset_url(logo, out), quote=True)
+
+    bullet_rows: list[str] = []
+    for i, raw in enumerate(bullets):
+        text = html.escape(str(raw).strip())
+        icon = _BULLET_ICONS[i]
+        bullet_rows.append(
+            f"""<li class="flex min-w-0 flex-1 flex-col items-center gap-3 text-center">
+      <span class="flex h-16 w-16 shrink-0 items-center justify-center rounded-2xl bg-amber-100 text-amber-600 shadow-sm" aria-hidden="true">
+        <i class="{icon} text-2xl"></i>
+      </span>
+      <span class="text-sm font-medium leading-snug text-slate-700 md:text-base">{text}</span>
+    </li>"""
+        )
+    bullets_html = "\n    ".join(bullet_rows)
+
+    doc = f"""<!DOCTYPE html>
+<html lang="he" dir="rtl" class="h-full antialiased">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Banner</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Heebo:wght@400;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css" crossorigin="anonymous" referrerpolicy="no-referrer">
+  <script>
+    tailwind.config = {{
+      theme: {{
+        extend: {{
+          fontFamily: {{ sans: ["Heebo", "ui-sans-serif", "system-ui", "sans-serif"] }}
+        }}
+      }}
+    }};
+  </script>
+</head>
+<body class="h-full min-h-screen bg-slate-50 font-sans text-slate-800">
+  <!-- RTL flex row: first column (content) is on the right; second (image) on the left -->
+  <div class="flex min-h-screen flex-col-reverse md:flex-row md:min-h-screen">
+    <div
+      class="flex w-full flex-1 flex-col bg-slate-50 px-6 py-10 md:w-1/2 md:flex-none md:min-h-screen md:px-12 md:py-14 lg:px-16"
+    >
+      <div class="flex justify-center md:justify-end">
+        <img
+          src="{logo_url}"
+          alt="לוגו"
+          class="h-14 w-auto max-w-[220px] object-contain md:h-[4.5rem]"
+          width="220"
+          height="72"
+          style="mix-blend-mode: multiply;"
+        />
+      </div>
+      <header class="mt-8 space-y-4 text-center md:mt-10 md:text-right">
+        <h1 class="text-3xl font-extrabold leading-tight tracking-tight text-slate-800 md:text-4xl lg:text-[2.25rem]">
+          {headline}
+        </h1>
+        <p class="text-lg font-normal text-slate-600 md:text-xl">
+          {subhead}
+        </p>
+      </header>
+      <div class="mt-auto flex w-full flex-col gap-6 pt-10 md:pt-14">
+        <ul class="mx-0 flex w-full list-none flex-row flex-wrap items-start justify-between gap-4 p-0 md:mx-0 md:flex-nowrap md:gap-6" role="list">
+    {bullets_html}
+        </ul>
+        <div class="w-full">
+          <a
+            href="#"
+            class="flex w-full items-center justify-center rounded-2xl bg-amber-500 px-8 py-4 text-lg font-bold text-white shadow-md shadow-amber-500/25 transition hover:bg-amber-600 focus:outline-none focus:ring-2 focus:ring-amber-500 focus:ring-offset-2 focus:ring-offset-slate-50"
+          >
+            {cta}
+          </a>
+        </div>
+      </div>
+    </div>
+    <div
+      class="relative min-h-[42vh] w-full bg-slate-800 bg-cover bg-center md:min-h-0 md:w-1/2"
+      style="background-image: url('{bg_url}');"
+      role="img"
+      aria-label="רקע"
+    ></div>
+  </div>
+</body>
+</html>
+"""
+    out.write_text(doc, encoding="utf-8")
+    return doc
+
+
+================================================================================
 FILE: main.py
 ================================================================================
 
 """
 Crawl up to 10 unique internal pages; save title and <p> text to scraped_content.txt.
 Skips legal/accessibility junk links; downloads homepage logo to logo.png.
-
 Uses Selenium (headless Chrome) for JS-rendered sites (WordPress, Shopify, SPAs, custom stacks).
-
-Requires: pip install selenium webdriver-manager requests pillow
-Chrome must be installed; ChromeDriver via webdriver-manager.
+Requires: pip install selenium requests pillow openai
+Chrome must be installed; Selenium Manager resolves ChromeDriver automatically.
+After crawl, if OPENAI_API_KEY is set and logo.png exists, runs creative_agent: OpenAI JSON,
+DALL-E background.png, and creative_campaign.json (no HTML/screenshot step).
 """
-
 from __future__ import annotations
 
 import io
+import json
+import os
 import random
+import sys
 import time
 from collections import deque
 from pathlib import Path
@@ -796,9 +1417,7 @@ from PIL import Image, UnidentifiedImageError
 from selenium import webdriver
 from selenium.common.exceptions import WebDriverException
 from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.by import By
-from webdriver_manager.chrome import ChromeDriverManager
 
 BASE_DIR = Path(__file__).resolve().parent
 MAX_PAGES = 10
@@ -912,8 +1531,64 @@ def build_headless_chrome() -> webdriver.Chrome:
         "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
         "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
     )
-    service = Service(ChromeDriverManager().install())
-    return webdriver.Chrome(service=service, options=options)
+    return webdriver.Chrome(options=options)
+
+
+def run_agency_banner_pipeline(work_dir: Path | None = None) -> None:
+    """
+    GPT-4o + DALL-E 3 (via creative_agent): writes creative_campaign.json,
+    background.png, and uses existing logo.png. No HTML render or Selenium screenshot.
+
+    If ``work_dir`` is set, all artifacts live under that directory (for API jobs).
+    When ``work_dir`` is set, missing scraped content or logo raises ``RuntimeError``.
+    """
+    from openai import OpenAI
+
+    from creative_agent import fetch_banner_payload, generate_background_dalle3
+
+    root = work_dir if work_dir is not None else BASE_DIR
+    output_file = root / "scraped_content.txt"
+    logo_file = root / "logo.png"
+    background_png = root / "background.png"
+    campaign_json = root / "creative_campaign.json"
+
+    if work_dir is not None:
+        work_dir.mkdir(parents=True, exist_ok=True)
+
+    if not output_file.is_file() or not output_file.read_text(encoding="utf-8").strip():
+        msg = "Agency banner: skipped (no scraped content)."
+        if work_dir is not None:
+            raise RuntimeError(msg)
+        print(msg, file=sys.stderr)
+        return
+    if not logo_file.is_file():
+        msg = (
+            "Agency banner: skipped (logo.png missing; homepage logo was not saved)."
+        )
+        if work_dir is not None:
+            raise RuntimeError(msg)
+        print(msg, file=sys.stderr)
+        return
+
+    print("Agency banner: requesting copy + generating background (OpenAI)...")
+    client = OpenAI()
+    user_content = output_file.read_text(encoding="utf-8")
+    payload = fetch_banner_payload(client, user_content)
+    generate_background_dalle3(
+        client, str(payload["image_prompt"]), output_path=background_png
+    )
+
+    with campaign_json.open("w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False, indent=2)
+
+    if not background_png.is_file():
+        err = "background.png was not created."
+        if work_dir is not None:
+            raise RuntimeError(err)
+        print(f"[main] ERROR: {err}", file=sys.stderr)
+        return
+
+    print(f"Agency banner: saved {campaign_json.name} and {background_png.name}")
 
 
 def extract_title_and_paragraphs(driver: webdriver.Chrome) -> tuple[str, list[str]]:
@@ -1014,7 +1689,7 @@ def _img_element_priority(img) -> int:
     return score
 
 
-def extract_and_save_homepage_logo(driver: webdriver.Chrome) -> bool:
+def extract_and_save_homepage_logo(driver: webdriver.Chrome, logo_file: Path) -> bool:
     """
     Heuristic logo detection (header/nav, logo in attributes, custom-logo / site-logo).
     Download with requests; save as RGBA PNG for correct transparency.
@@ -1083,8 +1758,8 @@ def extract_and_save_homepage_logo(driver: webdriver.Chrome) -> bool:
             try:
                 im = Image.open(io.BytesIO(r.content))
                 im = im.convert("RGBA")
-                im.save(LOGO_FILE, format="PNG", optimize=True)
-                print(f"Saved homepage logo to {LOGO_FILE}")
+                im.save(logo_file, format="PNG", optimize=True)
+                print(f"Saved homepage logo to {logo_file}")
                 return True
             except (UnidentifiedImageError, OSError, ValueError):
                 continue
@@ -1095,17 +1770,26 @@ def extract_and_save_homepage_logo(driver: webdriver.Chrome) -> bool:
     return False
 
 
-def main() -> None:
-    raw_url = input("Enter a URL: ")
-    if not raw_url.strip():
-        print("Error: URL cannot be empty.")
-        return
+def crawl_from_url(
+    raw_url: str,
+    *,
+    work_dir: Path | None = None,
+    campaign_brief: str | None = None,
+) -> None:
+    """
+    Crawl up to MAX_PAGES internal pages; write scraped_content.txt and best-effort logo.png.
+    If ``work_dir`` is set, files are written there (isolated API jobs); otherwise BASE_DIR.
+    If ``campaign_brief`` is non-empty, it is appended to scraped_content.txt for the creative step.
+    """
+    output_file = work_dir / "scraped_content.txt" if work_dir else OUTPUT_FILE
+    logo_file = work_dir / "logo.png" if work_dir else LOGO_FILE
+    if work_dir is not None:
+        work_dir.mkdir(parents=True, exist_ok=True)
 
     start_url = strip_fragment(normalize_url(raw_url))
     base_host = urlparse(start_url).netloc.lower()
     if not base_host:
-        print("Error: That URL is not valid.")
-        return
+        raise ValueError("That URL is not valid.")
 
     queue: deque[str] = deque([start_url])
     visited: set[str] = set()
@@ -1113,7 +1797,7 @@ def main() -> None:
     file_chunks: list[str] = []
     logo_saved = False
 
-    print("Starting headless Chrome (webdriver-manager)...")
+    print("Starting headless Chrome (Selenium Manager)...")
     driver = build_headless_chrome()
     try:
         while queue and pages_fetched < MAX_PAGES:
@@ -1146,7 +1830,7 @@ def main() -> None:
             print(f"Scraped ({pages_fetched}/{MAX_PAGES}): {final_url}")
 
             if not logo_saved:
-                logo_saved = extract_and_save_homepage_logo(driver)
+                logo_saved = extract_and_save_homepage_logo(driver, logo_file)
 
             try:
                 for absolute in discover_internal_links(driver, base_host):
@@ -1157,19 +1841,113 @@ def main() -> None:
     finally:
         driver.quit()
 
-    with open(OUTPUT_FILE, "w", encoding="utf-8") as f:
+    with open(output_file, "w", encoding="utf-8") as f:
         f.write(f"Crawl summary: {pages_fetched} page(s), starting from {start_url}\n\n")
         f.write("".join(file_chunks))
+        if campaign_brief and str(campaign_brief).strip():
+            f.write("\n\n")
+            f.write(SEPARATOR + "\n")
+            f.write(
+                "USER CAMPAIGN BRIEF (goals / target audience — provided by the user)\n"
+            )
+            f.write(SEPARATOR + "\n\n")
+            f.write(str(campaign_brief).strip() + "\n")
 
-    print(f"Done. Content saved to {OUTPUT_FILE} ({pages_fetched} page(s)).")
+    print(f"Done. Content saved to {output_file} ({pages_fetched} page(s)).")
+
+
+def main() -> None:
+    raw_url = input("Enter a URL: ")
+    if not raw_url.strip():
+        print("Error: URL cannot be empty.")
+        return
+
+    try:
+        crawl_from_url(raw_url)
+    except ValueError as e:
+        print(f"Error: {e}")
+        return
+
+    if os.environ.get("OPENAI_API_KEY"):
+        run_agency_banner_pipeline()
+    else:
+        print(
+            "Tip: set OPENAI_API_KEY to generate creative_campaign.json and background.png "
+            "after crawl (requires logo.png)."
+        )
 
 
 if __name__ == "__main__":
     main()
 
+
 ================================================================================
-SECTION: banner_data.json
+FILE: models.py
 ================================================================================
+
+"""ORM models: User and BannerTask."""
+
+from __future__ import annotations
+
+import uuid
+from datetime import datetime, timezone
+
+from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, String, Text, Uuid
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+
+from database import Base
+
+
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+class User(Base):
+    __tablename__ = "users"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    email: Mapped[str] = mapped_column(String(255), unique=True, nullable=False, index=True)
+    hashed_password: Mapped[str] = mapped_column(String(255), nullable=False)
+    is_superuser: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utc_now, nullable=False
+    )
+
+    tasks: Mapped[list["BannerTask"]] = relationship(
+        "BannerTask", back_populates="user", cascade="all, delete-orphan"
+    )
+
+
+class BannerTask(Base):
+    __tablename__ = "banner_tasks"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    status: Mapped[str] = mapped_column(String(64), nullable=False)
+    url: Mapped[str] = mapped_column(Text, nullable=False)
+    brief: Mapped[str | None] = mapped_column(Text, nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    headline: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    subhead: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    bullet_points: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    cta: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    brand_color: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    background_url: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    logo_url: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+
+    user: Mapped["User"] = relationship("User", back_populates="tasks")
+
+
+================================================================================
+SECTION: banner_data.json (1 file(s))
+================================================================================
+
 
 ================================================================================
 FILE: banner_data.json

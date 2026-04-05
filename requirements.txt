@@ -1,8 +1,17 @@
 # Backend (api + crawl + creative pipeline)
 fastapi
+python-multipart
 uvicorn[standard]
 python-dotenv
 openai
 requests
 selenium
 pillow
+
+# API: SQLAlchemy + auth (install one DB driver: pymysql for MySQL, psycopg[binary] for PostgreSQL)
+sqlalchemy>=2.0
+passlib[bcrypt]
+bcrypt==4.0.1
+python-jose[cryptography]
+pymysql
+# PostgreSQL: pip install "psycopg[binary]" and set DATABASE_URL=postgresql+psycopg://user:pass@host/dbname

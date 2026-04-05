@@ -38,6 +38,10 @@
   margin-bottom: 0.35rem;
 }
 
+.label--textarea {
+  margin-top: 1rem;
+}
+
 .row {
   display: flex;
   gap: 0.5rem;
@@ -61,6 +65,31 @@
 }
 
 .input:disabled {
+  opacity: 0.65;
+  cursor: not-allowed;
+}
+
+.textarea {
+  width: 100%;
+  min-height: 5.5rem;
+  margin-top: 0.25rem;
+  padding: 0.55rem 0.75rem;
+  font-size: 0.95rem;
+  line-height: 1.45;
+  border: 1px solid var(--border, #d1d5db);
+  border-radius: 8px;
+  background: var(--input-bg, #fff);
+  color: inherit;
+  resize: vertical;
+  box-sizing: border-box;
+}
+
+.textarea:focus {
+  outline: 2px solid var(--focus, #6366f1);
+  outline-offset: 1px;
+}
+
+.textarea:disabled {
   opacity: 0.65;
   cursor: not-allowed;
 }
@@ -159,7 +188,8 @@
 }
 
 @media (prefers-color-scheme: dark) {
-  .input {
+  .input,
+  .textarea {
     --input-bg: #1f2937;
     --border: #374151;
   }
