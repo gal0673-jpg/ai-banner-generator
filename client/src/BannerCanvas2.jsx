@@ -20,11 +20,68 @@
  * BannerCanvas.jsx is never touched.
  */
 
-import { useCallback, useEffect, useId, useRef, useState } from 'react'
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
 import { motion as Motion, useDragControls } from 'framer-motion'
 import { Resizable } from 're-resizable'
 import { toPng } from 'html-to-image'
 import './BannerCanvas2.css'
+
+// ─── Default font sizes for Design 2 (+10% over original CSS) ────────────────
+const DF2 = { headline: 66, subhead: 26, bullets: 18, cta: 31 }
+
+function colorInputHex(hex) {
+  if (!hex || typeof hex !== 'string') return '#000000'
+  let s = hex.trim()
+  if (!s.startsWith('#')) s = `#${s}`
+  if (/^#[0-9A-Fa-f]{6}$/.test(s)) return s.toLowerCase()
+  return '#000000'
+}
+
+// ─── Default text colours (Design 2 — dark / immersive) ──────────────────────
+const DC2 = { headline: '#ffffff', subhead: '#e6e6e6', bullets: '#ebebeb' }
+
+// ─── TextControls — top-right corner (hidden during PNG export) ────────────
+function TextControls2({ fontSize, onFontSize, align, onAlign, color, onColor }) {
+  const stopDrag = (e) => { e.stopPropagation() }
+  const stopBtn = (e) => {
+    e.preventDefault()
+    e.stopPropagation()
+  }
+  const cv = colorInputHex(color)
+  return (
+    <div className="banner-text-controls" onMouseDown={stopDrag} onClick={stopDrag}>
+      <div className="btc-group">
+        <button type="button" className="btc-btn" onMouseDown={(e) => { stopBtn(e); onFontSize(Math.max(10, fontSize - 2)) }} title="הקטן גופן">A−</button>
+        <span className="btc-val">{fontSize}px</span>
+        <button type="button" className="btc-btn" onMouseDown={(e) => { stopBtn(e); onFontSize(Math.min(130, fontSize + 2)) }} title="הגדל גופן">A+</button>
+      </div>
+      <span className="btc-sep" aria-hidden />
+      <label className="btc-color-wrap" title="צבע טקסט" onMouseDown={stopDrag}>
+        <span className="btc-color-swatch" style={{ backgroundColor: cv }} aria-hidden />
+        <input
+          type="color"
+          className="btc-color-input"
+          value={cv}
+          onChange={(e) => onColor(e.target.value)}
+          onMouseDown={stopDrag}
+          aria-label="צבע טקסט"
+        />
+      </label>
+      <span className="btc-sep" aria-hidden />
+      <div className="btc-group">
+        {[['right','ימין'],['center','מרכז'],['left','שמאל']].map(([a, label]) => (
+          <button
+            type="button"
+            key={a}
+            className={`btc-btn${align === a ? ' btc-btn--on' : ''}`}
+            onMouseDown={(e) => { stopBtn(e); onAlign(a) }}
+            title={label}
+          >{label}</button>
+        ))}
+      </div>
+    </div>
+  )
+}
 
 // ─── Layout constants ─────────────────────────────────────────────────────────
 const BANNER_PX   = 1080
@@ -39,8 +96,8 @@ const DEFAULT_BRAND_HEX = '#4F46E5'
 const DEFAULT_LOGO     = { x: BANNER_PX - CONTENT_PAD - 210, y: 50,  width: 210, height: 78  }
 const DEFAULT_HEADLINE = { x: CONTENT_PAD,                   y: 210, width: CONTENT_W, height: 230 }
 const DEFAULT_SUBHEAD  = { x: CONTENT_PAD,                   y: 456, width: CONTENT_W, height: 110 }
-const DEFAULT_BULLETS  = { x: CONTENT_PAD,                   y: 592, width: CONTENT_W, height: 190 }
-const DEFAULT_CTA      = { x: CONTENT_PAD + 80,              y: 818, width: CONTENT_W - 160, height: 88 }
+const DEFAULT_BULLETS  = { x: CONTENT_PAD,                   y: 580, width: CONTENT_W, height: 252 }
+const DEFAULT_CTA      = { x: CONTENT_PAD + 80,              y: 846, width: CONTENT_W - 160, height: 88 }
 
 // ─── Utility helpers (self-contained copy) ────────────────────────────────────
 
@@ -121,15 +178,21 @@ function EditableText({ className, style, text, resetKey, onTextChange, dir = 'r
   const ref = useRef(null)
   useEffect(() => {
     const el = ref.current
-    if (el) el.textContent = text ?? ''
+    if (!el) return
+    const next = text ?? ''
+    if (el.textContent !== next) el.textContent = next
   }, [text, resetKey])
+  const emit = (el) => {
+    onTextChange?.(el.textContent ?? '')
+  }
   const common = {
     ref, dir, className, style,
     contentEditable: true,
     suppressContentEditableWarning: true,
     spellCheck: false,
     onMouseDown: (e) => e.stopPropagation(),
-    onBlur: (e) => onTextChange?.(e.currentTarget.textContent ?? ''),
+    onInput: (e) => emit(e.currentTarget),
+    onBlur: (e) => emit(e.currentTarget),
   }
   return as === 'span' ? <span {...common} /> : <div {...common} />
 }
@@ -146,6 +209,7 @@ const RESIZE_ENABLE = {
 function BannerLayer2({
   canvasRef, box, setBox, className, layerKey, setDraggingKey,
   viewportScale, minWidth, minHeight, lockAspectRatio, dragHandleOnly, dragControls, children,
+  onUserCommit,
 }) {
   const layerRef = useRef(null)
   return (
@@ -165,6 +229,7 @@ function BannerLayer2({
       onDragEnd={() => {
         commitPositionInBanner(canvasRef.current, layerRef.current, setBox)
         setDraggingKey(null)
+        onUserCommit?.()
       }}
     >
       <Resizable
@@ -177,6 +242,7 @@ function BannerLayer2({
         handleWrapperClass="bc2-resize-handle-root"
         onResizeStop={(_e, _dir, ref) => {
           setBox((b) => ({ ...b, width: ref.offsetWidth, height: ref.offsetHeight }))
+          onUserCommit?.()
         }}
         className="box-border h-full w-full"
         style={{ display: 'block', boxSizing: 'border-box' }}
@@ -187,6 +253,61 @@ function BannerLayer2({
       </Resizable>
     </Motion.div>
   )
+}
+
+function buildDesign2CanvasSlice(s) {
+  return {
+    headline: s.headline,
+    subhead: s.subhead,
+    cta: s.cta,
+    bullets: s.bullets,
+    brand_color: s.brand_color,
+    logoBox: s.logoBox,
+    headlineBox: s.headlineBox,
+    subheadBox: s.subheadBox,
+    bulletsBox: s.bulletsBox,
+    ctaBox: s.ctaBox,
+    headlineFs: s.headlineFs,
+    headlineAlign: s.headlineAlign,
+    headlineColor: s.headlineColor,
+    subheadFs: s.subheadFs,
+    subheadAlign: s.subheadAlign,
+    subheadColor: s.subheadColor,
+    bulletsFs: s.bulletsFs,
+    bulletsAlign: s.bulletsAlign,
+    bulletsColor: s.bulletsColor,
+    ctaFs: s.ctaFs,
+    ctaAlign: s.ctaAlign,
+    ctaColor: s.ctaColor,
+  }
+}
+
+function applyDesign2Slice(slice, setters) {
+  const {
+    setLogoBox, setHeadlineBox, setSubheadBox, setBulletsBox, setCtaBox,
+    setHeadlineFs, setHeadlineAlign, setHeadlineColor,
+    setSubheadFs, setSubheadAlign, setSubheadColor,
+    setBulletsFs, setBulletsAlign, setBulletsColor,
+    setCtaFs, setCtaAlign, setCtaColor,
+  } = setters
+  if (!slice || typeof slice !== 'object') return
+  if (slice.logoBox) setLogoBox({ ...slice.logoBox })
+  if (slice.headlineBox) setHeadlineBox({ ...slice.headlineBox })
+  if (slice.subheadBox) setSubheadBox({ ...slice.subheadBox })
+  if (slice.bulletsBox) setBulletsBox({ ...slice.bulletsBox })
+  if (slice.ctaBox) setCtaBox({ ...slice.ctaBox })
+  if (typeof slice.headlineFs === 'number') setHeadlineFs(slice.headlineFs)
+  if (slice.headlineAlign) setHeadlineAlign(slice.headlineAlign)
+  if (slice.headlineColor) setHeadlineColor(slice.headlineColor)
+  if (typeof slice.subheadFs === 'number') setSubheadFs(slice.subheadFs)
+  if (slice.subheadAlign) setSubheadAlign(slice.subheadAlign)
+  if (slice.subheadColor) setSubheadColor(slice.subheadColor)
+  if (typeof slice.bulletsFs === 'number') setBulletsFs(slice.bulletsFs)
+  if (slice.bulletsAlign) setBulletsAlign(slice.bulletsAlign)
+  if (slice.bulletsColor) setBulletsColor(slice.bulletsColor)
+  if (typeof slice.ctaFs === 'number') setCtaFs(slice.ctaFs)
+  if (slice.ctaAlign) setCtaAlign(slice.ctaAlign)
+  if (slice.ctaColor) setCtaColor(slice.ctaColor)
 }
 
 // ─── BannerCanvas2 ───────────────────────────────────────────────────────────
@@ -202,6 +323,10 @@ export default function BannerCanvas2({
   cta: ctaInitial,
   brandColor,
   siteUrl,
+  savedCanvasSlice,
+  onPersist,
+  onRenderVideo,
+  isRenderingVideo = false,
 }) {
   const viewportRef = useRef(null)
   const captureRef  = useRef(null)
@@ -226,23 +351,162 @@ export default function BannerCanvas2({
   const [ctaBox,      setCtaBox]      = useState(() => ({ ...DEFAULT_CTA      }))
   const [draggingKey, setDraggingKey] = useState(null)
 
+  // ── Typography controls state ────────────────────────────────────────────
+  const [headlineFs,    setHeadlineFs]    = useState(DF2.headline)
+  const [headlineAlign, setHeadlineAlign] = useState('right')
+  const [subheadFs,     setSubheadFs]     = useState(DF2.subhead)
+  const [subheadAlign,  setSubheadAlign]  = useState('right')
+  const [bulletsFs,     setBulletsFs]     = useState(DF2.bullets)
+  const [bulletsAlign,  setBulletsAlign]  = useState('right')
+  const [ctaFs,         setCtaFs]         = useState(DF2.cta)
+  const [ctaAlign,      setCtaAlign]      = useState('center')
+  const [headlineColor, setHeadlineColor] = useState(DC2.headline)
+  const [subheadColor,  setSubheadColor]  = useState(DC2.subhead)
+  const [bulletsColor,  setBulletsColor]  = useState(DC2.bullets)
+  const [ctaColor,      setCtaColor]      = useState('#ffffff')
+
+  const persistTimerRef = useRef(null)
+  const stateRef = useRef({})
+
+  const flushPersist = useCallback(() => {
+    if (!onPersist || !taskId) return
+    const s = stateRef.current
+    onPersist({
+      headline: s.headline,
+      subhead: s.subhead,
+      cta: s.cta,
+      bullet_points: s.bullets,
+      canvas_state: { v: 1, design2: buildDesign2CanvasSlice(s) },
+    })
+  }, [onPersist, taskId])
+
+  const flushPersistRef = useRef(flushPersist)
+  flushPersistRef.current = flushPersist
+
+  const schedulePersist = useCallback(() => {
+    if (!onPersist || !taskId) return
+    clearTimeout(persistTimerRef.current)
+    persistTimerRef.current = setTimeout(() => {
+      persistTimerRef.current = null
+      flushPersist()
+    }, 1000)
+  }, [onPersist, taskId, flushPersist])
+
+  useEffect(
+    () => () => {
+      clearTimeout(persistTimerRef.current)
+      persistTimerRef.current = null
+      flushPersistRef.current()
+    },
+    [],
+  )
+
+  useEffect(() => {
+    stateRef.current = {
+      headline,
+      subhead,
+      bullets,
+      cta,
+      brand_color: brandColor,
+      logoBox,
+      headlineBox,
+      subheadBox,
+      bulletsBox,
+      ctaBox,
+      headlineFs,
+      headlineAlign,
+      headlineColor,
+      subheadFs,
+      subheadAlign,
+      subheadColor,
+      bulletsFs,
+      bulletsAlign,
+      bulletsColor,
+      ctaFs,
+      ctaAlign,
+      ctaColor,
+    }
+  }, [
+    headline, subhead, bullets, cta,
+    logoBox, headlineBox, subheadBox, bulletsBox, ctaBox,
+    headlineFs, headlineAlign, headlineColor,
+    subheadFs, subheadAlign, subheadColor,
+    bulletsFs, bulletsAlign, bulletsColor,
+    ctaFs, ctaAlign, ctaColor,
+    brandColor,
+  ])
+
+  const bulletsKey = bulletPoints ? JSON.stringify(bulletPoints) : ''
+  const savedSliceKey = useMemo(
+    () => (savedCanvasSlice && typeof savedCanvasSlice === 'object' ? JSON.stringify(savedCanvasSlice) : ''),
+    [savedCanvasSlice],
+  )
+
   useEffect(() => {
     setHeadline(headlineInitial ?? '')
     setSubhead(subheadInitial ?? '')
     setBullets([...(bulletPoints || [])])
     setCta(ctaInitial ?? '')
-    setLogoBox({     ...DEFAULT_LOGO     })
+    setLogoBox({ ...DEFAULT_LOGO })
     setHeadlineBox({ ...DEFAULT_HEADLINE })
-    setSubheadBox({  ...DEFAULT_SUBHEAD  })
-    setBulletsBox({  ...DEFAULT_BULLETS  })
-    setCtaBox({      ...DEFAULT_CTA      })
+    setSubheadBox({ ...DEFAULT_SUBHEAD })
+    setBulletsBox({ ...DEFAULT_BULLETS })
+    setCtaBox({ ...DEFAULT_CTA })
     setDraggingKey(null)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [taskId])
+    setHeadlineFs(DF2.headline)
+    setHeadlineAlign('right')
+    setSubheadFs(DF2.subhead)
+    setSubheadAlign('right')
+    setBulletsFs(DF2.bullets)
+    setBulletsAlign('right')
+    setCtaFs(DF2.cta)
+    setCtaAlign('center')
+    setHeadlineColor(DC2.headline)
+    setSubheadColor(DC2.subhead)
+    setBulletsColor(DC2.bullets)
+    const bg = normalizeBrandHex(brandColor)
+    setCtaColor(contrastingTextColor(bg))
+    if (savedCanvasSlice && typeof savedCanvasSlice === 'object') {
+      applyDesign2Slice(savedCanvasSlice, {
+        setLogoBox,
+        setHeadlineBox,
+        setSubheadBox,
+        setBulletsBox,
+        setCtaBox,
+        setHeadlineFs,
+        setHeadlineAlign,
+        setHeadlineColor,
+        setSubheadFs,
+        setSubheadAlign,
+        setSubheadColor,
+        setBulletsFs,
+        setBulletsAlign,
+        setBulletsColor,
+        setCtaFs,
+        setCtaAlign,
+        setCtaColor,
+      })
+    }
+  }, [
+    taskId,
+    bulletsKey,
+    bulletPoints,
+    savedSliceKey,
+    headlineInitial,
+    subheadInitial,
+    ctaInitial,
+    brandColor,
+    savedCanvasSlice,
+  ])
 
   const setBulletAt = useCallback((index, value) => {
-    setBullets((prev) => { const n = [...prev]; n[index] = value; return n })
-  }, [])
+    setBullets((prev) => {
+      const n = [...prev]
+      n[index] = value
+      return n
+    })
+    schedulePersist()
+  }, [schedulePersist])
 
   const bgSrc    = backgroundUrl ? `${apiBase}${backgroundUrl}` : ''
   const logoSrc  = logoUrl       ? `${apiBase}${logoUrl}`       : ''
@@ -290,6 +554,8 @@ export default function BannerCanvas2({
           if (el.classList?.contains('bc2-resize-handle-root')) return false
           if (el.closest?.('.bc2-resize-handle-root')) return false
           if (el.classList?.contains('bc2-cta-drag-handle')) return false
+          if (el.classList?.contains('banner-text-controls')) return false
+          if (el.closest?.('.banner-text-controls')) return false
           return true
         },
       })
@@ -400,6 +666,7 @@ export default function BannerCanvas2({
               className={layerClass('logo')} layerKey="logo"
               setDraggingKey={setDraggingKey} viewportScale={scale}
               minWidth={80} minHeight={48} lockAspectRatio
+              onUserCommit={schedulePersist}
             >
               <img
                 src={logoSrc}
@@ -420,11 +687,22 @@ export default function BannerCanvas2({
               className={`${layerClass('headline')} bc2-layer--text`} layerKey="headline"
               setDraggingKey={setDraggingKey} viewportScale={scale}
               minWidth={280} minHeight={60}
+              onUserCommit={schedulePersist}
             >
-              <div className="bc2-text-shell text-right" dir="rtl">
+              <TextControls2
+                fontSize={headlineFs}
+                onFontSize={(v) => { setHeadlineFs(v); schedulePersist() }}
+                align={headlineAlign}
+                onAlign={(v) => { setHeadlineAlign(v); schedulePersist() }}
+                color={headlineColor}
+                onColor={(v) => { setHeadlineColor(v); schedulePersist() }}
+              />
+              <div className="bc2-text-shell" dir="rtl">
                 <EditableText
                   className="bc2-text bc2-headline whitespace-normal"
-                  text={headline} resetKey={taskId} onTextChange={setHeadline}
+                  style={{ fontSize: headlineFs, textAlign: headlineAlign, color: headlineColor }}
+                  text={headline} resetKey={taskId}
+                  onTextChange={(v) => { setHeadline(v); schedulePersist() }}
                 />
               </div>
             </BannerLayer2>
@@ -436,11 +714,22 @@ export default function BannerCanvas2({
               className={`${layerClass('subhead')} bc2-layer--text`} layerKey="subhead"
               setDraggingKey={setDraggingKey} viewportScale={scale}
               minWidth={280} minHeight={48}
+              onUserCommit={schedulePersist}
             >
-              <div className="bc2-text-shell text-right" dir="rtl">
+              <TextControls2
+                fontSize={subheadFs}
+                onFontSize={(v) => { setSubheadFs(v); schedulePersist() }}
+                align={subheadAlign}
+                onAlign={(v) => { setSubheadAlign(v); schedulePersist() }}
+                color={subheadColor}
+                onColor={(v) => { setSubheadColor(v); schedulePersist() }}
+              />
+              <div className="bc2-text-shell" dir="rtl">
                 <EditableText
                   className="bc2-text bc2-subhead whitespace-normal"
-                  text={subhead} resetKey={taskId} onTextChange={setSubhead}
+                  style={{ fontSize: subheadFs, textAlign: subheadAlign, color: subheadColor }}
+                  text={subhead} resetKey={taskId}
+                  onTextChange={(v) => { setSubhead(v); schedulePersist() }}
                 />
               </div>
             </BannerLayer2>
@@ -451,8 +740,17 @@ export default function BannerCanvas2({
               box={bulletsBox} setBox={setBulletsBox}
               className={`${layerClass('bullets')} bc2-layer--text`} layerKey="bullets"
               setDraggingKey={setDraggingKey} viewportScale={scale}
-              minWidth={280} minHeight={100}
+              minWidth={280} minHeight={200}
+              onUserCommit={schedulePersist}
             >
+              <TextControls2
+                fontSize={bulletsFs}
+                onFontSize={(v) => { setBulletsFs(v); schedulePersist() }}
+                align={bulletsAlign}
+                onAlign={(v) => { setBulletsAlign(v); schedulePersist() }}
+                color={bulletsColor}
+                onColor={(v) => { setBulletsColor(v); schedulePersist() }}
+              />
               <div className="bc2-feat-grid" dir="rtl">
                 {bullets.map((b, i) => (
                   <div
@@ -469,6 +767,7 @@ export default function BannerCanvas2({
                     <EditableText
                       as="span"
                       className="bc2-feat-text"
+                      style={{ fontSize: bulletsFs, textAlign: bulletsAlign, color: bulletsColor }}
                       text={b}
                       resetKey={`${taskId}-${i}`}
                       onTextChange={(t) => setBulletAt(i, t)}
@@ -486,7 +785,16 @@ export default function BannerCanvas2({
               setDraggingKey={setDraggingKey} viewportScale={scale}
               minWidth={160} minHeight={52}
               dragHandleOnly dragControls={ctaDragControls}
+              onUserCommit={schedulePersist}
             >
+              <TextControls2
+                fontSize={ctaFs}
+                onFontSize={(v) => { setCtaFs(v); schedulePersist() }}
+                align={ctaAlign}
+                onAlign={(v) => { setCtaAlign(v); schedulePersist() }}
+                color={ctaColor}
+                onColor={(v) => { setCtaColor(v); schedulePersist() }}
+              />
               <div className="bc2-text-shell">
                 <div
                   className="bc2-cta-drag-handle"
@@ -496,13 +804,15 @@ export default function BannerCanvas2({
                   <span className="bc2-cta-drag-grip" aria-hidden />
                   <span className="bc2-cta-drag-label">גרור</span>
                 </div>
-                <div className="mt-1 text-right" dir="rtl">
+                <div className="mt-1" style={{ textAlign: ctaAlign }} dir="rtl">
                   <EditableText
                     className="bc2-text bc2-cta inline-block min-w-[120px] max-w-full whitespace-nowrap"
-                    text={cta} resetKey={taskId} onTextChange={setCta}
+                    text={cta} resetKey={taskId}
+                    onTextChange={(v) => { setCta(v); schedulePersist() }}
                     style={{
+                      fontSize: ctaFs,
                       backgroundColor: ctaBgHex,
-                      color: ctaFgHex,
+                      color: ctaColor,
                       boxShadow: `0 12px 40px rgba(${brandR},${brandG},${brandB},0.55)`,
                     }}
                   />
@@ -524,6 +834,16 @@ export default function BannerCanvas2({
         >
           {exporting ? 'מכין PNG…' : '⬇ הורד באנר PNG'}
         </button>
+        {typeof onRenderVideo === 'function' && (
+          <button
+            type="button"
+            className="bc2-btn-download"
+            onClick={onRenderVideo}
+            disabled={isRenderingVideo}
+          >
+            {isRenderingVideo ? 'מייצר וידאו…' : '🎬 ייצר סרטון אנימציה'}
+          </button>
+        )}
       </div>
       {downloadError && (
         <p className="bc2-download-error" role="alert">{downloadError}</p>

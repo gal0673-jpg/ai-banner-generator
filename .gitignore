@@ -2,3 +2,14 @@
 .env
 .env.*
 !.env.example
+
+# Dependencies & environments
+node_modules/
+venv/
+.venv/
+
+# Python
+__pycache__/
+
+# Generated task workspaces (assets, renders)
+tasks/

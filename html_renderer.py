@@ -1,6 +1,8 @@
 """
-Render a premium split-panel RTL marketing banner as HTML (1080×1080 square).
-Optionally renders the HTML to PNG using Selenium headless Chrome.
+Render marketing banners as HTML (1080×1080) and optionally to PNG (Selenium headless Chrome).
+
+Design 1: split-panel RTL layout. Design 2: full-bleed immersive layout with vignette
+(mirrors BannerCanvas2).
 
 Layout
 ──────
@@ -63,6 +65,12 @@ def _cta_text_color(brand_hex: str) -> str:
     return "#0f172a" if _luminance(r, g, b) > 0.45 else "#ffffff"
 
 
+def _cta_text_color_immersive(brand_hex: str) -> str:
+    """Match BannerCanvas2.jsx contrastingTextColor (threshold 0.55)."""
+    r, g, b = _hex_to_rgb(brand_hex)
+    return "#0f172a" if _luminance(r, g, b) > 0.55 else "#ffffff"
+
+
 def _asset_url(asset: Path, html_path: Path) -> str:
     """Relative POSIX path usable from the HTML file; falls back to file URI."""
     import os
@@ -86,7 +94,7 @@ def _extract_domain(url: str) -> str:
 # HTML builder
 # ─────────────────────────────────────────────────────────────────────────────
 
-def render_banner_html(
+def render_design_1_html(
     data: Mapping[str, Any],
     background_path: str | Path,
     logo_path: str | Path,
@@ -94,8 +102,9 @@ def render_banner_html(
     site_url: str = "",
 ) -> str:
     """
-    Write the split-panel banner HTML to *output_path* (default: banner_temp.html)
-    and return the full HTML string.
+    Design 1 — split-panel RTL layout (matches BannerCanvas / legacy banner).
+
+    Write HTML to *output_path* (default: banner_temp.html) and return the full document.
 
     ``data`` keys used: headline, subhead, bullet_points (3 strings), cta, brand_color.
     """
@@ -224,18 +233,19 @@ body{{
   margin-bottom:30px;
 }}
 .features{{
-  display:flex;flex-direction:row;gap:14px;
+  display:flex;flex-direction:row;gap:10px;
   margin-bottom:34px;
   direction:rtl;
+  align-items:stretch;
 }}
 .feat-card{{
-  flex:1;min-width:0;
+  flex:1;min-width:0;min-height:132px;
   background:#ffffff;
   border-radius:14px;
-  padding:20px 16px 16px;
+  padding:24px 14px 26px;
   box-shadow:0 2px 8px rgba(0,0,0,0.06),0 8px 24px rgba(0,0,0,0.06);
   border-top:4px solid;
-  display:flex;flex-direction:column;gap:12px;
+  display:flex;flex-direction:column;gap:12px;align-items:stretch;
   direction:rtl;
 }}
 .feat-icon{{
@@ -246,8 +256,9 @@ body{{
 }}
 .feat-text{{
   font-size:15px;font-weight:600;
-  color:#1e293b;line-height:1.45;
+  color:#1e293b;line-height:1.52;
   direction:rtl;text-align:right;
+  flex:1 1 auto;min-height:2.8em;
 }}
 .cta-btn{{
   display:inline-block;
@@ -308,6 +319,250 @@ body{{
   <!-- Bottom brand strip -->
   <div class="bottom-strip">
     <span class="bottom-text">{bottom_text}</span>
+  </div>
+</div>
+</body>
+</html>"""
+
+    out.write_text(doc, encoding="utf-8")
+    return doc
+
+
+def render_banner_html(
+    data: Mapping[str, Any],
+    background_path: str | Path,
+    logo_path: str | Path,
+    output_path: str | Path | None = None,
+    site_url: str = "",
+) -> str:
+    """Backward-compatible alias for :func:`render_design_1_html`."""
+    return render_design_1_html(
+        data,
+        background_path=background_path,
+        logo_path=logo_path,
+        output_path=output_path,
+        site_url=site_url,
+    )
+
+
+# Design 2 layout constants (BannerCanvas2.jsx / BannerCanvas2.css)
+_D2_STRIP_H = 64
+_D2_ACCENT_W = 6
+_D2_CONTENT_PAD = 64
+_D2_CONTENT_W = BANNER_PX - _D2_CONTENT_PAD * 2  # 952
+
+
+def render_design_2_html(
+    data: Mapping[str, Any],
+    background_path: str | Path,
+    logo_path: str | Path,
+    output_path: str | Path | None = None,
+    site_url: str = "",
+) -> str:
+    """
+    Design 2 — full-bleed background with dark vignette (matches BannerCanvas2).
+
+    Default layer geometry matches DEFAULT_* boxes in BannerCanvas2.jsx.
+    """
+    headline_txt = str(data["headline"]).strip()
+    subhead_txt = str(data["subhead"]).strip()
+    cta_txt = str(data["cta"]).strip()
+    bullets = data["bullet_points"]
+    if not isinstance(bullets, (list, tuple)) or len(bullets) != 3:
+        raise ValueError("data['bullet_points'] must be exactly 3 strings")
+
+    brand_hex = _normalize_brand_hex(data.get("brand_color"))
+    r, g, b = _hex_to_rgb(brand_hex)
+    cta_fg = _cta_text_color_immersive(brand_hex)
+    cta_label_color = cta_fg
+    domain = _extract_domain(site_url) if site_url else ""
+
+    bg = Path(background_path).resolve()
+    logo = Path(logo_path).resolve()
+    out = Path(output_path).resolve() if output_path else DEFAULT_OUTPUT
+    out.parent.mkdir(parents=True, exist_ok=True)
+
+    bg_url = html.escape(_asset_url(bg, out), quote=True)
+    logo_url = html.escape(_asset_url(logo, out), quote=True)
+
+    strip_h = _D2_STRIP_H
+    accent_h = BANNER_PX - strip_h
+    # DEFAULT_* from BannerCanvas2.jsx (capture root is LTR)
+    logo_l = BANNER_PX - _D2_CONTENT_PAD - 210
+    logo_t, logo_w, logo_h = 50, 210, 78
+    hl_l, hl_t, hl_w, hl_h = _D2_CONTENT_PAD, 210, _D2_CONTENT_W, 230
+    sh_l, sh_t, sh_w, sh_h = _D2_CONTENT_PAD, 456, _D2_CONTENT_W, 110
+    bu_l, bu_t, bu_w, bu_h = _D2_CONTENT_PAD, 580, _D2_CONTENT_W, 252
+    cta_l = _D2_CONTENT_PAD + 80
+    cta_t, cta_w, cta_h = 846, _D2_CONTENT_W - 160, 88
+
+    feat_rows: list[str] = []
+    for raw in bullets:
+        text = html.escape(str(raw).strip())
+        feat_rows.append(
+            f'      <div class="bc2-feat-pill" style="border-top-color:{brand_hex};">\n'
+            f'        <div class="bc2-feat-icon" style="background-color:{brand_hex};color:{cta_fg};">✓</div>\n'
+            f'        <span class="bc2-feat-text">{text}</span>\n'
+            f'      </div>'
+        )
+    features_html = "\n".join(feat_rows)
+
+    bottom_inner = html.escape(domain) if domain else ""
+
+    doc = f"""<!DOCTYPE html>
+<html lang="he">
+<head>
+<meta charset="utf-8">
+<title>Banner Design 2</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Heebo:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
+<style>
+*,*::before,*::after{{margin:0;padding:0;box-sizing:border-box;}}
+body{{
+  width:{BANNER_PX}px;height:{BANNER_PX}px;
+  overflow:hidden;
+  font-family:'Heebo','Segoe UI','Helvetica Neue',Arial,sans-serif;
+  direction:ltr;
+  -webkit-font-smoothing:antialiased;
+  color-scheme:light;
+}}
+.bc2-canvas{{
+  position:relative;
+  width:{BANNER_PX}px;height:{BANNER_PX}px;
+  overflow:hidden;
+  background:#0f172a;
+}}
+.bc2-bg{{
+  position:absolute;inset:0;
+  background-image:url('{bg_url}');
+  background-size:cover;background-position:center;background-repeat:no-repeat;
+}}
+.bc2-vignette{{
+  position:absolute;inset:0;pointer-events:none;
+  background:
+    radial-gradient(ellipse at 70% 40%, rgba(0,0,0,0.08) 0%, rgba(0,0,0,0.72) 90%),
+    linear-gradient(165deg, rgba(0,0,0,0.28) 0%, rgba(0,0,0,0.55) 100%);
+}}
+.bc2-glow{{
+  position:absolute;pointer-events:none;
+  width:500px;height:500px;border-radius:50%;
+  top:-150px;right:-100px;
+  background:radial-gradient(circle, rgba({r},{g},{b},0.28) 0%, transparent 70%);
+}}
+.bc2-accent-left{{
+  position:absolute;left:0;top:0;pointer-events:none;
+  width:{_D2_ACCENT_W}px;height:{accent_h}px;
+  background-color:{brand_hex};
+}}
+.bc2-bottom-strip{{
+  position:absolute;left:0;right:0;bottom:0;pointer-events:none;
+  height:{strip_h}px;
+  background-color:{brand_hex};
+  display:flex;align-items:center;justify-content:center;
+}}
+.bc2-bottom-strip span{{
+  color:{cta_label_color};
+  font-family:system-ui,Arial,sans-serif;
+  font-size:22px;font-weight:700;
+  direction:ltr;
+  letter-spacing:0.4px;
+}}
+.bc2-layer{{position:absolute;box-sizing:border-box;}}
+.bc2-logo-img{{
+  display:block;max-width:100%;max-height:100%;width:auto;height:auto;
+  object-fit:contain;object-position:right center;
+  filter:drop-shadow(0 2px 16px rgba(0,0,0,0.55)) brightness(1.08);
+}}
+.bc2-text-shell{{
+  box-sizing:border-box;direction:rtl;text-align:right;unicode-bidi:isolate;
+  display:block;width:100%;height:100%;
+}}
+.bc2-headline{{
+  font-size:66px;font-weight:900;letter-spacing:-0.025em;line-height:1.12;
+  color:#ffffff;text-align:right;direction:rtl;
+  word-break:break-word;
+  text-shadow:0 2px 24px rgba(0,0,0,0.70),0 0 2px rgba(0,0,0,0.90);
+}}
+.bc2-subhead{{
+  font-size:26px;font-weight:400;line-height:1.55;
+  color:rgba(255,255,255,0.88);text-align:right;direction:rtl;
+  word-break:break-word;
+  text-shadow:0 1px 12px rgba(0,0,0,0.60);
+}}
+.bc2-feat-grid{{
+  display:flex;flex-direction:row;gap:10px;direction:rtl;
+  width:100%;height:100%;align-items:stretch;
+}}
+.bc2-feat-pill{{
+  flex:1;min-width:0;min-height:128px;
+  background:rgba(10,15,30,0.65);
+  border:1px solid rgba(255,255,255,0.18);
+  border-top:3px solid;
+  border-radius:16px;
+  padding:24px 14px 26px;
+  display:flex;flex-direction:column;gap:12px;align-items:stretch;
+  direction:rtl;
+}}
+.bc2-feat-icon{{
+  width:32px;height:32px;border-radius:8px;
+  display:inline-flex;align-items:center;justify-content:center;
+  font-size:16px;font-weight:800;flex-shrink:0;
+}}
+.bc2-feat-text{{
+  font-size:18px;font-weight:500;color:rgba(255,255,255,0.90);
+  line-height:1.52;direction:rtl;text-align:right;
+  flex:1 1 auto;min-height:2.8em;word-break:break-word;
+  display:block;width:100%;
+}}
+.bc2-cta-wrap{{
+  width:100%;height:100%;
+  display:flex;align-items:center;justify-content:center;
+  box-sizing:border-box;
+}}
+.bc2-cta{{
+  display:inline-flex;align-items:center;justify-content:center;
+  text-align:center;direction:rtl;
+  font-size:31px;font-weight:800;border-radius:14px;
+  padding:0.45em 0.9em;
+  background-color:{brand_hex};
+  color:{cta_label_color};
+  box-shadow:0 12px 40px rgba({r},{g},{b},0.55);
+  white-space:nowrap;max-width:100%;
+}}
+</style>
+</head>
+<body>
+<div class="bc2-canvas">
+  <div class="bc2-bg" aria-hidden="true"></div>
+  <div class="bc2-vignette" aria-hidden="true"></div>
+  <div class="bc2-glow" aria-hidden="true"></div>
+  <div class="bc2-accent-left" aria-hidden="true"></div>
+  <div class="bc2-bottom-strip" aria-hidden="true">
+    <span>{bottom_inner}</span>
+  </div>
+
+  <div class="bc2-layer bc2-layer-logo" style="left:{logo_l}px;top:{logo_t}px;width:{logo_w}px;height:{logo_h}px;">
+    <img class="bc2-logo-img" src="{logo_url}" alt="" loading="eager" decoding="sync">
+  </div>
+  <div class="bc2-layer" style="left:{hl_l}px;top:{hl_t}px;width:{hl_w}px;height:{hl_h}px;">
+    <div class="bc2-text-shell">
+      <div class="bc2-headline">{html.escape(headline_txt)}</div>
+    </div>
+  </div>
+  <div class="bc2-layer" style="left:{sh_l}px;top:{sh_t}px;width:{sh_w}px;height:{sh_h}px;">
+    <div class="bc2-text-shell">
+      <div class="bc2-subhead">{html.escape(subhead_txt)}</div>
+    </div>
+  </div>
+  <div class="bc2-layer" style="left:{bu_l}px;top:{bu_t}px;width:{bu_w}px;height:{bu_h}px;">
+    <div class="bc2-feat-grid">
+{features_html}
+    </div>
+  </div>
+  <div class="bc2-layer" style="left:{cta_l}px;top:{cta_t}px;width:{cta_w}px;height:{cta_h}px;">
+    <div class="bc2-cta-wrap">
+      <span class="bc2-cta">{html.escape(cta_txt)}</span>
+    </div>
   </div>
 </div>
 </body>

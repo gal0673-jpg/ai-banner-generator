@@ -53,5 +53,9 @@ class BannerTask(Base):
     brand_color: Mapped[str | None] = mapped_column(String(32), nullable=True)
     background_url: Mapped[str | None] = mapped_column(String(1024), nullable=True)
     logo_url: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    rendered_banner_1_url: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    rendered_banner_2_url: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    canvas_state: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    video_url: Mapped[str | None] = mapped_column(String(1024), nullable=True)
 
     user: Mapped["User"] = relationship("User", back_populates="tasks")

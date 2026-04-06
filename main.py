@@ -148,7 +148,7 @@ def run_agency_banner_pipeline(
     """
     GPT-4o + DALL-E 3 (via creative_agent): writes creative_campaign.json,
     background.png, and uses existing logo.png.  After that it renders a
-    professional split-panel PNG to rendered_banner.png using html_renderer.
+    two high-quality PNGs (``rendered_banner_1.png``, ``rendered_banner_2.png``) via html_renderer.
 
     If ``work_dir`` is set, all artifacts live under that directory (for API jobs).
     When ``work_dir`` is set, missing scraped content or logo raises ``RuntimeError``.
@@ -156,15 +156,17 @@ def run_agency_banner_pipeline(
     from openai import OpenAI
 
     from creative_agent import fetch_banner_payload, generate_background_dalle3
-    from html_renderer import render_banner_html, render_html_to_png
+    from html_renderer import render_design_1_html, render_design_2_html, render_html_to_png
 
     root = work_dir if work_dir is not None else BASE_DIR
     output_file = root / "scraped_content.txt"
     logo_file = root / "logo.png"
     background_png = root / "background.png"
     campaign_json = root / "creative_campaign.json"
-    banner_html = root / "banner_temp.html"
-    rendered_banner = root / "rendered_banner.png"
+    banner_html_1 = root / "banner_temp_design1.html"
+    banner_html_2 = root / "banner_temp_design2.html"
+    rendered_banner_1 = root / "rendered_banner_1.png"
+    rendered_banner_2 = root / "rendered_banner_2.png"
 
     if work_dir is not None:
         work_dir.mkdir(parents=True, exist_ok=True)
@@ -204,20 +206,34 @@ def run_agency_banner_pipeline(
 
     print(f"Agency banner: saved {campaign_json.name} and {background_png.name}")
 
-    # ── High-quality rendered banner (split-panel HTML → PNG) ─────────────────
-    print("Agency banner: rendering split-panel PNG (html_renderer + headless Chrome)…")
+    # ── High-quality PNGs (Design 1 + Design 2 HTML → PNG) ─────────────────────
+    print("Agency banner: rendering PNGs (html_renderer + headless Chrome)…")
     try:
-        render_banner_html(
+        render_design_1_html(
             payload,
             background_path=background_png,
             logo_path=logo_file,
-            output_path=banner_html,
+            output_path=banner_html_1,
             site_url=site_url,
         )
-        render_html_to_png(banner_html, rendered_banner)
-        print(f"Agency banner: rendered_banner.png saved to {rendered_banner}")
+        render_design_2_html(
+            payload,
+            background_path=background_png,
+            logo_path=logo_file,
+            output_path=banner_html_2,
+            site_url=site_url,
+        )
+        render_html_to_png(banner_html_1, rendered_banner_1)
+        render_html_to_png(banner_html_2, rendered_banner_2)
+        print(
+            f"Agency banner: saved {rendered_banner_1.name} and {rendered_banner_2.name} "
+            f"to {root}"
+        )
     except Exception as exc:  # noqa: BLE001
-        print(f"[main] WARNING: rendered_banner.png failed ({exc}). Continuing without it.", file=sys.stderr)
+        print(
+            f"[main] WARNING: rendered banner PNGs failed ({exc}). Continuing without them.",
+            file=sys.stderr,
+        )
 
 
 def extract_title_and_paragraphs(driver: webdriver.Chrome) -> tuple[str, list[str]]:

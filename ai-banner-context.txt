@@ -1,5 +1,5 @@
 AI BANNER CONTEXT EXPORT
-Generated (UTC): 2026-04-05 16:55:51 UTC
+Generated (UTC): 2026-04-06 08:57:35 UTC
 Project root: C:\laragon\www\python
 Output filename: ai-banner-context.txt
 
@@ -65,6 +65,8 @@ python/
 │   │   ├── AuthContext.jsx
 │   │   ├── BannerCanvas.css
 │   │   ├── BannerCanvas.jsx
+│   │   ├── BannerCanvas2.css
+│   │   ├── BannerCanvas2.jsx
 │   │   ├── BannerWorkspace.jsx
 │   │   ├── index.css
 │   │   ├── Login.jsx
@@ -78,7 +80,7 @@ python/
 │   ├── README.md
 │   └── vite.config.js
 ├── tasks
-│   └── [16 task UUID folders — runtime outputs omitted]
+│   └── [24 task UUID folders — runtime outputs omitted]
 ├── .env
 ├── .gitignore
 ├── ai-banner-generator.txt
@@ -448,7 +450,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordRequestForm
 from fastapi.staticfiles import StaticFiles
 from starlette.responses import Response
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import select
 from sqlalchemy.orm import Session, joinedload
 
@@ -477,6 +479,20 @@ def require_primary_admin(user: Annotated[User, Depends(get_current_superuser)])
 
 
 _BRAND_HEX = re.compile(r"^#[0-9A-Fa-f]{6}$")
+
+
+def _rendered_banner_urls_for_task(task_id: str) -> tuple[str | None, str | None]:
+    """Resolve static URLs for Design 1 / Design 2 PNGs; fall back to legacy rendered_banner.png for v1."""
+    work = TASKS_DIR / task_id
+    u1: str | None = None
+    u2: str | None = None
+    if (work / "rendered_banner_1.png").is_file():
+        u1 = f"/task-files/{task_id}/rendered_banner_1.png"
+    elif (work / "rendered_banner.png").is_file():
+        u1 = f"/task-files/{task_id}/rendered_banner.png"
+    if (work / "rendered_banner_2.png").is_file():
+        u2 = f"/task-files/{task_id}/rendered_banner_2.png"
+    return u1, u2
 
 
 def _persist_task(task_uuid: uuid.UUID, **kwargs: Any) -> None:
@@ -554,6 +570,36 @@ class GenerateRequest(BaseModel):
     )
 
 
+class TaskPatchRequest(BaseModel):
+    """Partial update for an editable completed banner task."""
+
+    headline: str | None = Field(default=None, max_length=512)
+    subhead: str | None = Field(default=None, max_length=1024)
+    cta: str | None = Field(default=None, max_length=256)
+    bullet_points: list[str] | None = None
+    canvas_state: dict[str, Any] | None = None
+
+    @field_validator("bullet_points")
+    @classmethod
+    def three_bullets(cls, v: list[str] | None) -> list[str] | None:
+        if v is None:
+            return None
+        if len(v) != 3:
+            raise ValueError("bullet_points must contain exactly 3 strings")
+        return [str(x).strip() for x in v]
+
+
+def _merge_canvas_state(prev: Any, patch: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Merge partial canvas_state from PATCH; replace design1/design2 when provided."""
+    if patch is None:
+        return prev if isinstance(prev, dict) else None
+    base: dict[str, Any] = dict(prev) if isinstance(prev, dict) else {}
+    for key in ("v", "design1", "design2"):
+        if key in patch:
+            base[key] = patch[key]
+    return base or None
+
+
 def run_banner_task(task_id: str, url: str, brief: str | None) -> None:
     task_uuid = uuid.UUID(task_id)
     work_dir = TASKS_DIR / task_id
@@ -566,7 +612,7 @@ def run_banner_task(task_id: str, url: str, brief: str | None) -> None:
             return
 
         _persist_task(task_uuid, status="generating_image")
-        run_agency_banner_pipeline(work_dir=work_dir)
+        run_agency_banner_pipeline(work_dir=work_dir, site_url=url)
 
         campaign_path = work_dir / "creative_campaign.json"
         background = work_dir / "background.png"
@@ -618,6 +664,7 @@ def run_banner_task(task_id: str, url: str, brief: str | None) -> None:
             )
             return
 
+        rb1, rb2 = _rendered_banner_urls_for_task(task_id)
         _persist_task(
             task_uuid,
             status="completed",
@@ -629,6 +676,8 @@ def run_banner_task(task_id: str, url: str, brief: str | None) -> None:
             brand_color=bc.upper(),
             background_url=f"/task-files/{task_id}/background.png",
             logo_url=f"/task-files/{task_id}/logo.png",
+            rendered_banner_1_url=rb1,
+            rendered_banner_2_url=rb2,
         )
     except Exception as exc:  # noqa: BLE001 — surface any pipeline failure to the client
         _persist_task(task_uuid, status="failed", error=str(exc))
@@ -695,6 +744,9 @@ def generate(
         brand_color=None,
         background_url=None,
         logo_url=None,
+        rendered_banner_1_url=None,
+        rendered_banner_2_url=None,
+        canvas_state=None,
     )
     db.add(row)
     db.commit()
@@ -721,6 +773,11 @@ def get_status(
         raise HTTPException(status_code=404, detail="Unknown task_id")
 
     status_val: TaskStatus = row.status  # type: ignore[assignment]
+
+    fs1, fs2 = _rendered_banner_urls_for_task(task_id)
+    rendered_banner_1_url = row.rendered_banner_1_url or fs1
+    rendered_banner_2_url = row.rendered_banner_2_url or fs2
+
     return {
         "task_id": task_id,
         "status": status_val,
@@ -732,6 +789,57 @@ def get_status(
         "brand_color": row.brand_color,
         "background_url": row.background_url,
         "logo_url": row.logo_url,
+        "rendered_banner_1_url": rendered_banner_1_url,
+        "rendered_banner_2_url": rendered_banner_2_url,
+        "canvas_state": row.canvas_state,
+    }
+
+
+@app.patch("/tasks/{task_id}")
+def patch_task(
+    task_id: str,
+    body: TaskPatchRequest,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> dict[str, Any]:
+    try:
+        tid = uuid.UUID(task_id)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Unknown task_id") from None
+
+    row = db.get(BannerTask, tid)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Unknown task_id")
+    if not current_user.is_superuser and row.user_id != current_user.id:
+        raise HTTPException(status_code=404, detail="Unknown task_id")
+    if row.status != "completed":
+        raise HTTPException(
+            status_code=409,
+            detail="Task can only be edited after it is completed.",
+        )
+
+    if body.headline is not None:
+        row.headline = body.headline.strip() or None
+    if body.subhead is not None:
+        row.subhead = body.subhead.strip() or None
+    if body.cta is not None:
+        row.cta = body.cta.strip() or None
+    if body.bullet_points is not None:
+        row.bullet_points = body.bullet_points
+
+    if body.canvas_state is not None:
+        row.canvas_state = _merge_canvas_state(row.canvas_state, body.canvas_state)
+
+    db.commit()
+    db.refresh(row)
+
+    return {
+        "task_id": task_id,
+        "headline": row.headline,
+        "subhead": row.subhead,
+        "bullet_points": row.bullet_points,
+        "cta": row.cta,
+        "canvas_state": row.canvas_state,
     }
 
 
@@ -744,9 +852,11 @@ def admin_list_tasks(
     rows = db.scalars(stmt).unique().all()
     out: list[dict[str, Any]] = []
     for t in rows:
+        tid = str(t.id)
+        fs1, fs2 = _rendered_banner_urls_for_task(tid)
         out.append(
             {
-                "task_id": str(t.id),
+                "task_id": tid,
                 "user_id": str(t.user_id),
                 "user_email": t.user.email,
                 "status": t.status,
@@ -760,6 +870,9 @@ def admin_list_tasks(
                 "brand_color": t.brand_color,
                 "background_url": t.background_url,
                 "logo_url": t.logo_url,
+                "rendered_banner_1_url": t.rendered_banner_1_url or fs1,
+                "rendered_banner_2_url": t.rendered_banner_2_url or fs2,
+                "canvas_state": t.canvas_state,
             }
         )
     return out
@@ -1080,7 +1193,7 @@ Output ONLY valid JSON (no markdown, no commentary, no extra keys) with exactly 
 - bullet_points (array): Exactly three strings. Each is a concise Hebrew benefit or feature that is SPECIFIC to this scraped business (derive from real offerings, audience, proof signals, or explicit brief details — not generic filler). When the brief names a deal, metric, or guarantee, reflect it in at least one bullet even if that bullet is a bit longer than usual. No duplicates; each bullet adds a distinct angle.
 - cta (string): Hebrew call to action, imperative, about 2–4 words.
 - brand_color (string): A single CSS hex color for the brand accent, exactly 7 characters: "#" plus six hexadecimal digits (e.g. "#1D4ED8"). Infer the dominant brand color from the website copy and context (product category, named colors, industry cues). If the site gives no clear color signal, choose a vibrant, professional accent that fits the brand personality (still as valid hex).
-- image_prompt (string): One detailed ENGLISH prompt for DALL-E 3. Describe a strong hero/background image that matches the identified industry (e.g. workshop and tools for trades; professional office for legal; appetizing setting for food; calm space for wellness; modern workspace for software — adapt to the actual business). The prompt MUST always weave in these exact sensibility keywords/phrases (or very close equivalents): "bright daylight lighting", "clean white or light-gray background", "airy modern aesthetic", "optimistic vibe". Avoid dark, moody, low-key, neon-heavy, or "cyberpunk" tech visuals — no dramatic night scenes, heavy shadows as the dominant look, or dystopian/futuristic noir; the image must harmonize with a light-themed web layout. No requirement to reserve empty zones for text — HTML handles typography.
+- image_prompt (string): One detailed ENGLISH prompt for DALL-E 3. Describe a powerful, IMMERSIVE background photograph that matches the identified industry (examples: gleaming code on a dark monitor in a sleek workspace for tech/SaaS; artisan tools and materials in a workshop for trades; beautifully plated food in a restaurant setting; modern surgical or clinical equipment for healthcare; elegant law books and oak desk for legal; drone shot of construction site for real-estate — adapt precisely to the actual business). CRITICAL CONTEXT: this image will fill the LEFT HALF of a split-panel banner and will have a dark gradient overlay applied, so it needs RICH VISUAL DEPTH, strong contrast, and interesting textures that look compelling under a dark overlay. Use these sensibility keywords: "professional editorial photography", "dramatic depth of field", "cinematic lighting", "rich textures and detail", "bold composition", "studio-quality realism". Prefer real-world environments, materials, and objects that feel TACTILE and SPECIFIC to the industry — avoid generic grid patterns, flat-lay product shots, plain backgrounds, or anything overly minimalist. Avoid neon-heavy, cyberpunk, or cartoonish aesthetics. No requirement to reserve empty zones for text — HTML handles typography.
 
 *** image_prompt — NON-NEGOTIABLE (highest priority) ***
 """ + DALLE_IMAGE_API_ENFORCEMENT + """
@@ -1562,27 +1675,42 @@ FILE: html_renderer.py
 ================================================================================
 
 """
-Render a premium full-bleed RTL marketing banner as HTML (Tailwind CDN, Heebo, Font Awesome).
+Render marketing banners as HTML (1080×1080) and optionally to PNG (Selenium headless Chrome).
+
+Design 1: split-panel RTL layout. Design 2: full-bleed immersive layout with vignette
+(mirrors BannerCanvas2).
+
+Layout
+──────
+ ┌───────────────────────────────────────────────────────────────────┐
+ │ LEFT PANEL (44%)              │ RIGHT PANEL (56%)                 │
+ │                               │                                   │
+ │  DALL-E background image      │  [Logo]                           │
+ │  with dark + brand-colour     │  [Headline – large, bold]         │
+ │  gradient overlay             │  [Subhead]                        │
+ │                               │  ✓ Feature 1                      │
+ │                               │  ✓ Feature 2                      │
+ │                               │  ✓ Feature 3                      │
+ │                               │  [CTA button – brand colour]      │
+ ├───────────────────────────────┴───────────────────────────────────┤
+ │              www.domain.co.il  >>  bottom brand strip             │
+ └───────────────────────────────────────────────────────────────────┘
 """
 
 from __future__ import annotations
 
 import html
+import io
 import re
+import time
 from pathlib import Path
 from typing import Any, Mapping
+from urllib.parse import urlparse
 
+BANNER_PX = 1080
 DEFAULT_OUTPUT = Path(__file__).resolve().parent / "banner_temp.html"
 
 _DEFAULT_BRAND = "#4F46E5"
-
-# Font Awesome icon classes for the three bullets
-_BULLET_ICONS = (
-    "fa-solid fa-star",
-    "fa-solid fa-bolt",
-    "fa-solid fa-shield-halved",
-)
-
 _HEX_RE = re.compile(r"^#?([0-9A-Fa-f]{6})$")
 
 
@@ -1601,17 +1729,279 @@ def _hex_to_rgb(hex_color: str) -> tuple[int, int, int]:
     return int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
 
 
-def _asset_url(asset: Path, html_path: Path) -> str:
-    """Path usable in HTML (relative to html file, or file URI if needed)."""
-    import os
+def _luminance(r: int, g: int, b: int) -> float:
+    def _c(v: int) -> float:
+        x = v / 255
+        return x / 12.92 if x <= 0.04045 else ((x + 0.055) / 1.055) ** 2.4
+    return 0.2126 * _c(r) + 0.7152 * _c(g) + 0.0722 * _c(b)
 
-    asset = asset.resolve()
-    html_dir = html_path.parent.resolve()
+
+def _cta_text_color(brand_hex: str) -> str:
+    r, g, b = _hex_to_rgb(brand_hex)
+    return "#0f172a" if _luminance(r, g, b) > 0.45 else "#ffffff"
+
+
+def _cta_text_color_immersive(brand_hex: str) -> str:
+    """Match BannerCanvas2.jsx contrastingTextColor (threshold 0.55)."""
+    r, g, b = _hex_to_rgb(brand_hex)
+    return "#0f172a" if _luminance(r, g, b) > 0.55 else "#ffffff"
+
+
+def _asset_url(asset: Path, html_path: Path) -> str:
+    """Relative POSIX path usable from the HTML file; falls back to file URI."""
+    import os
     try:
-        rel = Path(os.path.relpath(asset, html_dir))
+        rel = Path(os.path.relpath(asset.resolve(), html_path.parent.resolve()))
+        return rel.as_posix()
     except ValueError:
-        return asset.as_uri()
-    return rel.as_posix()
+        return asset.resolve().as_uri()
+
+
+def _extract_domain(url: str) -> str:
+    """Return bare netloc, e.g. 'www.tsite.co.il'."""
+    try:
+        parsed = urlparse(url if "://" in url else "https://" + url)
+        return parsed.netloc or url
+    except Exception:
+        return url
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# HTML builder
+# ─────────────────────────────────────────────────────────────────────────────
+
+def render_design_1_html(
+    data: Mapping[str, Any],
+    background_path: str | Path,
+    logo_path: str | Path,
+    output_path: str | Path | None = None,
+    site_url: str = "",
+) -> str:
+    """
+    Design 1 — split-panel RTL layout (matches BannerCanvas / legacy banner).
+
+    Write HTML to *output_path* (default: banner_temp.html) and return the full document.
+
+    ``data`` keys used: headline, subhead, bullet_points (3 strings), cta, brand_color.
+    """
+    headline_txt = str(data["headline"]).strip()
+    subhead_txt  = str(data["subhead"]).strip()
+    cta_txt      = str(data["cta"]).strip()
+    bullets      = data["bullet_points"]
+    if not isinstance(bullets, (list, tuple)) or len(bullets) != 3:
+        raise ValueError("data['bullet_points'] must be exactly 3 strings")
+
+    brand_hex  = _normalize_brand_hex(data.get("brand_color"))
+    r, g, b    = _hex_to_rgb(brand_hex)
+    cta_fg     = _cta_text_color(brand_hex)
+    domain     = _extract_domain(site_url) if site_url else ""
+
+    bg   = Path(background_path).resolve()
+    logo = Path(logo_path).resolve()
+    out  = Path(output_path).resolve() if output_path else DEFAULT_OUTPUT
+    out.parent.mkdir(parents=True, exist_ok=True)
+
+    bg_url   = html.escape(_asset_url(bg, out),   quote=True)
+    logo_url = html.escape(_asset_url(logo, out), quote=True)
+
+    # ── Feature cards ─────────────────────────────────────────────────────────
+    feature_rows: list[str] = []
+    for raw in bullets:
+        text = html.escape(str(raw).strip())
+        feature_rows.append(
+            f'      <div class="feat-card" style="border-top-color:{brand_hex};">\n'
+            f'        <div class="feat-icon" style="background-color:{brand_hex};color:{cta_fg};">✓</div>\n'
+            f'        <span class="feat-text">{text}</span>\n'
+            f'      </div>'
+        )
+    features_html = "\n".join(feature_rows)
+
+    # ── Bottom strip text ────────────────────────────────────────────────────
+    if domain:
+        bottom_text = html.escape(domain)
+    else:
+        bottom_text = html.escape(cta_txt)
+
+    doc = f"""<!DOCTYPE html>
+<html lang="he">
+<head>
+<meta charset="utf-8">
+<title>Banner</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Heebo:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
+<style>
+*,*::before,*::after{{margin:0;padding:0;box-sizing:border-box;}}
+body{{
+  width:{BANNER_PX}px;height:{BANNER_PX}px;
+  overflow:hidden;
+  font-family:'Heebo',Arial,sans-serif;
+  direction:ltr;
+  -webkit-font-smoothing:antialiased;
+}}
+.banner{{
+  width:{BANNER_PX}px;height:{BANNER_PX}px;
+  display:flex;flex-direction:column;
+}}
+/* ── Main row ── */
+.banner-main{{
+  flex:1;min-height:0;
+  display:flex;flex-direction:row;
+}}
+/* ── Left: photo panel ── */
+.left-panel{{
+  width:44%;
+  position:relative;overflow:hidden;
+  flex-shrink:0;
+}}
+.left-bg{{
+  position:absolute;inset:0;
+  background-image:url('{bg_url}');
+  background-size:cover;background-position:center;
+}}
+.left-overlay{{
+  position:absolute;inset:0;
+  background:linear-gradient(
+    145deg,
+    rgba(10,18,36,0.92) 0%,
+    rgba({r},{g},{b},0.60) 45%,
+    rgba(10,18,36,0.80) 100%
+  );
+}}
+/* Brand accent bar between panels */
+.panel-divider{{
+  width:6px;
+  background:{brand_hex};
+  flex-shrink:0;
+  box-shadow:2px 0 20px rgba({r},{g},{b},0.55);
+}}
+/* ── Right: content panel ── */
+.right-panel{{
+  flex:1;min-width:0;
+  background:linear-gradient(155deg,#ffffff 0%,#f8fafc 55%,rgba({r},{g},{b},0.07) 100%);
+  display:flex;flex-direction:column;
+  padding:44px 52px 40px 48px;
+  direction:rtl;
+}}
+.logo-row{{
+  flex-shrink:0;
+  margin-bottom:30px;
+  display:flex;
+  justify-content:flex-start;
+}}
+.logo-row img{{
+  max-height:60px;max-width:200px;
+  object-fit:contain;object-position:left center;
+}}
+.content{{
+  flex:1;display:flex;flex-direction:column;justify-content:center;
+  gap:0;
+}}
+.headline{{
+  font-size:44px;font-weight:900;line-height:1.18;
+  color:#0f172a;
+  margin-bottom:14px;
+  letter-spacing:-0.4px;
+  word-break:break-word;
+}}
+.subhead{{
+  font-size:19px;font-weight:500;line-height:1.55;
+  color:#475569;
+  margin-bottom:30px;
+}}
+.features{{
+  display:flex;flex-direction:row;gap:10px;
+  margin-bottom:34px;
+  direction:rtl;
+  align-items:stretch;
+}}
+.feat-card{{
+  flex:1;min-width:0;min-height:132px;
+  background:#ffffff;
+  border-radius:14px;
+  padding:24px 14px 26px;
+  box-shadow:0 2px 8px rgba(0,0,0,0.06),0 8px 24px rgba(0,0,0,0.06);
+  border-top:4px solid;
+  display:flex;flex-direction:column;gap:12px;align-items:stretch;
+  direction:rtl;
+}}
+.feat-icon{{
+  width:32px;height:32px;flex-shrink:0;
+  border-radius:8px;
+  display:inline-flex;align-items:center;justify-content:center;
+  font-size:16px;font-weight:800;
+}}
+.feat-text{{
+  font-size:15px;font-weight:600;
+  color:#1e293b;line-height:1.52;
+  direction:rtl;text-align:right;
+  flex:1 1 auto;min-height:2.8em;
+}}
+.cta-btn{{
+  display:inline-block;
+  background-color:{brand_hex};
+  color:{cta_fg};
+  font-size:21px;font-weight:800;
+  padding:16px 32px;
+  border-radius:12px;
+  text-align:center;
+  box-shadow:0 8px 28px rgba({r},{g},{b},0.48);
+  align-self:stretch;
+  letter-spacing:0.2px;
+}}
+/* ── Bottom strip ── */
+.bottom-strip{{
+  height:70px;flex-shrink:0;
+  background-color:{brand_hex};
+  display:flex;align-items:center;justify-content:center;
+  direction:ltr;
+  box-shadow:0 -4px 24px rgba({r},{g},{b},0.35);
+}}
+.bottom-text{{
+  font-size:23px;font-weight:700;
+  color:{cta_fg};
+  letter-spacing:0.5px;
+}}
+</style>
+</head>
+<body>
+<div class="banner">
+  <div class="banner-main">
+
+    <!-- Left: DALL-E background -->
+    <div class="left-panel">
+      <div class="left-bg"></div>
+      <div class="left-overlay"></div>
+    </div>
+
+    <!-- Brand accent divider -->
+    <div class="panel-divider" aria-hidden="true"></div>
+
+    <!-- Right: content -->
+    <div class="right-panel">
+      <div class="logo-row">
+        <img src="{logo_url}" alt="לוגו" loading="eager" decoding="sync">
+      </div>
+      <div class="content">
+        <div class="headline">{html.escape(headline_txt)}</div>
+        <div class="subhead">{html.escape(subhead_txt)}</div>
+        <div class="features" dir="rtl">
+{features_html}
+        </div>
+        <div class="cta-btn">{html.escape(cta_txt)}</div>
+      </div>
+    </div>
+
+  </div>
+  <!-- Bottom brand strip -->
+  <div class="bottom-strip">
+    <span class="bottom-text">{bottom_text}</span>
+  </div>
+</div>
+</body>
+</html>"""
+
+    out.write_text(doc, encoding="utf-8")
+    return doc
 
 
 def render_banner_html(
@@ -1619,144 +2009,295 @@ def render_banner_html(
     background_path: str | Path,
     logo_path: str | Path,
     output_path: str | Path | None = None,
+    site_url: str = "",
+) -> str:
+    """Backward-compatible alias for :func:`render_design_1_html`."""
+    return render_design_1_html(
+        data,
+        background_path=background_path,
+        logo_path=logo_path,
+        output_path=output_path,
+        site_url=site_url,
+    )
+
+
+# Design 2 layout constants (BannerCanvas2.jsx / BannerCanvas2.css)
+_D2_STRIP_H = 64
+_D2_ACCENT_W = 6
+_D2_CONTENT_PAD = 64
+_D2_CONTENT_W = BANNER_PX - _D2_CONTENT_PAD * 2  # 952
+
+
+def render_design_2_html(
+    data: Mapping[str, Any],
+    background_path: str | Path,
+    logo_path: str | Path,
+    output_path: str | Path | None = None,
+    site_url: str = "",
 ) -> str:
     """
-    Build a full-bleed hero banner HTML and save to ``banner_temp.html`` by default.
+    Design 2 — full-bleed background with dark vignette (matches BannerCanvas2).
 
-    ``data`` must include: headline, subhead, bullet_points (3 strings), cta.
-    Optional: brand_color (#RRGGBB) for CTA, bullet accents, and gradient overlay.
-
-    Layout: background image covers the entire viewport; a left→right gradient overlay
-    (heavier toward the physical right) keeps RTL copy readable; content is a premium
-    single-column block aligned to the start edge (right under ``dir=rtl``).
+    Default layer geometry matches DEFAULT_* boxes in BannerCanvas2.jsx.
     """
-    headline = html.escape(str(data["headline"]).strip())
-    subhead = html.escape(str(data["subhead"]).strip())
-    cta = html.escape(str(data["cta"]).strip())
+    headline_txt = str(data["headline"]).strip()
+    subhead_txt = str(data["subhead"]).strip()
+    cta_txt = str(data["cta"]).strip()
     bullets = data["bullet_points"]
     if not isinstance(bullets, (list, tuple)) or len(bullets) != 3:
-        raise ValueError("data['bullet_points'] must be a sequence of exactly 3 strings")
+        raise ValueError("data['bullet_points'] must be exactly 3 strings")
 
     brand_hex = _normalize_brand_hex(data.get("brand_color"))
     r, g, b = _hex_to_rgb(brand_hex)
-    brand_hex_esc = html.escape(brand_hex, quote=True)
+    cta_fg = _cta_text_color_immersive(brand_hex)
+    cta_label_color = cta_fg
+    domain = _extract_domain(site_url) if site_url else ""
 
-    # Readable panel on the right: dark + brand wash, fading to transparent on the left.
-    overlay_gradient = (
-        f"linear-gradient(to left, "
-        f"rgba(15,23,42,0.93) 0%, "
-        f"rgba(15,23,42,0.78) 18%, "
-        f"rgba({r},{g},{b},0.55) 42%, "
-        f"rgba({r},{g},{b},0.12) 62%, "
-        f"transparent 78%)"
-    )
-    overlay_esc = html.escape(overlay_gradient, quote=True)
-
-    bg = Path(background_path)
-    logo = Path(logo_path)
-    out = Path(output_path) if output_path else DEFAULT_OUTPUT
+    bg = Path(background_path).resolve()
+    logo = Path(logo_path).resolve()
+    out = Path(output_path).resolve() if output_path else DEFAULT_OUTPUT
     out.parent.mkdir(parents=True, exist_ok=True)
 
     bg_url = html.escape(_asset_url(bg, out), quote=True)
     logo_url = html.escape(_asset_url(logo, out), quote=True)
 
-    bullet_rows: list[str] = []
-    for i, raw in enumerate(bullets):
+    strip_h = _D2_STRIP_H
+    accent_h = BANNER_PX - strip_h
+    # DEFAULT_* from BannerCanvas2.jsx (capture root is LTR)
+    logo_l = BANNER_PX - _D2_CONTENT_PAD - 210
+    logo_t, logo_w, logo_h = 50, 210, 78
+    hl_l, hl_t, hl_w, hl_h = _D2_CONTENT_PAD, 210, _D2_CONTENT_W, 230
+    sh_l, sh_t, sh_w, sh_h = _D2_CONTENT_PAD, 456, _D2_CONTENT_W, 110
+    bu_l, bu_t, bu_w, bu_h = _D2_CONTENT_PAD, 580, _D2_CONTENT_W, 252
+    cta_l = _D2_CONTENT_PAD + 80
+    cta_t, cta_w, cta_h = 846, _D2_CONTENT_W - 160, 88
+
+    feat_rows: list[str] = []
+    for raw in bullets:
         text = html.escape(str(raw).strip())
-        icon = _BULLET_ICONS[i]
-        bullet_rows.append(
-            f"""<li class="flex items-start gap-4">
-      <span
-        class="flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl shadow-lg ring-1 ring-white/10"
-        style="background: linear-gradient(145deg, rgba({r},{g},{b},0.45), rgba({r},{g},{b},0.2)); color: {brand_hex};"
-        aria-hidden="true"
-      >
-        <i class="{icon} text-xl"></i>
-      </span>
-      <span class="min-w-0 flex-1 pt-2 text-base font-semibold leading-snug text-white/95 md:text-lg">{text}</span>
-    </li>"""
+        feat_rows.append(
+            f'      <div class="bc2-feat-pill" style="border-top-color:{brand_hex};">\n'
+            f'        <div class="bc2-feat-icon" style="background-color:{brand_hex};color:{cta_fg};">✓</div>\n'
+            f'        <span class="bc2-feat-text">{text}</span>\n'
+            f'      </div>'
         )
-    bullets_html = "\n    ".join(bullet_rows)
+    features_html = "\n".join(feat_rows)
+
+    bottom_inner = html.escape(domain) if domain else ""
 
     doc = f"""<!DOCTYPE html>
-<html lang="he" dir="rtl" class="h-full antialiased">
+<html lang="he">
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="color-scheme" content="light">
-  <title>Banner</title>
-  <script src="https://cdn.tailwindcss.com"></script>
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Heebo:wght@400;500;600;700;800&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css" crossorigin="anonymous" referrerpolicy="no-referrer">
-  <script>
-    tailwind.config = {{
-      theme: {{
-        extend: {{
-          fontFamily: {{ sans: ["Heebo", "ui-sans-serif", "system-ui", "sans-serif"] }}
-        }}
-      }}
-    }};
-  </script>
+<meta charset="utf-8">
+<title>Banner Design 2</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Heebo:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
+<style>
+*,*::before,*::after{{margin:0;padding:0;box-sizing:border-box;}}
+body{{
+  width:{BANNER_PX}px;height:{BANNER_PX}px;
+  overflow:hidden;
+  font-family:'Heebo','Segoe UI','Helvetica Neue',Arial,sans-serif;
+  direction:ltr;
+  -webkit-font-smoothing:antialiased;
+  color-scheme:light;
+}}
+.bc2-canvas{{
+  position:relative;
+  width:{BANNER_PX}px;height:{BANNER_PX}px;
+  overflow:hidden;
+  background:#0f172a;
+}}
+.bc2-bg{{
+  position:absolute;inset:0;
+  background-image:url('{bg_url}');
+  background-size:cover;background-position:center;background-repeat:no-repeat;
+}}
+.bc2-vignette{{
+  position:absolute;inset:0;pointer-events:none;
+  background:
+    radial-gradient(ellipse at 70% 40%, rgba(0,0,0,0.08) 0%, rgba(0,0,0,0.72) 90%),
+    linear-gradient(165deg, rgba(0,0,0,0.28) 0%, rgba(0,0,0,0.55) 100%);
+}}
+.bc2-glow{{
+  position:absolute;pointer-events:none;
+  width:500px;height:500px;border-radius:50%;
+  top:-150px;right:-100px;
+  background:radial-gradient(circle, rgba({r},{g},{b},0.28) 0%, transparent 70%);
+}}
+.bc2-accent-left{{
+  position:absolute;left:0;top:0;pointer-events:none;
+  width:{_D2_ACCENT_W}px;height:{accent_h}px;
+  background-color:{brand_hex};
+}}
+.bc2-bottom-strip{{
+  position:absolute;left:0;right:0;bottom:0;pointer-events:none;
+  height:{strip_h}px;
+  background-color:{brand_hex};
+  display:flex;align-items:center;justify-content:center;
+}}
+.bc2-bottom-strip span{{
+  color:{cta_label_color};
+  font-family:system-ui,Arial,sans-serif;
+  font-size:22px;font-weight:700;
+  direction:ltr;
+  letter-spacing:0.4px;
+}}
+.bc2-layer{{position:absolute;box-sizing:border-box;}}
+.bc2-logo-img{{
+  display:block;max-width:100%;max-height:100%;width:auto;height:auto;
+  object-fit:contain;object-position:right center;
+  filter:drop-shadow(0 2px 16px rgba(0,0,0,0.55)) brightness(1.08);
+}}
+.bc2-text-shell{{
+  box-sizing:border-box;direction:rtl;text-align:right;unicode-bidi:isolate;
+  display:block;width:100%;height:100%;
+}}
+.bc2-headline{{
+  font-size:66px;font-weight:900;letter-spacing:-0.025em;line-height:1.12;
+  color:#ffffff;text-align:right;direction:rtl;
+  word-break:break-word;
+  text-shadow:0 2px 24px rgba(0,0,0,0.70),0 0 2px rgba(0,0,0,0.90);
+}}
+.bc2-subhead{{
+  font-size:26px;font-weight:400;line-height:1.55;
+  color:rgba(255,255,255,0.88);text-align:right;direction:rtl;
+  word-break:break-word;
+  text-shadow:0 1px 12px rgba(0,0,0,0.60);
+}}
+.bc2-feat-grid{{
+  display:flex;flex-direction:row;gap:10px;direction:rtl;
+  width:100%;height:100%;align-items:stretch;
+}}
+.bc2-feat-pill{{
+  flex:1;min-width:0;min-height:128px;
+  background:rgba(10,15,30,0.65);
+  border:1px solid rgba(255,255,255,0.18);
+  border-top:3px solid;
+  border-radius:16px;
+  padding:24px 14px 26px;
+  display:flex;flex-direction:column;gap:12px;align-items:stretch;
+  direction:rtl;
+}}
+.bc2-feat-icon{{
+  width:32px;height:32px;border-radius:8px;
+  display:inline-flex;align-items:center;justify-content:center;
+  font-size:16px;font-weight:800;flex-shrink:0;
+}}
+.bc2-feat-text{{
+  font-size:18px;font-weight:500;color:rgba(255,255,255,0.90);
+  line-height:1.52;direction:rtl;text-align:right;
+  flex:1 1 auto;min-height:2.8em;word-break:break-word;
+  display:block;width:100%;
+}}
+.bc2-cta-wrap{{
+  width:100%;height:100%;
+  display:flex;align-items:center;justify-content:center;
+  box-sizing:border-box;
+}}
+.bc2-cta{{
+  display:inline-flex;align-items:center;justify-content:center;
+  text-align:center;direction:rtl;
+  font-size:31px;font-weight:800;border-radius:14px;
+  padding:0.45em 0.9em;
+  background-color:{brand_hex};
+  color:{cta_label_color};
+  box-shadow:0 12px 40px rgba({r},{g},{b},0.55);
+  white-space:nowrap;max-width:100%;
+}}
+</style>
 </head>
-<body class="m-0 min-h-screen bg-slate-900 font-sans text-white">
-  <div class="relative min-h-screen w-full overflow-hidden">
-    <div
-      class="absolute inset-0 bg-cover bg-center bg-no-repeat"
-      style="background-image: url('{bg_url}');"
-      role="img"
-      aria-label="רקע"
-    ></div>
-    <div
-      class="pointer-events-none absolute inset-0"
-      style="background: {overlay_esc};"
-      aria-hidden="true"
-    ></div>
-    <div class="pointer-events-none absolute inset-0 bg-gradient-to-t from-black/50 via-transparent to-black/20" aria-hidden="true"></div>
+<body>
+<div class="bc2-canvas">
+  <div class="bc2-bg" aria-hidden="true"></div>
+  <div class="bc2-vignette" aria-hidden="true"></div>
+  <div class="bc2-glow" aria-hidden="true"></div>
+  <div class="bc2-accent-left" aria-hidden="true"></div>
+  <div class="bc2-bottom-strip" aria-hidden="true">
+    <span>{bottom_inner}</span>
+  </div>
 
-    <div class="relative z-10 flex min-h-screen flex-col px-6 py-10 md:px-12 md:py-14 lg:px-16 lg:py-16">
-      <div class="ms-auto flex w-full max-w-xl flex-col">
-        <div class="flex justify-center md:justify-start">
-          <img
-            src="{logo_url}"
-            alt="לוגו"
-            class="h-16 w-auto max-w-[240px] object-contain drop-shadow-lg md:h-[4.75rem]"
-            width="240"
-            height="80"
-            style="filter: drop-shadow(0 4px 24px rgba(0,0,0,0.35));"
-          />
-        </div>
-        <header class="mt-10 space-y-5 text-center md:mt-12 md:text-right">
-          <h1 class="text-3xl font-extrabold leading-[1.15] tracking-tight text-white md:text-4xl lg:text-5xl" style="text-shadow: 0 2px 32px rgba(0,0,0,0.45);">
-            {headline}
-          </h1>
-          <p class="text-lg font-medium leading-relaxed text-white/90 md:text-xl">
-            {subhead}
-          </p>
-        </header>
-        <div class="mt-auto flex w-full flex-col gap-8 pt-12 md:pt-16">
-          <ul class="m-0 flex list-none flex-col gap-5 p-0" role="list">
-    {bullets_html}
-          </ul>
-          <div class="w-full pb-2 md:max-w-md md:ms-0">
-            <a
-              href="#"
-              class="flex w-full items-center justify-center rounded-2xl px-8 py-4 text-lg font-bold text-white shadow-xl transition focus:outline-none focus:ring-2 focus:ring-white/40 focus:ring-offset-2 focus:ring-offset-slate-900/0"
-              style="background-color: {brand_hex_esc}; box-shadow: 0 12px 40px rgba({r},{g},{b},0.45);"
-            >
-              {cta}
-            </a>
-          </div>
-        </div>
-      </div>
+  <div class="bc2-layer bc2-layer-logo" style="left:{logo_l}px;top:{logo_t}px;width:{logo_w}px;height:{logo_h}px;">
+    <img class="bc2-logo-img" src="{logo_url}" alt="" loading="eager" decoding="sync">
+  </div>
+  <div class="bc2-layer" style="left:{hl_l}px;top:{hl_t}px;width:{hl_w}px;height:{hl_h}px;">
+    <div class="bc2-text-shell">
+      <div class="bc2-headline">{html.escape(headline_txt)}</div>
     </div>
   </div>
+  <div class="bc2-layer" style="left:{sh_l}px;top:{sh_t}px;width:{sh_w}px;height:{sh_h}px;">
+    <div class="bc2-text-shell">
+      <div class="bc2-subhead">{html.escape(subhead_txt)}</div>
+    </div>
+  </div>
+  <div class="bc2-layer" style="left:{bu_l}px;top:{bu_t}px;width:{bu_w}px;height:{bu_h}px;">
+    <div class="bc2-feat-grid">
+{features_html}
+    </div>
+  </div>
+  <div class="bc2-layer" style="left:{cta_l}px;top:{cta_t}px;width:{cta_w}px;height:{cta_h}px;">
+    <div class="bc2-cta-wrap">
+      <span class="bc2-cta">{html.escape(cta_txt)}</span>
+    </div>
+  </div>
+</div>
 </body>
-</html>
-"""
+</html>"""
+
     out.write_text(doc, encoding="utf-8")
     return doc
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PNG renderer
+# ─────────────────────────────────────────────────────────────────────────────
+
+def render_html_to_png(
+    html_path: str | Path,
+    output_path: str | Path,
+    width: int = BANNER_PX,
+    height: int = BANNER_PX,
+    font_wait_s: float = 4.0,
+) -> Path:
+    """
+    Render *html_path* to a PNG using headless Chrome (Selenium).
+
+    Raises ``RuntimeError`` on failure. Returns *output_path* as a Path.
+    """
+    from selenium import webdriver
+    from selenium.webdriver.chrome.options import Options
+    from PIL import Image
+
+    html_path   = Path(html_path).resolve()
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    options = Options()
+    options.add_argument("--headless=new")
+    options.add_argument("--disable-gpu")
+    options.add_argument("--no-sandbox")
+    options.add_argument("--disable-dev-shm-usage")
+    options.add_argument(f"--window-size={width},{height}")
+    options.add_argument("--hide-scrollbars")
+    options.add_argument("--force-device-scale-factor=1")
+
+    driver = webdriver.Chrome(options=options)
+    try:
+        driver.get(html_path.as_uri())
+        # Allow Google Fonts + images to load
+        time.sleep(font_wait_s)
+        # Ensure viewport matches exactly
+        driver.set_window_size(width, height)
+        time.sleep(0.5)
+        raw_png = driver.get_screenshot_as_png()
+    finally:
+        driver.quit()
+
+    # Crop to exact banner dimensions (removes any browser chrome artefacts)
+    img = Image.open(io.BytesIO(raw_png))
+    img = img.crop((0, 0, width, height))
+    img.save(str(output_path), format="PNG")
+    return output_path
 
 
 ================================================================================
@@ -1906,10 +2447,14 @@ def build_headless_chrome() -> webdriver.Chrome:
     return webdriver.Chrome(options=options)
 
 
-def run_agency_banner_pipeline(work_dir: Path | None = None) -> None:
+def run_agency_banner_pipeline(
+    work_dir: Path | None = None,
+    site_url: str = "",
+) -> None:
     """
     GPT-4o + DALL-E 3 (via creative_agent): writes creative_campaign.json,
-    background.png, and uses existing logo.png. No HTML render or Selenium screenshot.
+    background.png, and uses existing logo.png.  After that it renders a
+    two high-quality PNGs (``rendered_banner_1.png``, ``rendered_banner_2.png``) via html_renderer.
 
     If ``work_dir`` is set, all artifacts live under that directory (for API jobs).
     When ``work_dir`` is set, missing scraped content or logo raises ``RuntimeError``.
@@ -1917,12 +2462,17 @@ def run_agency_banner_pipeline(work_dir: Path | None = None) -> None:
     from openai import OpenAI
 
     from creative_agent import fetch_banner_payload, generate_background_dalle3
+    from html_renderer import render_design_1_html, render_design_2_html, render_html_to_png
 
     root = work_dir if work_dir is not None else BASE_DIR
     output_file = root / "scraped_content.txt"
     logo_file = root / "logo.png"
     background_png = root / "background.png"
     campaign_json = root / "creative_campaign.json"
+    banner_html_1 = root / "banner_temp_design1.html"
+    banner_html_2 = root / "banner_temp_design2.html"
+    rendered_banner_1 = root / "rendered_banner_1.png"
+    rendered_banner_2 = root / "rendered_banner_2.png"
 
     if work_dir is not None:
         work_dir.mkdir(parents=True, exist_ok=True)
@@ -1961,6 +2511,35 @@ def run_agency_banner_pipeline(work_dir: Path | None = None) -> None:
         return
 
     print(f"Agency banner: saved {campaign_json.name} and {background_png.name}")
+
+    # ── High-quality PNGs (Design 1 + Design 2 HTML → PNG) ─────────────────────
+    print("Agency banner: rendering PNGs (html_renderer + headless Chrome)…")
+    try:
+        render_design_1_html(
+            payload,
+            background_path=background_png,
+            logo_path=logo_file,
+            output_path=banner_html_1,
+            site_url=site_url,
+        )
+        render_design_2_html(
+            payload,
+            background_path=background_png,
+            logo_path=logo_file,
+            output_path=banner_html_2,
+            site_url=site_url,
+        )
+        render_html_to_png(banner_html_1, rendered_banner_1)
+        render_html_to_png(banner_html_2, rendered_banner_2)
+        print(
+            f"Agency banner: saved {rendered_banner_1.name} and {rendered_banner_2.name} "
+            f"to {root}"
+        )
+    except Exception as exc:  # noqa: BLE001
+        print(
+            f"[main] WARNING: rendered banner PNGs failed ({exc}). Continuing without them.",
+            file=sys.stderr,
+        )
 
 
 def extract_title_and_paragraphs(driver: webdriver.Chrome) -> tuple[str, list[str]]:
@@ -2241,7 +2820,7 @@ def main() -> None:
         return
 
     if os.environ.get("OPENAI_API_KEY"):
-        run_agency_banner_pipeline()
+        run_agency_banner_pipeline(site_url=raw_url)
     else:
         print(
             "Tip: set OPENAI_API_KEY to generate creative_campaign.json and background.png "
@@ -2312,12 +2891,15 @@ class BannerTask(Base):
     brand_color: Mapped[str | None] = mapped_column(String(32), nullable=True)
     background_url: Mapped[str | None] = mapped_column(String(1024), nullable=True)
     logo_url: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    rendered_banner_1_url: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    rendered_banner_2_url: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    canvas_state: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
     user: Mapped["User"] = relationship("User", back_populates="tasks")
 
 
 ================================================================================
-SECTION: CLIENT SOURCE FILES (14)
+SECTION: CLIENT SOURCE FILES (16)
 ================================================================================
 
 
@@ -2785,16 +3367,17 @@ export function useAuth() {
 FILE: client/src/BannerCanvas.css
 ================================================================================
 
+/* ── Viewport (responsive wrapper) ─────────────────────────────────────────── */
 .banner-viewport {
   width: 100%;
-  max-width: min(92vw, 720px);
+  max-width: min(96%, 860px);
   margin: 0 auto;
   aspect-ratio: 1 / 1;
   position: relative;
-  background: #111;
-  border-radius: 12px;
+  background: #e2e8f0;
+  border-radius: 14px;
   overflow: hidden;
-  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.18);
+  box-shadow: 0 16px 56px rgba(0, 0, 0, 0.18);
 }
 
 .banner-viewport-inner {
@@ -2803,15 +3386,14 @@ FILE: client/src/BannerCanvas.css
   overflow: hidden;
 }
 
+/* ── Canvas root ────────────────────────────────────────────────────────────── */
 .banner-canvas {
-  /* position: absolute top-0 left-0 in JSX — avoids RTL viewport flipping scaled canvas */
   transform-origin: top left;
   color-scheme: light;
   direction: ltr;
-  font-family: system-ui, 'Segoe UI', 'Helvetica Neue', Arial, sans-serif;
+  font-family: 'Heebo', 'Segoe UI', 'Helvetica Neue', Arial, sans-serif;
 }
 
-/* Export: explicit light canvas + white fallback (avoids black PNG from transparency / dark mode). */
 .banner-canvas.capture-mode {
   color-scheme: light !important;
   background-color: #ffffff !important;
@@ -2823,14 +3405,13 @@ FILE: client/src/BannerCanvas.css
   pointer-events: none !important;
 }
 
-/* Backdrop + overlay: Tailwind in BannerCanvas.jsx */
-
-/* Block shell inside Resizable — no flex on layer fill (avoids column squish). */
+/* ── Layer shell ────────────────────────────────────────────────────────────── */
 .banner-layer-inner {
   width: 100%;
   height: 100%;
   box-sizing: border-box;
   display: block;
+  position: relative;
 }
 
 .banner-text-shell {
@@ -2843,6 +3424,7 @@ FILE: client/src/BannerCanvas.css
   height: 100%;
 }
 
+/* ── Layer drag & resize ────────────────────────────────────────────────────── */
 .banner-layer {
   box-sizing: border-box;
   cursor: grab;
@@ -2856,21 +3438,23 @@ FILE: client/src/BannerCanvas.css
 
 .banner-layer--text .banner-layer-inner,
 .banner-layer--cta .banner-layer-inner {
-  padding: 6px;
+  padding: 6px 6px 6px 6px;
+  padding-top: 44px; /* מקום לסרגל עריכה בפינה הימנית העליונה */
 }
 
 .banner-layer--logo .banner-layer-inner {
   padding: 6px;
 }
 
+/* Hover / active outlines — visible against the light right panel */
 .banner-canvas:not(.capture-mode) .banner-layer:hover:not(.banner-layer--dragging) {
-  outline-color: rgba(255, 255, 255, 0.45);
-  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.12);
+  outline-color: rgba(79, 70, 229, 0.45);
+  box-shadow: 0 0 0 1px rgba(79, 70, 229, 0.12);
 }
 
 .banner-canvas:not(.capture-mode) .banner-layer.banner-layer--dragging {
-  outline-color: rgba(255, 255, 255, 0.92);
-  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.2);
+  outline-color: rgba(79, 70, 229, 0.90);
+  box-shadow: 0 0 0 2px rgba(79, 70, 229, 0.20);
 }
 
 .banner-canvas.capture-mode .banner-layer {
@@ -2891,6 +3475,7 @@ FILE: client/src/BannerCanvas.css
   cursor: grabbing !important;
 }
 
+/* ── Logo ────────────────────────────────────────────────────────────────────── */
 .banner-layer-logo-img {
   display: block;
   max-width: 100%;
@@ -2898,10 +3483,12 @@ FILE: client/src/BannerCanvas.css
   width: auto;
   height: auto;
   object-fit: contain;
+  object-position: right center;
   pointer-events: none;
   user-select: none;
 }
 
+/* ── Text layers (right panel = light background → dark text) ───────────────── */
 .banner-text {
   width: 100%;
   min-height: 1.2em;
@@ -2909,60 +3496,104 @@ FILE: client/src/BannerCanvas.css
   cursor: text;
   direction: rtl;
   text-align: right;
-  color: #fff;
-  text-shadow:
-    0 0 1px rgba(0, 0, 0, 0.9),
-    0 2px 12px rgba(0, 0, 0, 0.65);
+  /* Dark text — right panel is #f8fafc */
+  color: #0f172a;
+  text-shadow: none;
   line-height: 1.25;
   word-break: break-word;
 }
 
 .banner-headline {
-  font-size: 52px;
-  font-weight: 800;
+  font-size: 51px;
+  font-weight: 900;
   letter-spacing: -0.02em;
+  line-height: 1.18;
+  color: #0f172a;
 }
 
 .banner-subhead {
-  font-size: 28px;
+  font-size: 22px;
   font-weight: 500;
-  opacity: 0.98;
+  line-height: 1.55;
+  color: #475569;
 }
 
-.banner-bullets {
-  margin: 0;
-  padding: 0.35em 0 0.35em 1em;
-  list-style: disc;
-  list-style-position: outside;
-  font-size: 26px;
+/* ── Feature card grid (replaces bullet list) ───────────────────────────────── */
+.banner-feat-grid {
+  display: flex;
+  flex-direction: row;
+  gap: 10px;
+  direction: rtl;
+  width: 100%;
+  height: 100%;
+  align-items: stretch;
+}
+
+.banner-feat-card {
+  flex: 1;
+  min-width: 0;
+  min-height: 132px;
+  background: #ffffff;
+  border-radius: 14px;
+  padding: 24px 14px 26px;
+  box-shadow:
+    0 2px 8px rgba(0, 0, 0, 0.06),
+    0 8px 24px rgba(0, 0, 0, 0.06);
+  border-top: 4px solid;        /* colour set inline from ctaBgHex */
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  align-items: stretch;
+  direction: rtl;
+}
+
+.banner-feat-icon {
+  width: 34px;
+  height: 34px;
+  border-radius: 9px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 17px;
+  font-weight: 800;
+  flex-shrink: 0;
+  /* bg and color set inline */
+}
+
+.banner-feat-text {
+  font-size: 18px;
   font-weight: 600;
+  color: #1e293b;
+  line-height: 1.52;
+  flex: 1 1 auto;
+  min-height: 2.8em;
   direction: rtl;
   text-align: right;
+  outline: none;
+  cursor: text;
+  word-break: break-word;
+  display: block;
+  width: 100%;
 }
 
-.banner-bullets li {
-  margin: 0.35em 0;
-  padding-inline-end: 0.25em;
+.banner-layer--dragging.banner-layer--bullets .banner-feat-text {
+  cursor: grabbing !important;
 }
 
-.banner-bullets .banner-text {
-  display: inline;
-  font-size: inherit;
-  font-weight: inherit;
-}
-
+/* ── CTA drag handle ────────────────────────────────────────────────────────── */
 .banner-cta-drag-handle {
   display: flex;
   align-items: center;
   justify-content: center;
+  width: 100%;
   gap: 0.35rem;
   min-height: 26px;
   padding: 4px 8px;
   margin-bottom: 4px;
   cursor: grab;
   border-radius: 8px;
-  background: rgba(255, 255, 255, 0.14);
-  border: 1px dashed rgba(255, 255, 255, 0.45);
+  background: rgba(15, 23, 42, 0.07);
+  border: 1px dashed rgba(15, 23, 42, 0.28);
   direction: rtl;
   user-select: none;
 }
@@ -2972,17 +3603,17 @@ FILE: client/src/BannerCanvas.css
   width: 22px;
   height: 4px;
   border-radius: 2px;
-  background: rgba(255, 255, 255, 0.75);
+  background: rgba(15, 23, 42, 0.45);
   box-shadow:
-    0 6px 0 rgba(255, 255, 255, 0.45),
-    0 12px 0 rgba(255, 255, 255, 0.25);
+    0 6px 0 rgba(15, 23, 42, 0.30),
+    0 12px 0 rgba(15, 23, 42, 0.15);
 }
 
 .banner-cta-drag-label {
   font-size: 11px;
   font-weight: 600;
   letter-spacing: 0.04em;
-  color: rgba(255, 255, 255, 0.85);
+  color: rgba(15, 23, 42, 0.65);
 }
 
 .banner-layer--dragging.banner-layer--cta .banner-cta-drag-handle {
@@ -2993,18 +3624,18 @@ FILE: client/src/BannerCanvas.css
   display: none !important;
 }
 
+/* ── CTA button ─────────────────────────────────────────────────────────────── */
 .banner-cta {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  text-align: right;
+  text-align: center;
   direction: rtl;
-  font-size: 30px;
-  font-weight: 700;
-  /* Fill comes from inline brandColor on EditableText */
-  border-radius: 999px;
-  padding: 0.35em 0.75em;
-  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.35);
+  font-size: 26px;
+  font-weight: 800;
+  border-radius: 14px;
+  padding: 0.45em 0.9em;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.22);
   vertical-align: middle;
 }
 
@@ -3012,6 +3643,125 @@ FILE: client/src/BannerCanvas.css
   text-shadow: none;
 }
 
+/* ── Text controls toolbar — פינה ימנית עליונה (hidden during PNG export) ───── */
+.banner-text-controls {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  left: auto;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 6px;
+  background: rgba(15, 23, 42, 0.72);
+  backdrop-filter: blur(4px);
+  border-radius: 6px;
+  width: max-content;
+  max-width: calc(100% - 8px);
+  flex-shrink: 0;
+  flex-wrap: wrap;
+  direction: rtl;
+  justify-content: flex-start;
+  z-index: 30;
+  user-select: none;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.15s ease;
+}
+
+.banner-canvas:not(.capture-mode) .banner-layer--text:hover .banner-text-controls,
+.banner-canvas:not(.capture-mode) .banner-layer--cta:hover .banner-text-controls {
+  opacity: 1;
+  pointer-events: all;
+}
+
+.btc-group {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.btc-btn {
+  background: rgba(255, 255, 255, 0.12);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  color: #e2e8f0;
+  border-radius: 4px;
+  padding: 1px 6px;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 18px;
+  cursor: pointer;
+  font-family: inherit;
+  transition: background 0.12s;
+  white-space: nowrap;
+}
+
+.btc-btn:hover {
+  background: rgba(255, 255, 255, 0.22);
+}
+
+.btc-btn--on {
+  background: rgba(99, 102, 241, 0.72) !important;
+  border-color: rgba(99, 102, 241, 0.9) !important;
+  color: #fff !important;
+}
+
+.btc-val {
+  color: #e2e8f0;
+  font-size: 11px;
+  font-weight: 600;
+  min-width: 30px;
+  text-align: center;
+  padding: 0 3px;
+}
+
+.btc-sep {
+  display: inline-block;
+  width: 1px;
+  height: 14px;
+  background: rgba(255, 255, 255, 0.22);
+  margin: 0 2px;
+  flex-shrink: 0;
+}
+
+.btc-color-wrap {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 20px;
+  flex-shrink: 0;
+  cursor: pointer;
+  border-radius: 4px;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.35);
+}
+
+.btc-color-swatch {
+  position: absolute;
+  inset: 0;
+  border-radius: 3px;
+  pointer-events: none;
+}
+
+.btc-color-input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  padding: 0;
+  margin: 0;
+  border: none;
+  cursor: pointer;
+  opacity: 0;
+}
+
+.banner-canvas.capture-mode .banner-text-controls {
+  display: none !important;
+}
+
+/* ── Download row ────────────────────────────────────────────────────────────── */
 .banner-download-row {
   margin-top: 1.25rem;
   display: flex;
@@ -3021,18 +3771,19 @@ FILE: client/src/BannerCanvas.css
 }
 
 .banner-download-row .btn-download {
-  padding: 0.65rem 1.35rem;
-  font-size: 1rem;
+  padding: 0.7rem 1.5rem;
+  font-size: 0.95rem;
   font-weight: 600;
   border: none;
   border-radius: 10px;
-  background: var(--btn, #4f46e5);
+  background: #4f46e5;
   color: #fff;
   cursor: pointer;
+  letter-spacing: 0.01em;
 }
 
 .banner-download-row .btn-download:hover:not(:disabled) {
-  filter: brightness(1.06);
+  filter: brightness(1.08);
 }
 
 .banner-download-row .btn-download:disabled {
@@ -3058,39 +3809,97 @@ FILE: client/src/BannerCanvas.css
 FILE: client/src/BannerCanvas.jsx
 ================================================================================
 
-import { useCallback, useEffect, useId, useRef, useState } from 'react'
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
 import { motion as Motion, useDragControls } from 'framer-motion'
 import { Resizable } from 're-resizable'
 import { toPng } from 'html-to-image'
 import './BannerCanvas.css'
 
-const DEFAULT_BRAND_HEX = '#4F46E5'
-const BANNER_PX = 1080
+// ─── Default font sizes (+10% over original CSS) ─────────────────────────────
+const DF = { headline: 51, subhead: 22, bullets: 18, cta: 26 }
 
-/** Spread layout; wide min sizes so Hebrew copy is not column-cramped */
-const DEFAULT_LOGO = { x: 50, y: 50, width: 280, height: 120 }
-const DEFAULT_HEADLINE = { x: 50, y: 200, width: 920, height: 200 }
-const DEFAULT_SUBHEAD = { x: 50, y: 420, width: 920, height: 150 }
-const DEFAULT_BULLETS = { x: 50, y: 590, width: 920, height: 260 }
-const DEFAULT_CTA = { x: 50, y: 900, width: 480, height: 140 }
+/** Hex #RRGGBB for <input type="color" /> */
+function colorInputHex(hex) {
+  if (!hex || typeof hex !== 'string') return '#000000'
+  let s = hex.trim()
+  if (!s.startsWith('#')) s = `#${s}`
+  if (/^#[0-9A-Fa-f]{6}$/.test(s)) return s.toLowerCase()
+  return '#000000'
+}
+
+// ─── Default text colours (Design 1 — light panel) ───────────────────────────
+const DC = { headline: '#0f172a', subhead: '#475569', bullets: '#1e293b' }
+
+// ─── TextControls — top-right corner, hidden during PNG export ───────────────
+function TextControls({ fontSize, onFontSize, align, onAlign, color, onColor }) {
+  /** stopPropagation only — preventDefault on mousedown breaks <input type="color" /> picker */
+  const stopDrag = (e) => { e.stopPropagation() }
+  const stopBtn = (e) => {
+    e.preventDefault()
+    e.stopPropagation()
+  }
+  const cv = colorInputHex(color)
+  return (
+    <div className="banner-text-controls" onMouseDown={stopDrag} onClick={stopDrag}>
+      <div className="btc-group">
+        <button type="button" className="btc-btn" onMouseDown={(e) => { stopBtn(e); onFontSize(Math.max(10, fontSize - 2)) }} title="הקטן גופן">A−</button>
+        <span className="btc-val">{fontSize}px</span>
+        <button type="button" className="btc-btn" onMouseDown={(e) => { stopBtn(e); onFontSize(Math.min(130, fontSize + 2)) }} title="הגדל גופן">A+</button>
+      </div>
+      <span className="btc-sep" aria-hidden />
+      <label className="btc-color-wrap" title="צבע טקסט" onMouseDown={stopDrag}>
+        <span className="btc-color-swatch" style={{ backgroundColor: cv }} aria-hidden />
+        <input
+          type="color"
+          className="btc-color-input"
+          value={cv}
+          onChange={(e) => onColor(e.target.value)}
+          onMouseDown={stopDrag}
+          aria-label="צבע טקסט"
+        />
+      </label>
+      <span className="btc-sep" aria-hidden />
+      <div className="btc-group">
+        {[['right','ימין'],['center','מרכז'],['left','שמאל']].map(([a, label]) => (
+          <button
+            type="button"
+            key={a}
+            className={`btc-btn${align === a ? ' btc-btn--on' : ''}`}
+            onMouseDown={(e) => { stopBtn(e); onAlign(a) }}
+            title={label}
+          >{label}</button>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+// ─── Layout constants (all in "banner px" space, 1080×1080) ──────────────────
+const BANNER_PX  = 1080
+const LEFT_W     = 475   // left photo panel width  (~44%)
+const DIVIDER_W  = 6     // brand-colour accent bar
+const RIGHT_X    = LEFT_W + DIVIDER_W   // 481 – where right panel begins
+const STRIP_H    = 70    // bottom domain strip height
+const CONTENT_H  = BANNER_PX - STRIP_H // 1010 – usable vertical height
+const RPAD       = 44    // horizontal padding inside right panel
+const CONTENT_X  = RIGHT_X + RPAD      // 525 – left edge of text content
+const CONTENT_W  = BANNER_PX - CONTENT_X - RPAD  // 511 – text column width
+
+const DEFAULT_BRAND_HEX = '#4F46E5'
+
+// Logo default: right-aligned in the right panel (mirroring the reference design)
+const LOGO_W = 200
+/** Default layer positions — all inside the right content panel. */
+const DEFAULT_LOGO     = { x: BANNER_PX - RPAD - LOGO_W, y: 44,  width: LOGO_W,    height: 72  }
+const DEFAULT_HEADLINE = { x: CONTENT_X,                 y: 148, width: CONTENT_W, height: 210 }
+const DEFAULT_SUBHEAD  = { x: CONTENT_X,                 y: 372, width: CONTENT_W, height: 110 }
+const DEFAULT_BULLETS  = { x: CONTENT_X,                 y: 494, width: CONTENT_W, height: 292 }
+const DEFAULT_CTA      = { x: CONTENT_X,                 y: 802, width: CONTENT_W, height: 86  }
+
+// ─── Utility helpers ─────────────────────────────────────────────────────────
 
 function clamp(n, lo, hi) {
   return Math.min(hi, Math.max(lo, n))
-}
-
-/** Normalize drag end to banner px using canvas root rect (handles outer scale transform). */
-function commitPositionInBanner(canvasEl, layerEl, setBox) {
-  if (!canvasEl || !layerEl) return
-  const cr = canvasEl.getBoundingClientRect()
-  const lr = layerEl.getBoundingClientRect()
-  if (cr.width <= 0 || cr.height <= 0) return
-  const nx = ((lr.left - cr.left) / cr.width) * BANNER_PX
-  const ny = ((lr.top - cr.top) / cr.height) * BANNER_PX
-  setBox((b) => ({
-    ...b,
-    x: clamp(Math.round(nx), 0, Math.max(0, BANNER_PX - b.width)),
-    y: clamp(Math.round(ny), 0, Math.max(0, BANNER_PX - b.height)),
-  }))
 }
 
 function normalizeBrandHex(input) {
@@ -3101,6 +3910,15 @@ function normalizeBrandHex(input) {
   return DEFAULT_BRAND_HEX
 }
 
+function hexToRgb(hex) {
+  const h = hex.replace('#', '')
+  return [
+    parseInt(h.slice(0, 2), 16),
+    parseInt(h.slice(2, 4), 16),
+    parseInt(h.slice(4, 6), 16),
+  ]
+}
+
 function contrastingTextColor(bgHex) {
   const h = (bgHex && bgHex.startsWith('#') ? bgHex : DEFAULT_BRAND_HEX).slice(1)
   if (h.length !== 6) return '#ffffff'
@@ -3109,6 +3927,16 @@ function contrastingTextColor(bgHex) {
   const b = parseInt(h.slice(4, 6), 16) / 255
   const lum = 0.2126 * r + 0.7152 * g + 0.0722 * b
   return lum > 0.55 ? '#0f172a' : '#ffffff'
+}
+
+function extractDomain(url) {
+  if (!url) return ''
+  try {
+    const u = url.includes('://') ? url : `https://${url}`
+    return new URL(u).hostname
+  } catch {
+    return url
+  }
 }
 
 function waitForImagesInNode(root) {
@@ -3134,22 +3962,36 @@ function waitForImagesInNode(root) {
   )
 }
 
-function EditableText({
-  className,
-  style,
-  text,
-  resetKey,
-  onTextChange,
-  dir = 'rtl',
-  as = 'div',
-}) {
+/** Normalize drag end to banner-px using the canvas root rect. */
+function commitPositionInBanner(canvasEl, layerEl, setBox) {
+  if (!canvasEl || !layerEl) return
+  const cr = canvasEl.getBoundingClientRect()
+  const lr = layerEl.getBoundingClientRect()
+  if (cr.width <= 0 || cr.height <= 0) return
+  const nx = ((lr.left - cr.left) / cr.width) * BANNER_PX
+  const ny = ((lr.top - cr.top) / cr.height) * BANNER_PX
+  setBox((b) => ({
+    ...b,
+    x: clamp(Math.round(nx), 0, Math.max(0, BANNER_PX - b.width)),
+    y: clamp(Math.round(ny), 0, Math.max(0, BANNER_PX - b.height)),
+  }))
+}
+
+// ─── EditableText ─────────────────────────────────────────────────────────────
+
+function EditableText({ className, style, text, resetKey, onTextChange, dir = 'rtl', as = 'div' }) {
   const ref = useRef(null)
 
   useEffect(() => {
     const el = ref.current
     if (!el) return
-    el.textContent = text ?? ''
+    const next = text ?? ''
+    if (el.textContent !== next) el.textContent = next
   }, [text, resetKey])
+
+  const emit = (el) => {
+    onTextChange?.(el.textContent ?? '')
+  }
 
   const common = {
     ref,
@@ -3160,45 +4002,26 @@ function EditableText({
     suppressContentEditableWarning: true,
     spellCheck: false,
     onMouseDown: (e) => e.stopPropagation(),
-    onBlur: (e) => onTextChange?.(e.currentTarget.textContent ?? ''),
+    onInput: (e) => emit(e.currentTarget),
+    onBlur: (e) => emit(e.currentTarget),
   }
 
-  return as === 'span' ? (
-    <span {...common} />
-  ) : (
-    <div {...common} />
-  )
+  return as === 'span' ? <span {...common} /> : <div {...common} />
 }
+
+// ─── Resize handle config ─────────────────────────────────────────────────────
 
 const RESIZE_ENABLE = {
-  top: false,
-  left: false,
-  topLeft: false,
-  topRight: false,
-  bottomLeft: false,
-  right: true,
-  bottom: true,
-  bottomRight: true,
+  top: false, left: false, topLeft: false, topRight: false, bottomLeft: false,
+  right: true, bottom: true, bottomRight: true,
 }
 
-/**
- * Motion.div is a direct child of the 1080 canvas root (absolute playground).
- * No flex/grid wrappers around the draggable shell — only block layout inside Resizable.
- */
+// ─── BannerLayer ─────────────────────────────────────────────────────────────
+
 function BannerLayer({
-  canvasRef,
-  box,
-  setBox,
-  className,
-  layerKey,
-  setDraggingKey,
-  viewportScale,
-  minWidth,
-  minHeight,
-  lockAspectRatio,
-  dragHandleOnly,
-  dragControls,
-  children,
+  canvasRef, box, setBox, className, layerKey, setDraggingKey,
+  viewportScale, minWidth, minHeight, lockAspectRatio, dragHandleOnly, dragControls, children,
+  onUserCommit,
 }) {
   const layerRef = useRef(null)
 
@@ -3214,17 +4037,12 @@ function BannerLayer({
       dragListener={!dragHandleOnly}
       dragControls={dragControls}
       whileDrag={{ zIndex: 50, cursor: 'grabbing' }}
-      style={{
-        position: 'absolute',
-        left: box.x,
-        top: box.y,
-        width: box.width,
-        height: box.height,
-      }}
+      style={{ position: 'absolute', left: box.x, top: box.y, width: box.width, height: box.height }}
       onDragStart={() => setDraggingKey(layerKey)}
       onDragEnd={() => {
         commitPositionInBanner(canvasRef.current, layerRef.current, setBox)
         setDraggingKey(null)
+        onUserCommit?.()
       }}
     >
       <Resizable
@@ -3236,17 +4054,11 @@ function BannerLayer({
         enable={RESIZE_ENABLE}
         handleWrapperClass="banner-resize-handle-root"
         onResizeStop={(_e, _dir, ref) => {
-          setBox((b) => ({
-            ...b,
-            width: ref.offsetWidth,
-            height: ref.offsetHeight,
-          }))
+          setBox((b) => ({ ...b, width: ref.offsetWidth, height: ref.offsetHeight }))
+          onUserCommit?.()
         }}
         className="box-border h-full w-full"
-        style={{
-          display: 'block',
-          boxSizing: 'border-box',
-        }}
+        style={{ display: 'block', boxSizing: 'border-box' }}
       >
         <div className="banner-layer-inner box-border h-full w-full overflow-visible p-1">
           {children}
@@ -3254,6 +4066,58 @@ function BannerLayer({
       </Resizable>
     </Motion.div>
   )
+}
+
+// ─── BannerCanvas ─────────────────────────────────────────────────────────────
+
+function buildDesign1CanvasSlice(s) {
+  return {
+    logoBox: s.logoBox,
+    headlineBox: s.headlineBox,
+    subheadBox: s.subheadBox,
+    bulletsBox: s.bulletsBox,
+    ctaBox: s.ctaBox,
+    headlineFs: s.headlineFs,
+    headlineAlign: s.headlineAlign,
+    headlineColor: s.headlineColor,
+    subheadFs: s.subheadFs,
+    subheadAlign: s.subheadAlign,
+    subheadColor: s.subheadColor,
+    bulletsFs: s.bulletsFs,
+    bulletsAlign: s.bulletsAlign,
+    bulletsColor: s.bulletsColor,
+    ctaFs: s.ctaFs,
+    ctaAlign: s.ctaAlign,
+    ctaColor: s.ctaColor,
+  }
+}
+
+function applyDesign1Slice(slice, setters) {
+  const {
+    setLogoBox, setHeadlineBox, setSubheadBox, setBulletsBox, setCtaBox,
+    setHeadlineFs, setHeadlineAlign, setHeadlineColor,
+    setSubheadFs, setSubheadAlign, setSubheadColor,
+    setBulletsFs, setBulletsAlign, setBulletsColor,
+    setCtaFs, setCtaAlign, setCtaColor,
+  } = setters
+  if (!slice || typeof slice !== 'object') return
+  if (slice.logoBox) setLogoBox({ ...slice.logoBox })
+  if (slice.headlineBox) setHeadlineBox({ ...slice.headlineBox })
+  if (slice.subheadBox) setSubheadBox({ ...slice.subheadBox })
+  if (slice.bulletsBox) setBulletsBox({ ...slice.bulletsBox })
+  if (slice.ctaBox) setCtaBox({ ...slice.ctaBox })
+  if (typeof slice.headlineFs === 'number') setHeadlineFs(slice.headlineFs)
+  if (slice.headlineAlign) setHeadlineAlign(slice.headlineAlign)
+  if (slice.headlineColor) setHeadlineColor(slice.headlineColor)
+  if (typeof slice.subheadFs === 'number') setSubheadFs(slice.subheadFs)
+  if (slice.subheadAlign) setSubheadAlign(slice.subheadAlign)
+  if (slice.subheadColor) setSubheadColor(slice.subheadColor)
+  if (typeof slice.bulletsFs === 'number') setBulletsFs(slice.bulletsFs)
+  if (slice.bulletsAlign) setBulletsAlign(slice.bulletsAlign)
+  if (slice.bulletsColor) setBulletsColor(slice.bulletsColor)
+  if (typeof slice.ctaFs === 'number') setCtaFs(slice.ctaFs)
+  if (slice.ctaAlign) setCtaAlign(slice.ctaAlign)
+  if (slice.ctaColor) setCtaColor(slice.ctaColor)
 }
 
 export default function BannerCanvas({
@@ -3266,9 +4130,12 @@ export default function BannerCanvas({
   bulletPoints,
   cta: ctaInitial,
   brandColor,
+  siteUrl,
+  savedCanvasSlice,
+  onPersist,
 }) {
   const viewportRef = useRef(null)
-  const captureRef = useRef(null)
+  const captureRef  = useRef(null)
   const reactSurfaceSuffix = useId().replace(/:/g, '')
   const boundsSurfaceId = taskId
     ? `banner-surface-${taskId}`
@@ -3276,21 +4143,110 @@ export default function BannerCanvas({
 
   const ctaDragControls = useDragControls()
 
-  const [scale, setScale] = useState(1)
-  const [exporting, setExporting] = useState(false)
+  const [scale,         setScale]         = useState(1)
+  const [exporting,     setExporting]     = useState(false)
   const [downloadError, setDownloadError] = useState(null)
 
   const [headline, setHeadline] = useState(headlineInitial ?? '')
-  const [subhead, setSubhead] = useState(subheadInitial ?? '')
-  const [bullets, setBullets] = useState(() => [...(bulletPoints || [])])
-  const [cta, setCta] = useState(ctaInitial ?? '')
+  const [subhead,  setSubhead]  = useState(subheadInitial ?? '')
+  const [bullets,  setBullets]  = useState(() => [...(bulletPoints || [])])
+  const [cta,      setCta]      = useState(ctaInitial ?? '')
 
-  const [logoBox, setLogoBox] = useState(() => ({ ...DEFAULT_LOGO }))
+  const [logoBox,     setLogoBox]     = useState(() => ({ ...DEFAULT_LOGO     }))
   const [headlineBox, setHeadlineBox] = useState(() => ({ ...DEFAULT_HEADLINE }))
-  const [subheadBox, setSubheadBox] = useState(() => ({ ...DEFAULT_SUBHEAD }))
-  const [bulletsBox, setBulletsBox] = useState(() => ({ ...DEFAULT_BULLETS }))
-  const [ctaBox, setCtaBox] = useState(() => ({ ...DEFAULT_CTA }))
+  const [subheadBox,  setSubheadBox]  = useState(() => ({ ...DEFAULT_SUBHEAD  }))
+  const [bulletsBox,  setBulletsBox]  = useState(() => ({ ...DEFAULT_BULLETS  }))
+  const [ctaBox,      setCtaBox]      = useState(() => ({ ...DEFAULT_CTA      }))
   const [draggingKey, setDraggingKey] = useState(null)
+
+  // ── Typography controls state ────────────────────────────────────────────
+  const [headlineFs,    setHeadlineFs]    = useState(DF.headline)
+  const [headlineAlign, setHeadlineAlign] = useState('right')
+  const [subheadFs,     setSubheadFs]     = useState(DF.subhead)
+  const [subheadAlign,  setSubheadAlign]  = useState('right')
+  const [bulletsFs,     setBulletsFs]     = useState(DF.bullets)
+  const [bulletsAlign,  setBulletsAlign]  = useState('right')
+  const [ctaFs,         setCtaFs]         = useState(DF.cta)
+  const [ctaAlign,      setCtaAlign]      = useState('center')
+  const [headlineColor, setHeadlineColor] = useState(DC.headline)
+  const [subheadColor,  setSubheadColor]  = useState(DC.subhead)
+  const [bulletsColor,  setBulletsColor]  = useState(DC.bullets)
+  const [ctaColor,      setCtaColor]      = useState('#ffffff')
+
+  const persistTimerRef = useRef(null)
+  const stateRef = useRef({})
+
+  const flushPersist = useCallback(() => {
+    if (!onPersist || !taskId) return
+    const s = stateRef.current
+    onPersist({
+      headline: s.headline,
+      subhead: s.subhead,
+      cta: s.cta,
+      bullet_points: s.bullets,
+      canvas_state: { v: 1, design1: buildDesign1CanvasSlice(s) },
+    })
+  }, [onPersist, taskId])
+
+  const flushPersistRef = useRef(flushPersist)
+  flushPersistRef.current = flushPersist
+
+  const schedulePersist = useCallback(() => {
+    if (!onPersist || !taskId) return
+    clearTimeout(persistTimerRef.current)
+    persistTimerRef.current = setTimeout(() => {
+      persistTimerRef.current = null
+      flushPersist()
+    }, 1000)
+  }, [onPersist, taskId, flushPersist])
+
+  useEffect(
+    () => () => {
+      clearTimeout(persistTimerRef.current)
+      persistTimerRef.current = null
+      flushPersistRef.current()
+    },
+    [],
+  )
+
+  useEffect(() => {
+    stateRef.current = {
+      headline,
+      subhead,
+      bullets,
+      cta,
+      logoBox,
+      headlineBox,
+      subheadBox,
+      bulletsBox,
+      ctaBox,
+      headlineFs,
+      headlineAlign,
+      headlineColor,
+      subheadFs,
+      subheadAlign,
+      subheadColor,
+      bulletsFs,
+      bulletsAlign,
+      bulletsColor,
+      ctaFs,
+      ctaAlign,
+      ctaColor,
+    }
+  }, [
+    headline, subhead, bullets, cta,
+    logoBox, headlineBox, subheadBox, bulletsBox, ctaBox,
+    headlineFs, headlineAlign, headlineColor,
+    subheadFs, subheadAlign, subheadColor,
+    bulletsFs, bulletsAlign, bulletsColor,
+    ctaFs, ctaAlign, ctaColor,
+  ])
+
+  const bulletsKey = bulletPoints ? JSON.stringify(bulletPoints) : ''
+  const savedSliceKey = useMemo(
+    () => (savedCanvasSlice && typeof savedCanvasSlice === 'object' ? JSON.stringify(savedCanvasSlice) : ''),
+    [savedCanvasSlice],
+  )
 
   useEffect(() => {
     setHeadline(headlineInitial ?? '')
@@ -3303,8 +4259,51 @@ export default function BannerCanvas({
     setBulletsBox({ ...DEFAULT_BULLETS })
     setCtaBox({ ...DEFAULT_CTA })
     setDraggingKey(null)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [taskId])
+    setHeadlineFs(DF.headline)
+    setHeadlineAlign('right')
+    setSubheadFs(DF.subhead)
+    setSubheadAlign('right')
+    setBulletsFs(DF.bullets)
+    setBulletsAlign('right')
+    setCtaFs(DF.cta)
+    setCtaAlign('center')
+    setHeadlineColor(DC.headline)
+    setSubheadColor(DC.subhead)
+    setBulletsColor(DC.bullets)
+    const bg = normalizeBrandHex(brandColor)
+    setCtaColor(contrastingTextColor(bg))
+    if (savedCanvasSlice && typeof savedCanvasSlice === 'object') {
+      applyDesign1Slice(savedCanvasSlice, {
+        setLogoBox,
+        setHeadlineBox,
+        setSubheadBox,
+        setBulletsBox,
+        setCtaBox,
+        setHeadlineFs,
+        setHeadlineAlign,
+        setHeadlineColor,
+        setSubheadFs,
+        setSubheadAlign,
+        setSubheadColor,
+        setBulletsFs,
+        setBulletsAlign,
+        setBulletsColor,
+        setCtaFs,
+        setCtaAlign,
+        setCtaColor,
+      })
+    }
+  }, [
+    taskId,
+    bulletsKey,
+    bulletPoints,
+    savedSliceKey,
+    headlineInitial,
+    subheadInitial,
+    ctaInitial,
+    brandColor,
+    savedCanvasSlice,
+  ])
 
   const setBulletAt = useCallback((index, value) => {
     setBullets((prev) => {
@@ -3312,12 +4311,19 @@ export default function BannerCanvas({
       next[index] = value
       return next
     })
-  }, [])
+    schedulePersist()
+  }, [schedulePersist])
 
-  const bgSrc = backgroundUrl ? `${apiBase}${backgroundUrl}` : ''
-  const logoSrc = logoUrl ? `${apiBase}${logoUrl}` : ''
-  const ctaBgHex = normalizeBrandHex(brandColor)
-  const ctaFgHex = contrastingTextColor(ctaBgHex)
+  const bgSrc   = backgroundUrl ? `${apiBase}${backgroundUrl}` : ''
+  const logoSrc = logoUrl       ? `${apiBase}${logoUrl}`       : ''
+
+  const ctaBgHex  = normalizeBrandHex(brandColor)
+  const ctaFgHex  = contrastingTextColor(ctaBgHex)
+  const [brandR, brandG, brandB] = hexToRgb(ctaBgHex)
+
+  const leftOverlay = `linear-gradient(145deg, rgba(10,18,36,0.92) 0%, rgba(${brandR},${brandG},${brandB},0.58) 48%, rgba(10,18,36,0.82) 100%)`
+  const rightPanelBg = `linear-gradient(155deg, #ffffff 0%, #f8fafc 55%, rgba(${brandR},${brandG},${brandB},0.07) 100%)`
+  const domain = extractDomain(siteUrl)
 
   useEffect(() => {
     const el = viewportRef.current
@@ -3357,6 +4363,8 @@ export default function BannerCanvas({
           if (el.classList?.contains('banner-resize-handle-root')) return false
           if (el.closest?.('.banner-resize-handle-root')) return false
           if (el.classList?.contains('banner-cta-drag-handle')) return false
+          if (el.classList?.contains('banner-text-controls')) return false
+          if (el.closest?.('.banner-text-controls')) return false
           return true
         },
       })
@@ -3374,54 +4382,85 @@ export default function BannerCanvas({
   const layerClass = (id) =>
     `banner-layer banner-layer--${id}${draggingKey === id ? ' banner-layer--dragging' : ''}`
 
-  const bgImageStyle =
-    bgSrc !== '' ? { backgroundImage: `url(${JSON.stringify(bgSrc)})` } : undefined
+  const bgImageStyle = bgSrc !== '' ? { backgroundImage: `url(${JSON.stringify(bgSrc)})` } : undefined
 
   return (
     <div className="banner-canvas-root w-full max-w-full">
       <div className="banner-viewport" ref={viewportRef} dir="ltr">
         <div
           className="banner-viewport-inner"
-          style={{
-            width: BANNER_PX * scale,
-            height: BANNER_PX * scale,
-          }}
+          style={{ width: BANNER_PX * scale, height: BANNER_PX * scale }}
         >
           <div
             ref={captureRef}
             id={boundsSurfaceId}
             dir="ltr"
-            className={`absolute left-0 top-0 w-[1080px] h-[1080px] shrink-0 origin-top-left overflow-hidden bg-slate-100 banner-canvas${
-              exporting ? ' capture-mode' : ''
-            }`}
-            style={{
-              transform: `scale(${scale})`,
-            }}
+            className={`absolute left-0 top-0 w-[1080px] h-[1080px] shrink-0 origin-top-left overflow-hidden banner-canvas${exporting ? ' capture-mode' : ''}`}
+            style={{ transform: `scale(${scale})` }}
           >
+
+            {/* ── Left photo panel ────────────────────────────────── */}
             <div
-              className={`absolute inset-0 w-full h-full bg-cover bg-center bg-no-repeat pointer-events-none ${
-                bgSrc ? '' : 'bg-slate-700'
-              }`}
-              style={bgImageStyle}
+              className="absolute left-0 top-0 pointer-events-none overflow-hidden"
+              style={{ width: LEFT_W, height: CONTENT_H }}
               aria-hidden
-            />
-            {bgSrc ? (
-              <img
-                src={bgSrc}
-                alt=""
-                crossOrigin="anonymous"
-                referrerPolicy="no-referrer"
-                loading="eager"
-                decoding="async"
-                className="pointer-events-none absolute left-0 top-0 h-px w-px opacity-0"
-                aria-hidden
+            >
+              <div
+                className={`absolute inset-0 bg-cover bg-center bg-no-repeat ${bgSrc ? '' : 'bg-slate-700'}`}
+                style={bgImageStyle}
               />
-            ) : null}
+              {bgSrc ? (
+                <img
+                  src={bgSrc}
+                  alt=""
+                  crossOrigin="anonymous"
+                  referrerPolicy="no-referrer"
+                  loading="eager"
+                  decoding="async"
+                  className="pointer-events-none absolute left-0 top-0 h-px w-px opacity-0"
+                  aria-hidden
+                />
+              ) : null}
+              <div className="absolute inset-0" style={{ background: leftOverlay }} />
+            </div>
+
+            {/* ── Brand accent divider ─────────────────────────────── */}
             <div
-              className="absolute inset-0 w-full h-full bg-black/50 pointer-events-none z-0"
+              className="absolute top-0 pointer-events-none"
+              style={{ left: LEFT_W, width: DIVIDER_W, height: CONTENT_H, backgroundColor: ctaBgHex }}
               aria-hidden
             />
 
+            {/* ── Right content panel ──────────────────────────────── */}
+            <div
+              className="absolute top-0 pointer-events-none"
+              style={{ left: RIGHT_X, right: 0, height: CONTENT_H, background: rightPanelBg }}
+              aria-hidden
+            />
+
+            {/* ── Bottom domain strip ──────────────────────────────── */}
+            <div
+              className="absolute bottom-0 left-0 right-0 pointer-events-none flex items-center justify-center"
+              style={{ height: STRIP_H, backgroundColor: ctaBgHex }}
+              aria-hidden
+            >
+              {domain && (
+                <span
+                  style={{
+                    color: ctaFgHex,
+                    fontFamily: 'system-ui, Arial, sans-serif',
+                    fontSize: 24,
+                    fontWeight: 700,
+                    direction: 'ltr',
+                    letterSpacing: '0.3px',
+                  }}
+                >
+                  {domain}
+                </span>
+              )}
+            </div>
+
+            {/* ── Logo layer ──────────────────────────────────────── */}
             <BannerLayer
               canvasRef={captureRef}
               box={logoBox}
@@ -3433,6 +4472,7 @@ export default function BannerCanvas({
               minWidth={80}
               minHeight={48}
               lockAspectRatio
+              onUserCommit={schedulePersist}
             >
               <img
                 src={logoSrc}
@@ -3446,6 +4486,7 @@ export default function BannerCanvas({
               />
             </BannerLayer>
 
+            {/* ── Headline layer ──────────────────────────────────── */}
             <BannerLayer
               canvasRef={captureRef}
               box={headlineBox}
@@ -3456,17 +4497,28 @@ export default function BannerCanvas({
               viewportScale={scale}
               minWidth={280}
               minHeight={56}
+              onUserCommit={schedulePersist}
             >
-              <div className="banner-text-shell min-w-[280px] text-right" dir="rtl">
+              <TextControls
+                fontSize={headlineFs}
+                onFontSize={(v) => { setHeadlineFs(v); schedulePersist() }}
+                align={headlineAlign}
+                onAlign={(v) => { setHeadlineAlign(v); schedulePersist() }}
+                color={headlineColor}
+                onColor={(v) => { setHeadlineColor(v); schedulePersist() }}
+              />
+              <div className="banner-text-shell min-w-[280px]" dir="rtl">
                 <EditableText
                   className="banner-text banner-headline min-w-[260px] whitespace-normal"
+                  style={{ fontSize: headlineFs, textAlign: headlineAlign, color: headlineColor }}
                   text={headline}
                   resetKey={taskId}
-                  onTextChange={setHeadline}
+                  onTextChange={(v) => { setHeadline(v); schedulePersist() }}
                 />
               </div>
             </BannerLayer>
 
+            {/* ── Subhead layer ───────────────────────────────────── */}
             <BannerLayer
               canvasRef={captureRef}
               box={subheadBox}
@@ -3477,17 +4529,28 @@ export default function BannerCanvas({
               viewportScale={scale}
               minWidth={280}
               minHeight={48}
+              onUserCommit={schedulePersist}
             >
-              <div className="banner-text-shell min-w-[280px] text-right" dir="rtl">
+              <TextControls
+                fontSize={subheadFs}
+                onFontSize={(v) => { setSubheadFs(v); schedulePersist() }}
+                align={subheadAlign}
+                onAlign={(v) => { setSubheadAlign(v); schedulePersist() }}
+                color={subheadColor}
+                onColor={(v) => { setSubheadColor(v); schedulePersist() }}
+              />
+              <div className="banner-text-shell min-w-[280px]" dir="rtl">
                 <EditableText
                   className="banner-text banner-subhead min-w-[260px] whitespace-normal"
+                  style={{ fontSize: subheadFs, textAlign: subheadAlign, color: subheadColor }}
                   text={subhead}
                   resetKey={taskId}
-                  onTextChange={setSubhead}
+                  onTextChange={(v) => { setSubhead(v); schedulePersist() }}
                 />
               </div>
             </BannerLayer>
 
+            {/* ── Feature-cards layer (replaces bullet list) ──────── */}
             <BannerLayer
               canvasRef={captureRef}
               box={bulletsBox}
@@ -3497,25 +4560,44 @@ export default function BannerCanvas({
               setDraggingKey={setDraggingKey}
               viewportScale={scale}
               minWidth={280}
-              minHeight={100}
+              minHeight={200}
+              onUserCommit={schedulePersist}
             >
-              <div className="banner-text-shell min-w-[280px] text-right" dir="rtl">
-                <ul className="banner-bullets min-w-[260px] list-disc whitespace-normal" dir="rtl">
-                  {bullets.map((b, i) => (
-                    <li key={`${taskId}-b-${i}`}>
-                      <EditableText
-                        as="span"
-                        className="banner-text whitespace-normal"
-                        text={b}
-                        resetKey={`${taskId}-${i}`}
-                        onTextChange={(t) => setBulletAt(i, t)}
-                      />
-                    </li>
-                  ))}
-                </ul>
+              <TextControls
+                fontSize={bulletsFs}
+                onFontSize={(v) => { setBulletsFs(v); schedulePersist() }}
+                align={bulletsAlign}
+                onAlign={(v) => { setBulletsAlign(v); schedulePersist() }}
+                color={bulletsColor}
+                onColor={(v) => { setBulletsColor(v); schedulePersist() }}
+              />
+              <div className="banner-feat-grid" dir="rtl">
+                {bullets.map((b, i) => (
+                  <div
+                    key={`${taskId}-b-${i}`}
+                    className="banner-feat-card"
+                    style={{ borderTopColor: ctaBgHex }}
+                  >
+                    <div
+                      className="banner-feat-icon"
+                      style={{ backgroundColor: ctaBgHex, color: ctaFgHex }}
+                    >
+                      ✓
+                    </div>
+                    <EditableText
+                      as="span"
+                      className="banner-feat-text"
+                      style={{ fontSize: bulletsFs, textAlign: bulletsAlign, color: bulletsColor }}
+                      text={b}
+                      resetKey={`${taskId}-${i}`}
+                      onTextChange={(t) => setBulletAt(i, t)}
+                    />
+                  </div>
+                ))}
               </div>
             </BannerLayer>
 
+            {/* ── CTA layer ───────────────────────────────────────── */}
             <BannerLayer
               canvasRef={captureRef}
               box={ctaBox}
@@ -3528,7 +4610,16 @@ export default function BannerCanvas({
               minHeight={52}
               dragHandleOnly
               dragControls={ctaDragControls}
+              onUserCommit={schedulePersist}
             >
+              <TextControls
+                fontSize={ctaFs}
+                onFontSize={(v) => { setCtaFs(v); schedulePersist() }}
+                align={ctaAlign}
+                onAlign={(v) => { setCtaAlign(v); schedulePersist() }}
+                color={ctaColor}
+                onColor={(v) => { setCtaColor(v); schedulePersist() }}
+              />
               <div className="banner-text-shell min-w-[160px]">
                 <div
                   className="banner-cta-drag-handle"
@@ -3538,24 +4629,28 @@ export default function BannerCanvas({
                   <span className="banner-cta-drag-grip" aria-hidden />
                   <span className="banner-cta-drag-label">גרור</span>
                 </div>
-                <div className="mt-1 text-right" dir="rtl">
+                <div className="mt-1" style={{ textAlign: ctaAlign }} dir="rtl">
                   <EditableText
                     className="banner-text banner-cta inline-block min-w-[120px] max-w-full whitespace-nowrap"
                     text={cta}
                     resetKey={taskId}
-                    onTextChange={setCta}
+                    onTextChange={(v) => { setCta(v); schedulePersist() }}
                     style={{
+                      fontSize: ctaFs,
                       backgroundColor: ctaBgHex,
-                      color: ctaFgHex,
+                      color: ctaColor,
                       boxShadow: `0 10px 36px ${ctaBgHex}66`,
                     }}
                   />
                 </div>
               </div>
             </BannerLayer>
+
           </div>
         </div>
       </div>
+
+      {/* ── Download row ──────────────────────────────────────────── */}
       <div className="banner-download-row">
         <button
           type="button"
@@ -3563,13 +4658,1177 @@ export default function BannerCanvas({
           onClick={handleDownload}
           disabled={exporting}
         >
-          {exporting ? 'Preparing PNG…' : 'Download Banner'}
+          {exporting ? 'מכין PNG…' : '⬇ הורד באנר PNG'}
         </button>
       </div>
       {downloadError && (
         <p className="banner-download-error" role="alert">
           {downloadError}
         </p>
+      )}
+    </div>
+  )
+}
+
+
+================================================================================
+FILE: client/src/BannerCanvas2.css
+================================================================================
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   BannerCanvas2 — "Immersive Full-Canvas" design
+   All selectors are prefixed with bc2- to avoid any collision with Design 1.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/* ── Viewport ─────────────────────────────────────────────────────────────── */
+.bc2-root {}
+
+.bc2-viewport {
+  width: 100%;
+  max-width: min(96%, 860px);
+  margin: 0 auto;
+  aspect-ratio: 1 / 1;
+  position: relative;
+  background: #0f172a;
+  border-radius: 14px;
+  overflow: hidden;
+  box-shadow: 0 16px 56px rgba(0, 0, 0, 0.30);
+}
+
+.bc2-viewport-inner {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+}
+
+/* ── Canvas root ──────────────────────────────────────────────────────────── */
+.bc2-canvas {
+  transform-origin: top left;
+  color-scheme: light;
+  direction: ltr;
+  font-family: 'Heebo', 'Segoe UI', 'Helvetica Neue', Arial, sans-serif;
+}
+
+.bc2-canvas.bc2-capture {
+  color-scheme: light !important;
+}
+
+.bc2-canvas.bc2-capture .bc2-resize-handle-root {
+  visibility: hidden !important;
+  opacity: 0 !important;
+  pointer-events: none !important;
+}
+
+/* ── Layer shell ──────────────────────────────────────────────────────────── */
+.bc2-layer-inner {
+  width: 100%;
+  height: 100%;
+  box-sizing: border-box;
+  display: block;
+  position: relative;
+}
+
+.bc2-text-shell {
+  box-sizing: border-box;
+  direction: rtl;
+  text-align: right;
+  unicode-bidi: isolate;
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+/* ── Layer drag & outline ─────────────────────────────────────────────────── */
+.bc2-layer {
+  box-sizing: border-box;
+  cursor: grab;
+  outline: 2px dashed transparent;
+  outline-offset: 2px;
+  border-radius: 4px;
+  transition: outline-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.bc2-layer--text .bc2-layer-inner,
+.bc2-layer--cta  .bc2-layer-inner {
+  padding: 6px 6px 6px 6px;
+  padding-top: 44px;
+}
+
+/* Hover / drag outlines — visible against dark background */
+.bc2-canvas:not(.bc2-capture) .bc2-layer:hover:not(.bc2-layer--dragging) {
+  outline-color: rgba(255, 255, 255, 0.45);
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.12);
+}
+
+.bc2-canvas:not(.bc2-capture) .bc2-layer.bc2-layer--dragging {
+  outline-color: rgba(255, 255, 255, 0.90);
+  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.20);
+}
+
+.bc2-canvas.bc2-capture .bc2-layer {
+  outline: none !important;
+  box-shadow: none !important;
+  cursor: default;
+}
+
+.bc2-layer--text .bc2-text,
+.bc2-layer--cta  .bc2-text { cursor: text; }
+
+.bc2-layer--dragging.bc2-layer--text .bc2-text,
+.bc2-layer--dragging.bc2-layer--cta  .bc2-text { cursor: grabbing !important; }
+
+/* ── Logo ─────────────────────────────────────────────────────────────────── */
+.bc2-logo-img {
+  display: block;
+  max-width: 100%;
+  max-height: 100%;
+  width: auto;
+  height: auto;
+  object-fit: contain;
+  object-position: right center;
+  pointer-events: none;
+  user-select: none;
+  /* Drop shadow ensures visibility on dark background */
+  filter: drop-shadow(0 2px 16px rgba(0, 0, 0, 0.55)) brightness(1.08);
+}
+
+/* ── Text layers — WHITE on dark background ───────────────────────────────── */
+.bc2-text {
+  width: 100%;
+  min-height: 1.2em;
+  outline: none;
+  cursor: text;
+  direction: rtl;
+  text-align: right;
+  color: #ffffff;
+  line-height: 1.22;
+  word-break: break-word;
+}
+
+.bc2-headline {
+  font-size: 66px;
+  font-weight: 900;
+  letter-spacing: -0.025em;
+  line-height: 1.12;
+  text-shadow:
+    0 2px 24px rgba(0, 0, 0, 0.70),
+    0 0 2px rgba(0, 0, 0, 0.90);
+}
+
+.bc2-subhead {
+  font-size: 26px;
+  font-weight: 400;
+  line-height: 1.55;
+  color: rgba(255, 255, 255, 0.88);
+  text-shadow: 0 1px 12px rgba(0, 0, 0, 0.60);
+}
+
+/* ── Feature pills (dark glass) ──────────────────────────────────────────── */
+.bc2-feat-grid {
+  display: flex;
+  flex-direction: row;
+  gap: 10px;
+  direction: rtl;
+  width: 100%;
+  height: 100%;
+  align-items: stretch;
+}
+
+.bc2-feat-pill {
+  flex: 1;
+  min-width: 0;
+  min-height: 128px;
+  /* Dark glass — no backdrop-filter (html-to-image compatible) */
+  background: rgba(10, 15, 30, 0.65);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-top: 3px solid;   /* color set inline from ctaBgHex */
+  border-radius: 16px;
+  padding: 24px 14px 26px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  align-items: stretch;
+  direction: rtl;
+}
+
+.bc2-feat-icon {
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 16px;
+  font-weight: 800;
+  flex-shrink: 0;
+}
+
+.bc2-feat-text {
+  font-size: 18px;
+  font-weight: 500;
+  color: rgba(255, 255, 255, 0.90);
+  line-height: 1.52;
+  flex: 1 1 auto;
+  min-height: 2.8em;
+  direction: rtl;
+  text-align: right;
+  outline: none;
+  cursor: text;
+  word-break: break-word;
+  display: block;
+  width: 100%;
+}
+
+.bc2-layer--dragging.bc2-layer--bullets .bc2-feat-text {
+  cursor: grabbing !important;
+}
+
+/* ── CTA drag handle ─────────────────────────────────────────────────────── */
+.bc2-cta-drag-handle {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  gap: 0.35rem;
+  min-height: 26px;
+  padding: 4px 8px;
+  margin-bottom: 4px;
+  cursor: grab;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.12);
+  border: 1px dashed rgba(255, 255, 255, 0.40);
+  direction: rtl;
+  user-select: none;
+}
+
+.bc2-cta-drag-grip {
+  display: block;
+  width: 22px;
+  height: 4px;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.70);
+  box-shadow:
+    0 6px 0 rgba(255, 255, 255, 0.45),
+    0 12px 0 rgba(255, 255, 255, 0.25);
+}
+
+.bc2-cta-drag-label {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: rgba(255, 255, 255, 0.80);
+}
+
+.bc2-layer--dragging.bc2-layer--cta .bc2-cta-drag-handle {
+  cursor: grabbing !important;
+}
+
+.bc2-canvas.bc2-capture .bc2-cta-drag-handle {
+  display: none !important;
+}
+
+.bc2-canvas.bc2-capture .banner-text-controls {
+  display: none !important;
+}
+
+/* Text controls: show only on layer hover (Design 2 uses bc2-layer, not banner-layer) */
+.bc2-canvas:not(.bc2-capture) .bc2-layer--text:hover .banner-text-controls,
+.bc2-canvas:not(.bc2-capture) .bc2-layer--cta:hover .banner-text-controls {
+  opacity: 1;
+  pointer-events: all;
+}
+
+/* ── CTA button ──────────────────────────────────────────────────────────── */
+.bc2-cta {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  direction: rtl;
+  font-size: 31px;
+  font-weight: 800;
+  border-radius: 14px;
+  padding: 0.45em 0.9em;
+  vertical-align: middle;
+}
+
+.bc2-cta.bc2-text {
+  text-shadow: none;
+}
+
+/* ── Download row ────────────────────────────────────────────────────────── */
+.bc2-download-row {
+  margin-top: 1.25rem;
+  display: flex;
+  justify-content: center;
+}
+
+.bc2-btn-download {
+  padding: 0.7rem 1.5rem;
+  font-size: 0.95rem;
+  font-weight: 600;
+  border: none;
+  border-radius: 10px;
+  background: #1e293b;
+  color: #f1f5f9;
+  cursor: pointer;
+}
+
+.bc2-btn-download:hover:not(:disabled) {
+  background: #334155;
+}
+
+.bc2-btn-download:disabled {
+  opacity: 0.65;
+  cursor: wait;
+}
+
+.bc2-download-error {
+  margin: 0.5rem 0 0;
+  text-align: center;
+  color: #b91c1c;
+  font-size: 0.9rem;
+}
+
+@media (prefers-color-scheme: dark) {
+  .bc2-download-error { color: #fca5a5; }
+}
+
+
+================================================================================
+FILE: client/src/BannerCanvas2.jsx
+================================================================================
+
+/**
+ * BannerCanvas2 — "Immersive Full-Canvas" design (Design 2).
+ *
+ * Layout philosophy
+ * ─────────────────
+ *  • Background image fills the entire 1080×1080 canvas.
+ *  • A rich dark vignette overlay creates readability without hiding the image.
+ *  • Thin brand-colour accent bar on the left edge.
+ *  • Brand-colour glow in top-right corner adds depth.
+ *  • Logo — top right, white drop-shadow for contrast.
+ *  • Headline — very large, white, right-aligned (RTL).
+ *  • Subhead  — white/85%, slightly smaller.
+ *  • Feature pills — 3 dark-glass horizontal cards (no backdrop-filter
+ *    dependency so html-to-image export renders correctly).
+ *  • CTA button — brand colour, full width of content area.
+ *  • Bottom strip — brand colour with domain URL.
+ *
+ * All layers are independently draggable and text-editable, identical to Design 1.
+ * This file is intentionally self-contained — it copies necessary utilities so
+ * BannerCanvas.jsx is never touched.
+ */
+
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
+import { motion as Motion, useDragControls } from 'framer-motion'
+import { Resizable } from 're-resizable'
+import { toPng } from 'html-to-image'
+import './BannerCanvas2.css'
+
+// ─── Default font sizes for Design 2 (+10% over original CSS) ────────────────
+const DF2 = { headline: 66, subhead: 26, bullets: 18, cta: 31 }
+
+function colorInputHex(hex) {
+  if (!hex || typeof hex !== 'string') return '#000000'
+  let s = hex.trim()
+  if (!s.startsWith('#')) s = `#${s}`
+  if (/^#[0-9A-Fa-f]{6}$/.test(s)) return s.toLowerCase()
+  return '#000000'
+}
+
+// ─── Default text colours (Design 2 — dark / immersive) ──────────────────────
+const DC2 = { headline: '#ffffff', subhead: '#e6e6e6', bullets: '#ebebeb' }
+
+// ─── TextControls — top-right corner (hidden during PNG export) ────────────
+function TextControls2({ fontSize, onFontSize, align, onAlign, color, onColor }) {
+  const stopDrag = (e) => { e.stopPropagation() }
+  const stopBtn = (e) => {
+    e.preventDefault()
+    e.stopPropagation()
+  }
+  const cv = colorInputHex(color)
+  return (
+    <div className="banner-text-controls" onMouseDown={stopDrag} onClick={stopDrag}>
+      <div className="btc-group">
+        <button type="button" className="btc-btn" onMouseDown={(e) => { stopBtn(e); onFontSize(Math.max(10, fontSize - 2)) }} title="הקטן גופן">A−</button>
+        <span className="btc-val">{fontSize}px</span>
+        <button type="button" className="btc-btn" onMouseDown={(e) => { stopBtn(e); onFontSize(Math.min(130, fontSize + 2)) }} title="הגדל גופן">A+</button>
+      </div>
+      <span className="btc-sep" aria-hidden />
+      <label className="btc-color-wrap" title="צבע טקסט" onMouseDown={stopDrag}>
+        <span className="btc-color-swatch" style={{ backgroundColor: cv }} aria-hidden />
+        <input
+          type="color"
+          className="btc-color-input"
+          value={cv}
+          onChange={(e) => onColor(e.target.value)}
+          onMouseDown={stopDrag}
+          aria-label="צבע טקסט"
+        />
+      </label>
+      <span className="btc-sep" aria-hidden />
+      <div className="btc-group">
+        {[['right','ימין'],['center','מרכז'],['left','שמאל']].map(([a, label]) => (
+          <button
+            type="button"
+            key={a}
+            className={`btc-btn${align === a ? ' btc-btn--on' : ''}`}
+            onMouseDown={(e) => { stopBtn(e); onAlign(a) }}
+            title={label}
+          >{label}</button>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+// ─── Layout constants ─────────────────────────────────────────────────────────
+const BANNER_PX   = 1080
+const STRIP_H     = 64
+const ACCENT_W    = 6      // brand-colour left bar
+const CONTENT_PAD = 64     // horizontal padding for text content
+const CONTENT_W   = BANNER_PX - CONTENT_PAD * 2   // 952
+
+const DEFAULT_BRAND_HEX = '#4F46E5'
+
+// Default layer positions — elements spread across the full canvas
+const DEFAULT_LOGO     = { x: BANNER_PX - CONTENT_PAD - 210, y: 50,  width: 210, height: 78  }
+const DEFAULT_HEADLINE = { x: CONTENT_PAD,                   y: 210, width: CONTENT_W, height: 230 }
+const DEFAULT_SUBHEAD  = { x: CONTENT_PAD,                   y: 456, width: CONTENT_W, height: 110 }
+const DEFAULT_BULLETS  = { x: CONTENT_PAD,                   y: 580, width: CONTENT_W, height: 252 }
+const DEFAULT_CTA      = { x: CONTENT_PAD + 80,              y: 846, width: CONTENT_W - 160, height: 88 }
+
+// ─── Utility helpers (self-contained copy) ────────────────────────────────────
+
+function clamp(n, lo, hi) {
+  return Math.min(hi, Math.max(lo, n))
+}
+
+function normalizeBrandHex(input) {
+  if (!input || typeof input !== 'string') return DEFAULT_BRAND_HEX
+  let s = input.trim()
+  if (!s.startsWith('#')) s = `#${s}`
+  if (/^#[0-9A-Fa-f]{6}$/.test(s)) return s.toUpperCase()
+  return DEFAULT_BRAND_HEX
+}
+
+function hexToRgb(hex) {
+  const h = hex.replace('#', '')
+  return [parseInt(h.slice(0, 2), 16), parseInt(h.slice(2, 4), 16), parseInt(h.slice(4, 6), 16)]
+}
+
+function contrastingTextColor(bgHex) {
+  const h = (bgHex?.startsWith('#') ? bgHex : DEFAULT_BRAND_HEX).slice(1)
+  if (h.length !== 6) return '#ffffff'
+  const r = parseInt(h.slice(0, 2), 16) / 255
+  const g = parseInt(h.slice(2, 4), 16) / 255
+  const b = parseInt(h.slice(4, 6), 16) / 255
+  const lum = 0.2126 * r + 0.7152 * g + 0.0722 * b
+  return lum > 0.55 ? '#0f172a' : '#ffffff'
+}
+
+function extractDomain(url) {
+  if (!url) return ''
+  try {
+    const u = url.includes('://') ? url : `https://${url}`
+    return new URL(u).hostname
+  } catch {
+    return url
+  }
+}
+
+function waitForImagesInNode(root) {
+  const imgs = root.querySelectorAll('img')
+  return Promise.all(
+    [...imgs].map(
+      (img) =>
+        new Promise((resolve) => {
+          const done = () => {
+            if (typeof img.decode === 'function') img.decode().then(resolve).catch(resolve)
+            else resolve()
+          }
+          if (img.complete) done()
+          else {
+            img.addEventListener('load', done, { once: true })
+            img.addEventListener('error', () => resolve(), { once: true })
+          }
+        }),
+    ),
+  )
+}
+
+function commitPositionInBanner(canvasEl, layerEl, setBox) {
+  if (!canvasEl || !layerEl) return
+  const cr = canvasEl.getBoundingClientRect()
+  const lr = layerEl.getBoundingClientRect()
+  if (cr.width <= 0 || cr.height <= 0) return
+  const nx = ((lr.left - cr.left) / cr.width) * BANNER_PX
+  const ny = ((lr.top - cr.top) / cr.height) * BANNER_PX
+  setBox((b) => ({
+    ...b,
+    x: clamp(Math.round(nx), 0, Math.max(0, BANNER_PX - b.width)),
+    y: clamp(Math.round(ny), 0, Math.max(0, BANNER_PX - b.height)),
+  }))
+}
+
+// ─── EditableText ─────────────────────────────────────────────────────────────
+
+function EditableText({ className, style, text, resetKey, onTextChange, dir = 'rtl', as = 'div' }) {
+  const ref = useRef(null)
+  useEffect(() => {
+    const el = ref.current
+    if (!el) return
+    const next = text ?? ''
+    if (el.textContent !== next) el.textContent = next
+  }, [text, resetKey])
+  const emit = (el) => {
+    onTextChange?.(el.textContent ?? '')
+  }
+  const common = {
+    ref, dir, className, style,
+    contentEditable: true,
+    suppressContentEditableWarning: true,
+    spellCheck: false,
+    onMouseDown: (e) => e.stopPropagation(),
+    onInput: (e) => emit(e.currentTarget),
+    onBlur: (e) => emit(e.currentTarget),
+  }
+  return as === 'span' ? <span {...common} /> : <div {...common} />
+}
+
+// ─── Resize config ────────────────────────────────────────────────────────────
+
+const RESIZE_ENABLE = {
+  top: false, left: false, topLeft: false, topRight: false, bottomLeft: false,
+  right: true, bottom: true, bottomRight: true,
+}
+
+// ─── BannerLayer2 ─────────────────────────────────────────────────────────────
+
+function BannerLayer2({
+  canvasRef, box, setBox, className, layerKey, setDraggingKey,
+  viewportScale, minWidth, minHeight, lockAspectRatio, dragHandleOnly, dragControls, children,
+  onUserCommit,
+}) {
+  const layerRef = useRef(null)
+  return (
+    <Motion.div
+      ref={layerRef}
+      layout={false}
+      className={`z-10 box-border ${className}`}
+      drag
+      dragElastic={0}
+      dragMomentum={false}
+      dragConstraints={canvasRef}
+      dragListener={!dragHandleOnly}
+      dragControls={dragControls}
+      whileDrag={{ zIndex: 50, cursor: 'grabbing' }}
+      style={{ position: 'absolute', left: box.x, top: box.y, width: box.width, height: box.height }}
+      onDragStart={() => setDraggingKey(layerKey)}
+      onDragEnd={() => {
+        commitPositionInBanner(canvasRef.current, layerRef.current, setBox)
+        setDraggingKey(null)
+        onUserCommit?.()
+      }}
+    >
+      <Resizable
+        size={{ width: box.width, height: box.height }}
+        scale={viewportScale}
+        minWidth={minWidth}
+        minHeight={minHeight}
+        lockAspectRatio={lockAspectRatio}
+        enable={RESIZE_ENABLE}
+        handleWrapperClass="bc2-resize-handle-root"
+        onResizeStop={(_e, _dir, ref) => {
+          setBox((b) => ({ ...b, width: ref.offsetWidth, height: ref.offsetHeight }))
+          onUserCommit?.()
+        }}
+        className="box-border h-full w-full"
+        style={{ display: 'block', boxSizing: 'border-box' }}
+      >
+        <div className="bc2-layer-inner box-border h-full w-full overflow-visible p-1">
+          {children}
+        </div>
+      </Resizable>
+    </Motion.div>
+  )
+}
+
+function buildDesign2CanvasSlice(s) {
+  return {
+    logoBox: s.logoBox,
+    headlineBox: s.headlineBox,
+    subheadBox: s.subheadBox,
+    bulletsBox: s.bulletsBox,
+    ctaBox: s.ctaBox,
+    headlineFs: s.headlineFs,
+    headlineAlign: s.headlineAlign,
+    headlineColor: s.headlineColor,
+    subheadFs: s.subheadFs,
+    subheadAlign: s.subheadAlign,
+    subheadColor: s.subheadColor,
+    bulletsFs: s.bulletsFs,
+    bulletsAlign: s.bulletsAlign,
+    bulletsColor: s.bulletsColor,
+    ctaFs: s.ctaFs,
+    ctaAlign: s.ctaAlign,
+    ctaColor: s.ctaColor,
+  }
+}
+
+function applyDesign2Slice(slice, setters) {
+  const {
+    setLogoBox, setHeadlineBox, setSubheadBox, setBulletsBox, setCtaBox,
+    setHeadlineFs, setHeadlineAlign, setHeadlineColor,
+    setSubheadFs, setSubheadAlign, setSubheadColor,
+    setBulletsFs, setBulletsAlign, setBulletsColor,
+    setCtaFs, setCtaAlign, setCtaColor,
+  } = setters
+  if (!slice || typeof slice !== 'object') return
+  if (slice.logoBox) setLogoBox({ ...slice.logoBox })
+  if (slice.headlineBox) setHeadlineBox({ ...slice.headlineBox })
+  if (slice.subheadBox) setSubheadBox({ ...slice.subheadBox })
+  if (slice.bulletsBox) setBulletsBox({ ...slice.bulletsBox })
+  if (slice.ctaBox) setCtaBox({ ...slice.ctaBox })
+  if (typeof slice.headlineFs === 'number') setHeadlineFs(slice.headlineFs)
+  if (slice.headlineAlign) setHeadlineAlign(slice.headlineAlign)
+  if (slice.headlineColor) setHeadlineColor(slice.headlineColor)
+  if (typeof slice.subheadFs === 'number') setSubheadFs(slice.subheadFs)
+  if (slice.subheadAlign) setSubheadAlign(slice.subheadAlign)
+  if (slice.subheadColor) setSubheadColor(slice.subheadColor)
+  if (typeof slice.bulletsFs === 'number') setBulletsFs(slice.bulletsFs)
+  if (slice.bulletsAlign) setBulletsAlign(slice.bulletsAlign)
+  if (slice.bulletsColor) setBulletsColor(slice.bulletsColor)
+  if (typeof slice.ctaFs === 'number') setCtaFs(slice.ctaFs)
+  if (slice.ctaAlign) setCtaAlign(slice.ctaAlign)
+  if (slice.ctaColor) setCtaColor(slice.ctaColor)
+}
+
+// ─── BannerCanvas2 ───────────────────────────────────────────────────────────
+
+export default function BannerCanvas2({
+  apiBase,
+  taskId,
+  backgroundUrl,
+  logoUrl,
+  headline: headlineInitial,
+  subhead: subheadInitial,
+  bulletPoints,
+  cta: ctaInitial,
+  brandColor,
+  siteUrl,
+  savedCanvasSlice,
+  onPersist,
+}) {
+  const viewportRef = useRef(null)
+  const captureRef  = useRef(null)
+  const reactSuffix = useId().replace(/:/g, '')
+  const surfaceId   = taskId ? `bc2-surface-${taskId}` : `bc2-surface-${reactSuffix}`
+
+  const ctaDragControls = useDragControls()
+
+  const [scale,         setScale]         = useState(1)
+  const [exporting,     setExporting]     = useState(false)
+  const [downloadError, setDownloadError] = useState(null)
+
+  const [headline, setHeadline] = useState(headlineInitial ?? '')
+  const [subhead,  setSubhead]  = useState(subheadInitial ?? '')
+  const [bullets,  setBullets]  = useState(() => [...(bulletPoints || [])])
+  const [cta,      setCta]      = useState(ctaInitial ?? '')
+
+  const [logoBox,     setLogoBox]     = useState(() => ({ ...DEFAULT_LOGO     }))
+  const [headlineBox, setHeadlineBox] = useState(() => ({ ...DEFAULT_HEADLINE }))
+  const [subheadBox,  setSubheadBox]  = useState(() => ({ ...DEFAULT_SUBHEAD  }))
+  const [bulletsBox,  setBulletsBox]  = useState(() => ({ ...DEFAULT_BULLETS  }))
+  const [ctaBox,      setCtaBox]      = useState(() => ({ ...DEFAULT_CTA      }))
+  const [draggingKey, setDraggingKey] = useState(null)
+
+  // ── Typography controls state ────────────────────────────────────────────
+  const [headlineFs,    setHeadlineFs]    = useState(DF2.headline)
+  const [headlineAlign, setHeadlineAlign] = useState('right')
+  const [subheadFs,     setSubheadFs]     = useState(DF2.subhead)
+  const [subheadAlign,  setSubheadAlign]  = useState('right')
+  const [bulletsFs,     setBulletsFs]     = useState(DF2.bullets)
+  const [bulletsAlign,  setBulletsAlign]  = useState('right')
+  const [ctaFs,         setCtaFs]         = useState(DF2.cta)
+  const [ctaAlign,      setCtaAlign]      = useState('center')
+  const [headlineColor, setHeadlineColor] = useState(DC2.headline)
+  const [subheadColor,  setSubheadColor]  = useState(DC2.subhead)
+  const [bulletsColor,  setBulletsColor]  = useState(DC2.bullets)
+  const [ctaColor,      setCtaColor]      = useState('#ffffff')
+
+  const persistTimerRef = useRef(null)
+  const stateRef = useRef({})
+
+  const flushPersist = useCallback(() => {
+    if (!onPersist || !taskId) return
+    const s = stateRef.current
+    onPersist({
+      headline: s.headline,
+      subhead: s.subhead,
+      cta: s.cta,
+      bullet_points: s.bullets,
+      canvas_state: { v: 1, design2: buildDesign2CanvasSlice(s) },
+    })
+  }, [onPersist, taskId])
+
+  const flushPersistRef = useRef(flushPersist)
+  flushPersistRef.current = flushPersist
+
+  const schedulePersist = useCallback(() => {
+    if (!onPersist || !taskId) return
+    clearTimeout(persistTimerRef.current)
+    persistTimerRef.current = setTimeout(() => {
+      persistTimerRef.current = null
+      flushPersist()
+    }, 1000)
+  }, [onPersist, taskId, flushPersist])
+
+  useEffect(
+    () => () => {
+      clearTimeout(persistTimerRef.current)
+      persistTimerRef.current = null
+      flushPersistRef.current()
+    },
+    [],
+  )
+
+  useEffect(() => {
+    stateRef.current = {
+      headline,
+      subhead,
+      bullets,
+      cta,
+      logoBox,
+      headlineBox,
+      subheadBox,
+      bulletsBox,
+      ctaBox,
+      headlineFs,
+      headlineAlign,
+      headlineColor,
+      subheadFs,
+      subheadAlign,
+      subheadColor,
+      bulletsFs,
+      bulletsAlign,
+      bulletsColor,
+      ctaFs,
+      ctaAlign,
+      ctaColor,
+    }
+  }, [
+    headline, subhead, bullets, cta,
+    logoBox, headlineBox, subheadBox, bulletsBox, ctaBox,
+    headlineFs, headlineAlign, headlineColor,
+    subheadFs, subheadAlign, subheadColor,
+    bulletsFs, bulletsAlign, bulletsColor,
+    ctaFs, ctaAlign, ctaColor,
+  ])
+
+  const bulletsKey = bulletPoints ? JSON.stringify(bulletPoints) : ''
+  const savedSliceKey = useMemo(
+    () => (savedCanvasSlice && typeof savedCanvasSlice === 'object' ? JSON.stringify(savedCanvasSlice) : ''),
+    [savedCanvasSlice],
+  )
+
+  useEffect(() => {
+    setHeadline(headlineInitial ?? '')
+    setSubhead(subheadInitial ?? '')
+    setBullets([...(bulletPoints || [])])
+    setCta(ctaInitial ?? '')
+    setLogoBox({ ...DEFAULT_LOGO })
+    setHeadlineBox({ ...DEFAULT_HEADLINE })
+    setSubheadBox({ ...DEFAULT_SUBHEAD })
+    setBulletsBox({ ...DEFAULT_BULLETS })
+    setCtaBox({ ...DEFAULT_CTA })
+    setDraggingKey(null)
+    setHeadlineFs(DF2.headline)
+    setHeadlineAlign('right')
+    setSubheadFs(DF2.subhead)
+    setSubheadAlign('right')
+    setBulletsFs(DF2.bullets)
+    setBulletsAlign('right')
+    setCtaFs(DF2.cta)
+    setCtaAlign('center')
+    setHeadlineColor(DC2.headline)
+    setSubheadColor(DC2.subhead)
+    setBulletsColor(DC2.bullets)
+    const bg = normalizeBrandHex(brandColor)
+    setCtaColor(contrastingTextColor(bg))
+    if (savedCanvasSlice && typeof savedCanvasSlice === 'object') {
+      applyDesign2Slice(savedCanvasSlice, {
+        setLogoBox,
+        setHeadlineBox,
+        setSubheadBox,
+        setBulletsBox,
+        setCtaBox,
+        setHeadlineFs,
+        setHeadlineAlign,
+        setHeadlineColor,
+        setSubheadFs,
+        setSubheadAlign,
+        setSubheadColor,
+        setBulletsFs,
+        setBulletsAlign,
+        setBulletsColor,
+        setCtaFs,
+        setCtaAlign,
+        setCtaColor,
+      })
+    }
+  }, [
+    taskId,
+    bulletsKey,
+    bulletPoints,
+    savedSliceKey,
+    headlineInitial,
+    subheadInitial,
+    ctaInitial,
+    brandColor,
+    savedCanvasSlice,
+  ])
+
+  const setBulletAt = useCallback((index, value) => {
+    setBullets((prev) => {
+      const n = [...prev]
+      n[index] = value
+      return n
+    })
+    schedulePersist()
+  }, [schedulePersist])
+
+  const bgSrc    = backgroundUrl ? `${apiBase}${backgroundUrl}` : ''
+  const logoSrc  = logoUrl       ? `${apiBase}${logoUrl}`       : ''
+  const ctaBgHex = normalizeBrandHex(brandColor)
+  const ctaFgHex = contrastingTextColor(ctaBgHex)
+  const [brandR, brandG, brandB] = hexToRgb(ctaBgHex)
+  const domain = extractDomain(siteUrl)
+
+  // Deep cinematic vignette — darker at edges, lighter in the center-left area
+  const overlay = [
+    `radial-gradient(ellipse at 70% 40%, rgba(0,0,0,0.08) 0%, rgba(0,0,0,0.72) 90%)`,
+    `linear-gradient(165deg, rgba(0,0,0,0.28) 0%, rgba(0,0,0,0.55) 100%)`,
+  ].join(', ')
+
+  useEffect(() => {
+    const el = viewportRef.current
+    if (!el) return
+    const ro = new ResizeObserver(() => {
+      const w = el.clientWidth
+      if (w > 0) setScale(w / BANNER_PX)
+    })
+    ro.observe(el)
+    setScale(el.clientWidth / BANNER_PX)
+    return () => ro.disconnect()
+  }, [])
+
+  const handleDownload = useCallback(async () => {
+    const node = captureRef.current
+    if (!node) return
+    setDownloadError(null)
+    setExporting(true)
+    await new Promise((r) => requestAnimationFrame(r))
+    await new Promise((r) => requestAnimationFrame(r))
+    try {
+      await waitForImagesInNode(node)
+      await new Promise((r) => requestAnimationFrame(r))
+      const dataUrl = await toPng(node, {
+        cacheBust: true,
+        pixelRatio: 1,
+        width: BANNER_PX,
+        height: BANNER_PX,
+        backgroundColor: '#0f172a',
+        style: { transform: 'scale(1)', colorScheme: 'light' },
+        filter: (el) => {
+          if (el.classList?.contains('bc2-resize-handle-root')) return false
+          if (el.closest?.('.bc2-resize-handle-root')) return false
+          if (el.classList?.contains('bc2-cta-drag-handle')) return false
+          if (el.classList?.contains('banner-text-controls')) return false
+          if (el.closest?.('.banner-text-controls')) return false
+          return true
+        },
+      })
+      const a = document.createElement('a')
+      a.href = dataUrl
+      a.download = `banner2-${(taskId || 'export').slice(0, 8)}.png`
+      a.click()
+    } catch (e) {
+      setDownloadError(e.message || String(e))
+    } finally {
+      setExporting(false)
+    }
+  }, [taskId])
+
+  const layerClass = (id) =>
+    `bc2-layer bc2-layer--${id}${draggingKey === id ? ' bc2-layer--dragging' : ''}`
+
+  const bgImageStyle = bgSrc ? { backgroundImage: `url(${JSON.stringify(bgSrc)})` } : undefined
+
+  return (
+    <div className="bc2-root w-full max-w-full">
+      <div className="bc2-viewport" ref={viewportRef} dir="ltr">
+        <div
+          className="bc2-viewport-inner"
+          style={{ width: BANNER_PX * scale, height: BANNER_PX * scale }}
+        >
+          <div
+            ref={captureRef}
+            id={surfaceId}
+            dir="ltr"
+            className={`absolute left-0 top-0 w-[1080px] h-[1080px] shrink-0 origin-top-left overflow-hidden bc2-canvas${exporting ? ' bc2-capture' : ''}`}
+            style={{ transform: `scale(${scale})` }}
+          >
+
+            {/* ── Full-bleed background ────────────────────────────── */}
+            <div
+              className={`absolute inset-0 bg-cover bg-center bg-no-repeat pointer-events-none ${bgSrc ? '' : 'bg-slate-900'}`}
+              style={bgImageStyle}
+              aria-hidden
+            />
+            {bgSrc && (
+              <img
+                src={bgSrc}
+                alt=""
+                crossOrigin="anonymous"
+                referrerPolicy="no-referrer"
+                loading="eager"
+                decoding="async"
+                className="pointer-events-none absolute left-0 top-0 h-px w-px opacity-0"
+                aria-hidden
+              />
+            )}
+
+            {/* ── Dark vignette overlay ─────────────────────────────── */}
+            <div
+              className="absolute inset-0 pointer-events-none"
+              style={{ background: overlay }}
+              aria-hidden
+            />
+
+            {/* ── Brand-colour glow (top-right accent) ─────────────── */}
+            <div
+              className="absolute pointer-events-none"
+              style={{
+                width: 500,
+                height: 500,
+                borderRadius: '50%',
+                top: -150,
+                right: -100,
+                background: `radial-gradient(circle, rgba(${brandR},${brandG},${brandB},0.28) 0%, transparent 70%)`,
+              }}
+              aria-hidden
+            />
+
+            {/* ── Thin brand accent bar (left edge) ────────────────── */}
+            <div
+              className="absolute top-0 left-0 pointer-events-none"
+              style={{ width: ACCENT_W, height: BANNER_PX - STRIP_H, backgroundColor: ctaBgHex }}
+              aria-hidden
+            />
+
+            {/* ── Bottom strip ─────────────────────────────────────── */}
+            <div
+              className="absolute bottom-0 left-0 right-0 pointer-events-none flex items-center justify-center"
+              style={{ height: STRIP_H, backgroundColor: ctaBgHex }}
+              aria-hidden
+            >
+              {domain && (
+                <span
+                  style={{
+                    color: ctaFgHex,
+                    fontFamily: 'system-ui, Arial, sans-serif',
+                    fontSize: 22,
+                    fontWeight: 700,
+                    direction: 'ltr',
+                    letterSpacing: '0.4px',
+                  }}
+                >
+                  {domain}
+                </span>
+              )}
+            </div>
+
+            {/* ── Logo ─────────────────────────────────────────────── */}
+            <BannerLayer2
+              canvasRef={captureRef}
+              box={logoBox} setBox={setLogoBox}
+              className={layerClass('logo')} layerKey="logo"
+              setDraggingKey={setDraggingKey} viewportScale={scale}
+              minWidth={80} minHeight={48} lockAspectRatio
+              onUserCommit={schedulePersist}
+            >
+              <img
+                src={logoSrc}
+                alt=""
+                crossOrigin="anonymous"
+                referrerPolicy="no-referrer"
+                loading="eager"
+                decoding="async"
+                draggable={false}
+                className="bc2-logo-img mx-auto block max-h-full max-w-full object-contain"
+              />
+            </BannerLayer2>
+
+            {/* ── Headline ─────────────────────────────────────────── */}
+            <BannerLayer2
+              canvasRef={captureRef}
+              box={headlineBox} setBox={setHeadlineBox}
+              className={`${layerClass('headline')} bc2-layer--text`} layerKey="headline"
+              setDraggingKey={setDraggingKey} viewportScale={scale}
+              minWidth={280} minHeight={60}
+              onUserCommit={schedulePersist}
+            >
+              <TextControls2
+                fontSize={headlineFs}
+                onFontSize={(v) => { setHeadlineFs(v); schedulePersist() }}
+                align={headlineAlign}
+                onAlign={(v) => { setHeadlineAlign(v); schedulePersist() }}
+                color={headlineColor}
+                onColor={(v) => { setHeadlineColor(v); schedulePersist() }}
+              />
+              <div className="bc2-text-shell" dir="rtl">
+                <EditableText
+                  className="bc2-text bc2-headline whitespace-normal"
+                  style={{ fontSize: headlineFs, textAlign: headlineAlign, color: headlineColor }}
+                  text={headline} resetKey={taskId}
+                  onTextChange={(v) => { setHeadline(v); schedulePersist() }}
+                />
+              </div>
+            </BannerLayer2>
+
+            {/* ── Subhead ──────────────────────────────────────────── */}
+            <BannerLayer2
+              canvasRef={captureRef}
+              box={subheadBox} setBox={setSubheadBox}
+              className={`${layerClass('subhead')} bc2-layer--text`} layerKey="subhead"
+              setDraggingKey={setDraggingKey} viewportScale={scale}
+              minWidth={280} minHeight={48}
+              onUserCommit={schedulePersist}
+            >
+              <TextControls2
+                fontSize={subheadFs}
+                onFontSize={(v) => { setSubheadFs(v); schedulePersist() }}
+                align={subheadAlign}
+                onAlign={(v) => { setSubheadAlign(v); schedulePersist() }}
+                color={subheadColor}
+                onColor={(v) => { setSubheadColor(v); schedulePersist() }}
+              />
+              <div className="bc2-text-shell" dir="rtl">
+                <EditableText
+                  className="bc2-text bc2-subhead whitespace-normal"
+                  style={{ fontSize: subheadFs, textAlign: subheadAlign, color: subheadColor }}
+                  text={subhead} resetKey={taskId}
+                  onTextChange={(v) => { setSubhead(v); schedulePersist() }}
+                />
+              </div>
+            </BannerLayer2>
+
+            {/* ── Feature glass-pills ───────────────────────────────── */}
+            <BannerLayer2
+              canvasRef={captureRef}
+              box={bulletsBox} setBox={setBulletsBox}
+              className={`${layerClass('bullets')} bc2-layer--text`} layerKey="bullets"
+              setDraggingKey={setDraggingKey} viewportScale={scale}
+              minWidth={280} minHeight={200}
+              onUserCommit={schedulePersist}
+            >
+              <TextControls2
+                fontSize={bulletsFs}
+                onFontSize={(v) => { setBulletsFs(v); schedulePersist() }}
+                align={bulletsAlign}
+                onAlign={(v) => { setBulletsAlign(v); schedulePersist() }}
+                color={bulletsColor}
+                onColor={(v) => { setBulletsColor(v); schedulePersist() }}
+              />
+              <div className="bc2-feat-grid" dir="rtl">
+                {bullets.map((b, i) => (
+                  <div
+                    key={`${taskId}-b-${i}`}
+                    className="bc2-feat-pill"
+                    style={{ borderTopColor: ctaBgHex }}
+                  >
+                    <div
+                      className="bc2-feat-icon"
+                      style={{ backgroundColor: ctaBgHex, color: ctaFgHex }}
+                    >
+                      ✓
+                    </div>
+                    <EditableText
+                      as="span"
+                      className="bc2-feat-text"
+                      style={{ fontSize: bulletsFs, textAlign: bulletsAlign, color: bulletsColor }}
+                      text={b}
+                      resetKey={`${taskId}-${i}`}
+                      onTextChange={(t) => setBulletAt(i, t)}
+                    />
+                  </div>
+                ))}
+              </div>
+            </BannerLayer2>
+
+            {/* ── CTA ──────────────────────────────────────────────── */}
+            <BannerLayer2
+              canvasRef={captureRef}
+              box={ctaBox} setBox={setCtaBox}
+              className={`${layerClass('cta')} bc2-layer--cta`} layerKey="cta"
+              setDraggingKey={setDraggingKey} viewportScale={scale}
+              minWidth={160} minHeight={52}
+              dragHandleOnly dragControls={ctaDragControls}
+              onUserCommit={schedulePersist}
+            >
+              <TextControls2
+                fontSize={ctaFs}
+                onFontSize={(v) => { setCtaFs(v); schedulePersist() }}
+                align={ctaAlign}
+                onAlign={(v) => { setCtaAlign(v); schedulePersist() }}
+                color={ctaColor}
+                onColor={(v) => { setCtaColor(v); schedulePersist() }}
+              />
+              <div className="bc2-text-shell">
+                <div
+                  className="bc2-cta-drag-handle"
+                  title="גרור להזזה"
+                  onPointerDown={(e) => ctaDragControls.start(e)}
+                >
+                  <span className="bc2-cta-drag-grip" aria-hidden />
+                  <span className="bc2-cta-drag-label">גרור</span>
+                </div>
+                <div className="mt-1" style={{ textAlign: ctaAlign }} dir="rtl">
+                  <EditableText
+                    className="bc2-text bc2-cta inline-block min-w-[120px] max-w-full whitespace-nowrap"
+                    text={cta} resetKey={taskId}
+                    onTextChange={(v) => { setCta(v); schedulePersist() }}
+                    style={{
+                      fontSize: ctaFs,
+                      backgroundColor: ctaBgHex,
+                      color: ctaColor,
+                      boxShadow: `0 12px 40px rgba(${brandR},${brandG},${brandB},0.55)`,
+                    }}
+                  />
+                </div>
+              </div>
+            </BannerLayer2>
+
+          </div>
+        </div>
+      </div>
+
+      {/* ── Download row ─────────────────────────────────────────── */}
+      <div className="bc2-download-row">
+        <button
+          type="button"
+          className="bc2-btn-download"
+          onClick={handleDownload}
+          disabled={exporting}
+        >
+          {exporting ? 'מכין PNG…' : '⬇ הורד באנר PNG'}
+        </button>
+      </div>
+      {downloadError && (
+        <p className="bc2-download-error" role="alert">{downloadError}</p>
       )}
     </div>
   )
@@ -3585,6 +5844,7 @@ import { useNavigate } from 'react-router-dom'
 import api, { API_BASE_URL } from './api.js'
 import { useAuth } from './AuthContext.jsx'
 import BannerCanvas from './BannerCanvas.jsx'
+import BannerCanvas2 from './BannerCanvas2.jsx'
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
 
@@ -3650,6 +5910,7 @@ export default function BannerWorkspace() {
   const [isPosting,     setIsPosting]     = useState(false)
   const [aiContextBusy, setAiContextBusy] = useState(false)
   const [aiContextErr,  setAiContextErr]  = useState(null)
+  const [activeDesign,  setActiveDesign]  = useState(1)
 
   const terminal  = statusPayload?.status === 'completed' || statusPayload?.status === 'failed'
   const isPolling = Boolean(taskId && !terminal)
@@ -3676,6 +5937,8 @@ export default function BannerWorkspace() {
           task_id: taskId, status: 'failed', error: axiosErrorMessage(err),
           headline: null, subhead: null, bullet_points: null,
           cta: null, brand_color: null, background_url: null, logo_url: null,
+          rendered_banner_1_url: null, rendered_banner_2_url: null,
+          canvas_state: null,
         })
         clearInterval(intervalId)
       }
@@ -3687,6 +5950,34 @@ export default function BannerWorkspace() {
   }, [taskId])
 
   const handleLogout = () => { logout(); navigate('/login', { replace: true }) }
+
+  const handleTaskPersist = useCallback(async (partial) => {
+    if (!taskId || !partial) return
+    try {
+      const body = {}
+      if (partial.headline !== undefined) body.headline = partial.headline
+      if (partial.subhead !== undefined) body.subhead = partial.subhead
+      if (partial.cta !== undefined) body.cta = partial.cta
+      if (partial.bullet_points !== undefined) body.bullet_points = partial.bullet_points
+      if (partial.canvas_state !== undefined) body.canvas_state = partial.canvas_state
+      if (Object.keys(body).length === 0) return
+      const { data } = await api.patch(`/tasks/${taskId}`, body)
+      setStatusPayload((p) =>
+        p
+          ? {
+              ...p,
+              headline: data.headline ?? p.headline,
+              subhead: data.subhead ?? p.subhead,
+              cta: data.cta ?? p.cta,
+              bullet_points: data.bullet_points ?? p.bullet_points,
+              canvas_state: data.canvas_state ?? p.canvas_state,
+            }
+          : p,
+      )
+    } catch (err) {
+      console.error('Auto-save failed', err)
+    }
+  }, [taskId])
 
   const isPrimaryAdmin = user?.email?.toLowerCase() === PRIMARY_ADMIN_EMAIL
 
@@ -3925,66 +6216,127 @@ export default function BannerWorkspace() {
               )}
 
               {completed && (
-                <div className="space-y-8">
-                  {/* Copy metadata (read-only reference) */}
-                  <div className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-6 shadow-sm">
-                    <h3 className="text-sm font-semibold text-slate-800 dark:text-slate-100 mb-4">
-                      קופי שנוצר
-                    </h3>
-                    <dl className="grid gap-4 sm:grid-cols-2 text-sm">
-                      <div>
-                        <dt className="text-xs uppercase tracking-wide text-slate-500">כותרת ראשית</dt>
-                        <dd className="mt-1 font-medium text-slate-900 dark:text-white" dir="rtl">{statusPayload.headline}</dd>
+                <div className="space-y-6">
+
+                  {/* ── Design tabs ───────────────────────────────────────── */}
+                  <div>
+                    {/* Tab bar */}
+                    <div className="flex items-center gap-1 rounded-xl bg-slate-100 dark:bg-slate-800/80 p-1 mb-4 w-fit">
+                      {[
+                        { id: 1, label: 'עיצוב 1', sub: 'Split Panel' },
+                        { id: 2, label: 'עיצוב 2', sub: 'Immersive' },
+                      ].map(({ id, label, sub }) => (
+                        <button
+                          key={id}
+                          type="button"
+                          onClick={() => setActiveDesign(id)}
+                          className={`flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-medium transition-all ${
+                            activeDesign === id
+                              ? 'bg-white dark:bg-slate-700 shadow text-slate-900 dark:text-white'
+                              : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200'
+                          }`}
+                        >
+                          {label}
+                          <span className={`text-[10px] font-normal rounded-full px-1.5 py-0.5 ${
+                            activeDesign === id
+                              ? 'bg-indigo-100 dark:bg-indigo-900/50 text-indigo-600 dark:text-indigo-300'
+                              : 'bg-slate-200 dark:bg-slate-700 text-slate-400 dark:text-slate-500'
+                          }`}>
+                            {sub}
+                          </span>
+                        </button>
+                      ))}
+                    </div>
+
+                    {/* Hint */}
+                    <p className="text-xs text-slate-400 dark:text-slate-500 mb-3">
+                      גרור אלמנטים, שנה גודל, לחץ על טקסט לעריכה ישירה
+                    </p>
+
+                    {/* Design 1 */}
+                    {activeDesign === 1 && (
+                      <div className="overflow-hidden rounded-2xl border border-slate-200 dark:border-slate-700 shadow-2xl">
+                        <BannerCanvas
+                          apiBase={API_BASE_URL}
+                          taskId={taskId}
+                          backgroundUrl={statusPayload.background_url}
+                          logoUrl={statusPayload.logo_url}
+                          headline={statusPayload.headline}
+                          subhead={statusPayload.subhead}
+                          bulletPoints={statusPayload.bullet_points}
+                          cta={statusPayload.cta}
+                          brandColor={statusPayload.brand_color}
+                          siteUrl={url}
+                          savedCanvasSlice={statusPayload.canvas_state?.design1 ?? null}
+                          onPersist={handleTaskPersist}
+                        />
                       </div>
-                      <div>
-                        <dt className="text-xs uppercase tracking-wide text-slate-500">כותרת משנה</dt>
-                        <dd className="mt-1 text-slate-700 dark:text-slate-300" dir="rtl">{statusPayload.subhead}</dd>
+                    )}
+
+                    {/* Design 2 */}
+                    {activeDesign === 2 && (
+                      <div className="overflow-hidden rounded-2xl border border-slate-800 shadow-2xl">
+                        <BannerCanvas2
+                          apiBase={API_BASE_URL}
+                          taskId={taskId}
+                          backgroundUrl={statusPayload.background_url}
+                          logoUrl={statusPayload.logo_url}
+                          headline={statusPayload.headline}
+                          subhead={statusPayload.subhead}
+                          bulletPoints={statusPayload.bullet_points}
+                          cta={statusPayload.cta}
+                          brandColor={statusPayload.brand_color}
+                          siteUrl={url}
+                          savedCanvasSlice={statusPayload.canvas_state?.design2 ?? null}
+                          onPersist={handleTaskPersist}
+                        />
                       </div>
-                      <div className="sm:col-span-2">
-                        <dt className="text-xs uppercase tracking-wide text-slate-500">נקודות מפתח</dt>
-                        <dd className="mt-2">
-                          <ul className="list-disc list-inside space-y-1 text-slate-700 dark:text-slate-300" dir="rtl">
-                            {(statusPayload.bullet_points || []).map((b, i) => <li key={i}>{b}</li>)}
-                          </ul>
-                        </dd>
-                      </div>
-                      <div>
-                        <dt className="text-xs uppercase tracking-wide text-slate-500">קריאה לפעולה</dt>
-                        <dd className="mt-1 font-medium text-slate-900 dark:text-white" dir="rtl">{statusPayload.cta}</dd>
-                      </div>
-                      <div>
-                        <dt className="text-xs uppercase tracking-wide text-slate-500">צבע מותג</dt>
-                        <dd className="mt-1 flex items-center gap-2 flex-row-reverse justify-end">
-                          <span
-                            className="inline-block size-6 rounded-md border border-slate-200 dark:border-slate-600 shadow-inner"
-                            style={{ backgroundColor: statusPayload.brand_color || '#ccc' }}
-                            title={statusPayload.brand_color}
-                          />
-                          <code className="text-xs" dir="ltr">{statusPayload.brand_color}</code>
-                        </dd>
-                      </div>
-                    </dl>
+                    )}
                   </div>
 
-                  {/* Interactive preview + download */}
-                  <div>
-                    <h3 className="text-sm font-semibold text-slate-800 dark:text-slate-100 mb-3">
-                      עריכה ותצוגה מקדימה
-                    </h3>
-                    <div className="overflow-hidden rounded-2xl border border-slate-200 dark:border-slate-700 shadow-2xl">
-                      <BannerCanvas
-                        apiBase={API_BASE_URL}
-                        taskId={taskId}
-                        backgroundUrl={statusPayload.background_url}
-                        logoUrl={statusPayload.logo_url}
-                        headline={statusPayload.headline}
-                        subhead={statusPayload.subhead}
-                        bulletPoints={statusPayload.bullet_points}
-                        cta={statusPayload.cta}
-                        brandColor={statusPayload.brand_color}
-                      />
+                  {/* ── Copy metadata (collapsible reference) ─────────────── */}
+                  <details className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm">
+                    <summary className="cursor-pointer select-none px-5 py-3.5 text-sm font-semibold text-slate-700 dark:text-slate-200 list-none flex items-center justify-between gap-2">
+                      <span>קופי שנוצר</span>
+                      <span className="text-slate-400 text-xs font-normal">לחץ לפתיחה</span>
+                    </summary>
+                    <div className="px-5 pb-5">
+                      <dl className="grid gap-4 sm:grid-cols-2 text-sm pt-2 border-t border-slate-100 dark:border-slate-800">
+                        <div>
+                          <dt className="text-xs uppercase tracking-wide text-slate-500">כותרת ראשית</dt>
+                          <dd className="mt-1 font-medium text-slate-900 dark:text-white" dir="rtl">{statusPayload.headline}</dd>
+                        </div>
+                        <div>
+                          <dt className="text-xs uppercase tracking-wide text-slate-500">כותרת משנה</dt>
+                          <dd className="mt-1 text-slate-700 dark:text-slate-300" dir="rtl">{statusPayload.subhead}</dd>
+                        </div>
+                        <div className="sm:col-span-2">
+                          <dt className="text-xs uppercase tracking-wide text-slate-500">נקודות מפתח</dt>
+                          <dd className="mt-2">
+                            <ul className="list-disc list-inside space-y-1 text-slate-700 dark:text-slate-300" dir="rtl">
+                              {(statusPayload.bullet_points || []).map((b, i) => <li key={i}>{b}</li>)}
+                            </ul>
+                          </dd>
+                        </div>
+                        <div>
+                          <dt className="text-xs uppercase tracking-wide text-slate-500">קריאה לפעולה</dt>
+                          <dd className="mt-1 font-medium text-slate-900 dark:text-white" dir="rtl">{statusPayload.cta}</dd>
+                        </div>
+                        <div>
+                          <dt className="text-xs uppercase tracking-wide text-slate-500">צבע מותג</dt>
+                          <dd className="mt-1 flex items-center gap-2 flex-row-reverse justify-end">
+                            <span
+                              className="inline-block size-6 rounded-md border border-slate-200 dark:border-slate-600 shadow-inner"
+                              style={{ backgroundColor: statusPayload.brand_color || '#ccc' }}
+                              title={statusPayload.brand_color}
+                            />
+                            <code className="text-xs" dir="ltr">{statusPayload.brand_color}</code>
+                          </dd>
+                        </div>
+                      </dl>
                     </div>
-                  </div>
+                  </details>
+
                 </div>
               )}
             </section>

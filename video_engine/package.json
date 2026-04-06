@@ -1,0 +1,21 @@
+{
+  "name": "video-engine",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "main": "index.js",
+  "scripts": {
+    "start": "node ./index.js",
+    "dev": "node --watch ./index.js"
+  },
+  "dependencies": {
+    "@remotion/bundler": "^4.0.0",
+    "@remotion/google-fonts": "^4.0.446",
+    "@remotion/renderer": "^4.0.0",
+    "cors": "^2.8.5",
+    "express": "^4.21.2",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "remotion": "^4.0.0"
+  }
+}

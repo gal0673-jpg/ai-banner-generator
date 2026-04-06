@@ -70,6 +70,8 @@ export default function BannerWorkspace() {
   const [aiContextBusy, setAiContextBusy] = useState(false)
   const [aiContextErr,  setAiContextErr]  = useState(null)
   const [activeDesign,  setActiveDesign]  = useState(1)
+  const [isRenderingVideo, setIsRenderingVideo] = useState(false)
+  const [videoRenderError, setVideoRenderError] = useState(null)
 
   const terminal  = statusPayload?.status === 'completed' || statusPayload?.status === 'failed'
   const isPolling = Boolean(taskId && !terminal)
@@ -96,6 +98,9 @@ export default function BannerWorkspace() {
           task_id: taskId, status: 'failed', error: axiosErrorMessage(err),
           headline: null, subhead: null, bullet_points: null,
           cta: null, brand_color: null, background_url: null, logo_url: null,
+          rendered_banner_1_url: null, rendered_banner_2_url: null,
+          canvas_state: null,
+          video_url: null,
         })
         clearInterval(intervalId)
       }
@@ -108,7 +113,52 @@ export default function BannerWorkspace() {
 
   const handleLogout = () => { logout(); navigate('/login', { replace: true }) }
 
+  const handleTaskPersist = useCallback(async (partial) => {
+    if (!taskId || !partial) return
+    try {
+      const body = {}
+      if (partial.headline !== undefined) body.headline = partial.headline
+      if (partial.subhead !== undefined) body.subhead = partial.subhead
+      if (partial.cta !== undefined) body.cta = partial.cta
+      if (partial.bullet_points !== undefined) body.bullet_points = partial.bullet_points
+      if (partial.canvas_state !== undefined) body.canvas_state = partial.canvas_state
+      if (Object.keys(body).length === 0) return
+      const { data } = await api.patch(`/tasks/${taskId}`, body)
+      setStatusPayload((p) =>
+        p
+          ? {
+              ...p,
+              headline: data.headline ?? p.headline,
+              subhead: data.subhead ?? p.subhead,
+              cta: data.cta ?? p.cta,
+              bullet_points: data.bullet_points ?? p.bullet_points,
+              canvas_state: data.canvas_state ?? p.canvas_state,
+            }
+          : p,
+      )
+    } catch (err) {
+      console.error('Auto-save failed', err)
+    }
+  }, [taskId])
+
   const isPrimaryAdmin = user?.email?.toLowerCase() === PRIMARY_ADMIN_EMAIL
+
+  const handleRenderVideo = useCallback(async () => {
+    if (!taskId) return
+    setVideoRenderError(null)
+    setIsRenderingVideo(true)
+    try {
+      const { data } = await api.post(`/tasks/${taskId}/render-video`, { design: activeDesign })
+      const u = data?.video_url
+      if (typeof u === 'string' && u.trim()) {
+        setStatusPayload((p) => (p ? { ...p, video_url: u.trim() } : p))
+      }
+    } catch (err) {
+      setVideoRenderError(axiosErrorMessage(err))
+    } finally {
+      setIsRenderingVideo(false)
+    }
+  }, [taskId, activeDesign])
 
   const handleDownloadAiContext = useCallback(async () => {
     setAiContextErr(null)
@@ -396,6 +446,10 @@ export default function BannerWorkspace() {
                           cta={statusPayload.cta}
                           brandColor={statusPayload.brand_color}
                           siteUrl={url}
+                          savedCanvasSlice={statusPayload.canvas_state?.design1 ?? null}
+                          onPersist={handleTaskPersist}
+                          onRenderVideo={handleRenderVideo}
+                          isRenderingVideo={isRenderingVideo}
                         />
                       </div>
                     )}
@@ -414,10 +468,59 @@ export default function BannerWorkspace() {
                           cta={statusPayload.cta}
                           brandColor={statusPayload.brand_color}
                           siteUrl={url}
+                          savedCanvasSlice={statusPayload.canvas_state?.design2 ?? null}
+                          onPersist={handleTaskPersist}
+                          onRenderVideo={handleRenderVideo}
+                          isRenderingVideo={isRenderingVideo}
                         />
                       </div>
                     )}
                   </div>
+
+                  {videoRenderError && (
+                    <div
+                      role="alert"
+                      className="rounded-xl border border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-950/40 px-4 py-3 text-sm text-red-800 dark:text-red-200 text-right"
+                    >
+                      {videoRenderError}
+                    </div>
+                  )}
+
+                  {statusPayload.video_url ? (
+                    <div className="rounded-2xl border border-slate-200 dark:border-slate-700 bg-gradient-to-b from-white to-slate-50 dark:from-slate-900 dark:to-slate-950 p-5 shadow-sm space-y-4">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <h3 className="text-sm font-semibold text-slate-800 dark:text-slate-100">
+                          סרטון אנימציה
+                        </h3>
+                        <a
+                          href={statusPayload.video_url}
+                          download
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-xs font-medium text-indigo-600 dark:text-indigo-400 hover:underline"
+                          dir="ltr"
+                        >
+                          הורד MP4
+                        </a>
+                      </div>
+                      <div className="rounded-xl overflow-hidden border border-slate-200/80 dark:border-slate-700 bg-black/5 dark:bg-black/40 max-w-lg mx-auto">
+                        <video
+                          key={statusPayload.video_url}
+                          className="w-full h-auto max-h-[min(70vh,520px)] object-contain"
+                          src={statusPayload.video_url}
+                          controls
+                          playsInline
+                          loop
+                          preload="metadata"
+                        >
+                          הדפדפן שלך אינו תומך בנגן וידאו.
+                        </video>
+                      </div>
+                      <p className="text-[11px] text-slate-500 dark:text-slate-400 font-mono break-all text-center" dir="ltr">
+                        {statusPayload.video_url}
+                      </p>
+                    </div>
+                  ) : null}
 
                   {/* ── Copy metadata (collapsible reference) ─────────────── */}
                   <details className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm">

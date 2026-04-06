@@ -1,8 +1,67 @@
-import { useCallback, useEffect, useId, useRef, useState } from 'react'
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
 import { motion as Motion, useDragControls } from 'framer-motion'
 import { Resizable } from 're-resizable'
 import { toPng } from 'html-to-image'
 import './BannerCanvas.css'
+
+// ─── Default font sizes (+10% over original CSS) ─────────────────────────────
+const DF = { headline: 51, subhead: 22, bullets: 18, cta: 26 }
+
+/** Hex #RRGGBB for <input type="color" /> */
+function colorInputHex(hex) {
+  if (!hex || typeof hex !== 'string') return '#000000'
+  let s = hex.trim()
+  if (!s.startsWith('#')) s = `#${s}`
+  if (/^#[0-9A-Fa-f]{6}$/.test(s)) return s.toLowerCase()
+  return '#000000'
+}
+
+// ─── Default text colours (Design 1 — light panel) ───────────────────────────
+const DC = { headline: '#0f172a', subhead: '#475569', bullets: '#1e293b' }
+
+// ─── TextControls — top-right corner, hidden during PNG export ───────────────
+function TextControls({ fontSize, onFontSize, align, onAlign, color, onColor }) {
+  /** stopPropagation only — preventDefault on mousedown breaks <input type="color" /> picker */
+  const stopDrag = (e) => { e.stopPropagation() }
+  const stopBtn = (e) => {
+    e.preventDefault()
+    e.stopPropagation()
+  }
+  const cv = colorInputHex(color)
+  return (
+    <div className="banner-text-controls" onMouseDown={stopDrag} onClick={stopDrag}>
+      <div className="btc-group">
+        <button type="button" className="btc-btn" onMouseDown={(e) => { stopBtn(e); onFontSize(Math.max(10, fontSize - 2)) }} title="הקטן גופן">A−</button>
+        <span className="btc-val">{fontSize}px</span>
+        <button type="button" className="btc-btn" onMouseDown={(e) => { stopBtn(e); onFontSize(Math.min(130, fontSize + 2)) }} title="הגדל גופן">A+</button>
+      </div>
+      <span className="btc-sep" aria-hidden />
+      <label className="btc-color-wrap" title="צבע טקסט" onMouseDown={stopDrag}>
+        <span className="btc-color-swatch" style={{ backgroundColor: cv }} aria-hidden />
+        <input
+          type="color"
+          className="btc-color-input"
+          value={cv}
+          onChange={(e) => onColor(e.target.value)}
+          onMouseDown={stopDrag}
+          aria-label="צבע טקסט"
+        />
+      </label>
+      <span className="btc-sep" aria-hidden />
+      <div className="btc-group">
+        {[['right','ימין'],['center','מרכז'],['left','שמאל']].map(([a, label]) => (
+          <button
+            type="button"
+            key={a}
+            className={`btc-btn${align === a ? ' btc-btn--on' : ''}`}
+            onMouseDown={(e) => { stopBtn(e); onAlign(a) }}
+            title={label}
+          >{label}</button>
+        ))}
+      </div>
+    </div>
+  )
+}
 
 // ─── Layout constants (all in "banner px" space, 1080×1080) ──────────────────
 const BANNER_PX  = 1080
@@ -23,8 +82,8 @@ const LOGO_W = 200
 const DEFAULT_LOGO     = { x: BANNER_PX - RPAD - LOGO_W, y: 44,  width: LOGO_W,    height: 72  }
 const DEFAULT_HEADLINE = { x: CONTENT_X,                 y: 148, width: CONTENT_W, height: 210 }
 const DEFAULT_SUBHEAD  = { x: CONTENT_X,                 y: 372, width: CONTENT_W, height: 110 }
-const DEFAULT_BULLETS  = { x: CONTENT_X,                 y: 500, width: CONTENT_W, height: 220 }
-const DEFAULT_CTA      = { x: CONTENT_X,                 y: 748, width: CONTENT_W, height: 86  }
+const DEFAULT_BULLETS  = { x: CONTENT_X,                 y: 494, width: CONTENT_W, height: 292 }
+const DEFAULT_CTA      = { x: CONTENT_X,                 y: 802, width: CONTENT_W, height: 86  }
 
 // ─── Utility helpers ─────────────────────────────────────────────────────────
 
@@ -115,8 +174,13 @@ function EditableText({ className, style, text, resetKey, onTextChange, dir = 'r
   useEffect(() => {
     const el = ref.current
     if (!el) return
-    el.textContent = text ?? ''
+    const next = text ?? ''
+    if (el.textContent !== next) el.textContent = next
   }, [text, resetKey])
+
+  const emit = (el) => {
+    onTextChange?.(el.textContent ?? '')
+  }
 
   const common = {
     ref,
@@ -127,7 +191,8 @@ function EditableText({ className, style, text, resetKey, onTextChange, dir = 'r
     suppressContentEditableWarning: true,
     spellCheck: false,
     onMouseDown: (e) => e.stopPropagation(),
-    onBlur: (e) => onTextChange?.(e.currentTarget.textContent ?? ''),
+    onInput: (e) => emit(e.currentTarget),
+    onBlur: (e) => emit(e.currentTarget),
   }
 
   return as === 'span' ? <span {...common} /> : <div {...common} />
@@ -145,6 +210,7 @@ const RESIZE_ENABLE = {
 function BannerLayer({
   canvasRef, box, setBox, className, layerKey, setDraggingKey,
   viewportScale, minWidth, minHeight, lockAspectRatio, dragHandleOnly, dragControls, children,
+  onUserCommit,
 }) {
   const layerRef = useRef(null)
 
@@ -165,6 +231,7 @@ function BannerLayer({
       onDragEnd={() => {
         commitPositionInBanner(canvasRef.current, layerRef.current, setBox)
         setDraggingKey(null)
+        onUserCommit?.()
       }}
     >
       <Resizable
@@ -177,6 +244,7 @@ function BannerLayer({
         handleWrapperClass="banner-resize-handle-root"
         onResizeStop={(_e, _dir, ref) => {
           setBox((b) => ({ ...b, width: ref.offsetWidth, height: ref.offsetHeight }))
+          onUserCommit?.()
         }}
         className="box-border h-full w-full"
         style={{ display: 'block', boxSizing: 'border-box' }}
@@ -191,6 +259,61 @@ function BannerLayer({
 
 // ─── BannerCanvas ─────────────────────────────────────────────────────────────
 
+function buildDesign1CanvasSlice(s) {
+  return {
+    headline: s.headline,
+    subhead: s.subhead,
+    cta: s.cta,
+    bullets: s.bullets,
+    brand_color: s.brand_color,
+    logoBox: s.logoBox,
+    headlineBox: s.headlineBox,
+    subheadBox: s.subheadBox,
+    bulletsBox: s.bulletsBox,
+    ctaBox: s.ctaBox,
+    headlineFs: s.headlineFs,
+    headlineAlign: s.headlineAlign,
+    headlineColor: s.headlineColor,
+    subheadFs: s.subheadFs,
+    subheadAlign: s.subheadAlign,
+    subheadColor: s.subheadColor,
+    bulletsFs: s.bulletsFs,
+    bulletsAlign: s.bulletsAlign,
+    bulletsColor: s.bulletsColor,
+    ctaFs: s.ctaFs,
+    ctaAlign: s.ctaAlign,
+    ctaColor: s.ctaColor,
+  }
+}
+
+function applyDesign1Slice(slice, setters) {
+  const {
+    setLogoBox, setHeadlineBox, setSubheadBox, setBulletsBox, setCtaBox,
+    setHeadlineFs, setHeadlineAlign, setHeadlineColor,
+    setSubheadFs, setSubheadAlign, setSubheadColor,
+    setBulletsFs, setBulletsAlign, setBulletsColor,
+    setCtaFs, setCtaAlign, setCtaColor,
+  } = setters
+  if (!slice || typeof slice !== 'object') return
+  if (slice.logoBox) setLogoBox({ ...slice.logoBox })
+  if (slice.headlineBox) setHeadlineBox({ ...slice.headlineBox })
+  if (slice.subheadBox) setSubheadBox({ ...slice.subheadBox })
+  if (slice.bulletsBox) setBulletsBox({ ...slice.bulletsBox })
+  if (slice.ctaBox) setCtaBox({ ...slice.ctaBox })
+  if (typeof slice.headlineFs === 'number') setHeadlineFs(slice.headlineFs)
+  if (slice.headlineAlign) setHeadlineAlign(slice.headlineAlign)
+  if (slice.headlineColor) setHeadlineColor(slice.headlineColor)
+  if (typeof slice.subheadFs === 'number') setSubheadFs(slice.subheadFs)
+  if (slice.subheadAlign) setSubheadAlign(slice.subheadAlign)
+  if (slice.subheadColor) setSubheadColor(slice.subheadColor)
+  if (typeof slice.bulletsFs === 'number') setBulletsFs(slice.bulletsFs)
+  if (slice.bulletsAlign) setBulletsAlign(slice.bulletsAlign)
+  if (slice.bulletsColor) setBulletsColor(slice.bulletsColor)
+  if (typeof slice.ctaFs === 'number') setCtaFs(slice.ctaFs)
+  if (slice.ctaAlign) setCtaAlign(slice.ctaAlign)
+  if (slice.ctaColor) setCtaColor(slice.ctaColor)
+}
+
 export default function BannerCanvas({
   apiBase,
   taskId,
@@ -202,6 +325,10 @@ export default function BannerCanvas({
   cta: ctaInitial,
   brandColor,
   siteUrl,
+  savedCanvasSlice,
+  onPersist,
+  onRenderVideo,
+  isRenderingVideo = false,
 }) {
   const viewportRef = useRef(null)
   const captureRef  = useRef(null)
@@ -228,19 +355,153 @@ export default function BannerCanvas({
   const [ctaBox,      setCtaBox]      = useState(() => ({ ...DEFAULT_CTA      }))
   const [draggingKey, setDraggingKey] = useState(null)
 
+  // ── Typography controls state ────────────────────────────────────────────
+  const [headlineFs,    setHeadlineFs]    = useState(DF.headline)
+  const [headlineAlign, setHeadlineAlign] = useState('right')
+  const [subheadFs,     setSubheadFs]     = useState(DF.subhead)
+  const [subheadAlign,  setSubheadAlign]  = useState('right')
+  const [bulletsFs,     setBulletsFs]     = useState(DF.bullets)
+  const [bulletsAlign,  setBulletsAlign]  = useState('right')
+  const [ctaFs,         setCtaFs]         = useState(DF.cta)
+  const [ctaAlign,      setCtaAlign]      = useState('center')
+  const [headlineColor, setHeadlineColor] = useState(DC.headline)
+  const [subheadColor,  setSubheadColor]  = useState(DC.subhead)
+  const [bulletsColor,  setBulletsColor]  = useState(DC.bullets)
+  const [ctaColor,      setCtaColor]      = useState('#ffffff')
+
+  const persistTimerRef = useRef(null)
+  const stateRef = useRef({})
+
+  const flushPersist = useCallback(() => {
+    if (!onPersist || !taskId) return
+    const s = stateRef.current
+    onPersist({
+      headline: s.headline,
+      subhead: s.subhead,
+      cta: s.cta,
+      bullet_points: s.bullets,
+      canvas_state: { v: 1, design1: buildDesign1CanvasSlice(s) },
+    })
+  }, [onPersist, taskId])
+
+  const flushPersistRef = useRef(flushPersist)
+  flushPersistRef.current = flushPersist
+
+  const schedulePersist = useCallback(() => {
+    if (!onPersist || !taskId) return
+    clearTimeout(persistTimerRef.current)
+    persistTimerRef.current = setTimeout(() => {
+      persistTimerRef.current = null
+      flushPersist()
+    }, 1000)
+  }, [onPersist, taskId, flushPersist])
+
+  useEffect(
+    () => () => {
+      clearTimeout(persistTimerRef.current)
+      persistTimerRef.current = null
+      flushPersistRef.current()
+    },
+    [],
+  )
+
+  useEffect(() => {
+    stateRef.current = {
+      headline,
+      subhead,
+      bullets,
+      cta,
+      brand_color: brandColor,
+      logoBox,
+      headlineBox,
+      subheadBox,
+      bulletsBox,
+      ctaBox,
+      headlineFs,
+      headlineAlign,
+      headlineColor,
+      subheadFs,
+      subheadAlign,
+      subheadColor,
+      bulletsFs,
+      bulletsAlign,
+      bulletsColor,
+      ctaFs,
+      ctaAlign,
+      ctaColor,
+    }
+  }, [
+    headline, subhead, bullets, cta,
+    logoBox, headlineBox, subheadBox, bulletsBox, ctaBox,
+    headlineFs, headlineAlign, headlineColor,
+    subheadFs, subheadAlign, subheadColor,
+    bulletsFs, bulletsAlign, bulletsColor,
+    ctaFs, ctaAlign, ctaColor,
+    brandColor,
+  ])
+
+  const bulletsKey = bulletPoints ? JSON.stringify(bulletPoints) : ''
+  const savedSliceKey = useMemo(
+    () => (savedCanvasSlice && typeof savedCanvasSlice === 'object' ? JSON.stringify(savedCanvasSlice) : ''),
+    [savedCanvasSlice],
+  )
+
   useEffect(() => {
     setHeadline(headlineInitial ?? '')
     setSubhead(subheadInitial ?? '')
     setBullets([...(bulletPoints || [])])
     setCta(ctaInitial ?? '')
-    setLogoBox({     ...DEFAULT_LOGO     })
+    setLogoBox({ ...DEFAULT_LOGO })
     setHeadlineBox({ ...DEFAULT_HEADLINE })
-    setSubheadBox({  ...DEFAULT_SUBHEAD  })
-    setBulletsBox({  ...DEFAULT_BULLETS  })
-    setCtaBox({      ...DEFAULT_CTA      })
+    setSubheadBox({ ...DEFAULT_SUBHEAD })
+    setBulletsBox({ ...DEFAULT_BULLETS })
+    setCtaBox({ ...DEFAULT_CTA })
     setDraggingKey(null)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [taskId])
+    setHeadlineFs(DF.headline)
+    setHeadlineAlign('right')
+    setSubheadFs(DF.subhead)
+    setSubheadAlign('right')
+    setBulletsFs(DF.bullets)
+    setBulletsAlign('right')
+    setCtaFs(DF.cta)
+    setCtaAlign('center')
+    setHeadlineColor(DC.headline)
+    setSubheadColor(DC.subhead)
+    setBulletsColor(DC.bullets)
+    const bg = normalizeBrandHex(brandColor)
+    setCtaColor(contrastingTextColor(bg))
+    if (savedCanvasSlice && typeof savedCanvasSlice === 'object') {
+      applyDesign1Slice(savedCanvasSlice, {
+        setLogoBox,
+        setHeadlineBox,
+        setSubheadBox,
+        setBulletsBox,
+        setCtaBox,
+        setHeadlineFs,
+        setHeadlineAlign,
+        setHeadlineColor,
+        setSubheadFs,
+        setSubheadAlign,
+        setSubheadColor,
+        setBulletsFs,
+        setBulletsAlign,
+        setBulletsColor,
+        setCtaFs,
+        setCtaAlign,
+        setCtaColor,
+      })
+    }
+  }, [
+    taskId,
+    bulletsKey,
+    bulletPoints,
+    savedSliceKey,
+    headlineInitial,
+    subheadInitial,
+    ctaInitial,
+    brandColor,
+    savedCanvasSlice,
+  ])
 
   const setBulletAt = useCallback((index, value) => {
     setBullets((prev) => {
@@ -248,7 +509,8 @@ export default function BannerCanvas({
       next[index] = value
       return next
     })
-  }, [])
+    schedulePersist()
+  }, [schedulePersist])
 
   const bgSrc   = backgroundUrl ? `${apiBase}${backgroundUrl}` : ''
   const logoSrc = logoUrl       ? `${apiBase}${logoUrl}`       : ''
@@ -299,6 +561,8 @@ export default function BannerCanvas({
           if (el.classList?.contains('banner-resize-handle-root')) return false
           if (el.closest?.('.banner-resize-handle-root')) return false
           if (el.classList?.contains('banner-cta-drag-handle')) return false
+          if (el.classList?.contains('banner-text-controls')) return false
+          if (el.closest?.('.banner-text-controls')) return false
           return true
         },
       })
@@ -406,6 +670,7 @@ export default function BannerCanvas({
               minWidth={80}
               minHeight={48}
               lockAspectRatio
+              onUserCommit={schedulePersist}
             >
               <img
                 src={logoSrc}
@@ -430,13 +695,23 @@ export default function BannerCanvas({
               viewportScale={scale}
               minWidth={280}
               minHeight={56}
+              onUserCommit={schedulePersist}
             >
-              <div className="banner-text-shell min-w-[280px] text-right" dir="rtl">
+              <TextControls
+                fontSize={headlineFs}
+                onFontSize={(v) => { setHeadlineFs(v); schedulePersist() }}
+                align={headlineAlign}
+                onAlign={(v) => { setHeadlineAlign(v); schedulePersist() }}
+                color={headlineColor}
+                onColor={(v) => { setHeadlineColor(v); schedulePersist() }}
+              />
+              <div className="banner-text-shell min-w-[280px]" dir="rtl">
                 <EditableText
                   className="banner-text banner-headline min-w-[260px] whitespace-normal"
+                  style={{ fontSize: headlineFs, textAlign: headlineAlign, color: headlineColor }}
                   text={headline}
                   resetKey={taskId}
-                  onTextChange={setHeadline}
+                  onTextChange={(v) => { setHeadline(v); schedulePersist() }}
                 />
               </div>
             </BannerLayer>
@@ -452,13 +727,23 @@ export default function BannerCanvas({
               viewportScale={scale}
               minWidth={280}
               minHeight={48}
+              onUserCommit={schedulePersist}
             >
-              <div className="banner-text-shell min-w-[280px] text-right" dir="rtl">
+              <TextControls
+                fontSize={subheadFs}
+                onFontSize={(v) => { setSubheadFs(v); schedulePersist() }}
+                align={subheadAlign}
+                onAlign={(v) => { setSubheadAlign(v); schedulePersist() }}
+                color={subheadColor}
+                onColor={(v) => { setSubheadColor(v); schedulePersist() }}
+              />
+              <div className="banner-text-shell min-w-[280px]" dir="rtl">
                 <EditableText
                   className="banner-text banner-subhead min-w-[260px] whitespace-normal"
+                  style={{ fontSize: subheadFs, textAlign: subheadAlign, color: subheadColor }}
                   text={subhead}
                   resetKey={taskId}
-                  onTextChange={setSubhead}
+                  onTextChange={(v) => { setSubhead(v); schedulePersist() }}
                 />
               </div>
             </BannerLayer>
@@ -473,8 +758,17 @@ export default function BannerCanvas({
               setDraggingKey={setDraggingKey}
               viewportScale={scale}
               minWidth={280}
-              minHeight={100}
+              minHeight={200}
+              onUserCommit={schedulePersist}
             >
+              <TextControls
+                fontSize={bulletsFs}
+                onFontSize={(v) => { setBulletsFs(v); schedulePersist() }}
+                align={bulletsAlign}
+                onAlign={(v) => { setBulletsAlign(v); schedulePersist() }}
+                color={bulletsColor}
+                onColor={(v) => { setBulletsColor(v); schedulePersist() }}
+              />
               <div className="banner-feat-grid" dir="rtl">
                 {bullets.map((b, i) => (
                   <div
@@ -491,6 +785,7 @@ export default function BannerCanvas({
                     <EditableText
                       as="span"
                       className="banner-feat-text"
+                      style={{ fontSize: bulletsFs, textAlign: bulletsAlign, color: bulletsColor }}
                       text={b}
                       resetKey={`${taskId}-${i}`}
                       onTextChange={(t) => setBulletAt(i, t)}
@@ -513,7 +808,16 @@ export default function BannerCanvas({
               minHeight={52}
               dragHandleOnly
               dragControls={ctaDragControls}
+              onUserCommit={schedulePersist}
             >
+              <TextControls
+                fontSize={ctaFs}
+                onFontSize={(v) => { setCtaFs(v); schedulePersist() }}
+                align={ctaAlign}
+                onAlign={(v) => { setCtaAlign(v); schedulePersist() }}
+                color={ctaColor}
+                onColor={(v) => { setCtaColor(v); schedulePersist() }}
+              />
               <div className="banner-text-shell min-w-[160px]">
                 <div
                   className="banner-cta-drag-handle"
@@ -523,15 +827,16 @@ export default function BannerCanvas({
                   <span className="banner-cta-drag-grip" aria-hidden />
                   <span className="banner-cta-drag-label">גרור</span>
                 </div>
-                <div className="mt-1 text-right" dir="rtl">
+                <div className="mt-1" style={{ textAlign: ctaAlign }} dir="rtl">
                   <EditableText
                     className="banner-text banner-cta inline-block min-w-[120px] max-w-full whitespace-nowrap"
                     text={cta}
                     resetKey={taskId}
-                    onTextChange={setCta}
+                    onTextChange={(v) => { setCta(v); schedulePersist() }}
                     style={{
+                      fontSize: ctaFs,
                       backgroundColor: ctaBgHex,
-                      color: ctaFgHex,
+                      color: ctaColor,
                       boxShadow: `0 10px 36px ${ctaBgHex}66`,
                     }}
                   />
@@ -553,6 +858,16 @@ export default function BannerCanvas({
         >
           {exporting ? 'מכין PNG…' : '⬇ הורד באנר PNG'}
         </button>
+        {typeof onRenderVideo === 'function' && (
+          <button
+            type="button"
+            className="btn-download"
+            onClick={onRenderVideo}
+            disabled={isRenderingVideo}
+          >
+            {isRenderingVideo ? 'מייצר וידאו…' : '🎬 ייצר סרטון אנימציה'}
+          </button>
+        )}
       </div>
       {downloadError && (
         <p className="banner-download-error" role="alert">
