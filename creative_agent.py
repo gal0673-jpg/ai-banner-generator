@@ -67,6 +67,7 @@ Output ONLY valid JSON (no markdown, no commentary, no extra keys) with exactly 
 - subhead (string): One short Hebrew sentence — the main solution, outcome, or differentiator. Confident and clear. If promotional specifics from the brief belong in the subhead, allow an extra short clause or slightly longer sentence so numbers and terms stay accurate and readable.
 - bullet_points (array): Exactly three strings. Each is a concise Hebrew benefit or feature that is SPECIFIC to this scraped business (derive from real offerings, audience, proof signals, or explicit brief details — not generic filler). When the brief names a deal, metric, or guarantee, reflect it in at least one bullet even if that bullet is a bit longer than usual. No duplicates; each bullet adds a distinct angle.
 - cta (string): Hebrew call to action, imperative, about 2–4 words.
+- video_hook (string): EXACTLY 2 to 4 punchy Hebrew words (no punctuation beyond a single optional emphasis mark) for a fast ~2-second video intro title card. Must be distinct from the full headline — a teaser, hook, or bold fragment that stops the scroll. No English; no quotes in the string; keep under 40 characters if possible. This is generated in the same response as the banner copy — do not omit it.
 - brand_color (string): A single CSS hex color for the brand accent, exactly 7 characters: "#" plus six hexadecimal digits (e.g. "#1D4ED8"). Infer the dominant brand color from the website copy and context (product category, named colors, industry cues). If the site gives no clear color signal, choose a vibrant, professional accent that fits the brand personality (still as valid hex).
 - image_prompt (string): One detailed ENGLISH prompt for DALL-E 3. Describe a powerful, IMMERSIVE background photograph that matches the identified industry (examples: gleaming code on a dark monitor in a sleek workspace for tech/SaaS; artisan tools and materials in a workshop for trades; beautifully plated food in a restaurant setting; modern surgical or clinical equipment for healthcare; elegant law books and oak desk for legal; drone shot of construction site for real-estate — adapt precisely to the actual business). CRITICAL CONTEXT: this image will fill the LEFT HALF of a split-panel banner and will have a dark gradient overlay applied, so it needs RICH VISUAL DEPTH, strong contrast, and interesting textures that look compelling under a dark overlay. Use these sensibility keywords: "professional editorial photography", "dramatic depth of field", "cinematic lighting", "rich textures and detail", "bold composition", "studio-quality realism". Prefer real-world environments, materials, and objects that feel TACTILE and SPECIFIC to the industry — avoid generic grid patterns, flat-lay product shots, plain backgrounds, or anything overly minimalist. Avoid neon-heavy, cyberpunk, or cartoonish aesthetics. No requirement to reserve empty zones for text — HTML handles typography.
 
@@ -109,7 +110,7 @@ def fetch_banner_payload(client: OpenAI, user_content: str) -> dict:
         raise RuntimeError("[creative_agent] ERROR: Empty response from GPT-4o.")
     print("[creative_agent] Step 1/3: Parsing JSON…")
     data = json.loads(text)
-    for key in ("headline", "subhead", "cta", "image_prompt", "brand_color"):
+    for key in ("headline", "subhead", "cta", "video_hook", "image_prompt", "brand_color"):
         if key not in data or not str(data[key]).strip():
             raise RuntimeError(f"[creative_agent] ERROR: Missing or empty JSON key {key!r}.")
     bullets = data.get("bullet_points")
@@ -139,8 +140,20 @@ def fetch_banner_payload(client: OpenAI, user_content: str) -> dict:
         )
     data["brand_color"] = hex_color.upper()
 
+    hook_raw = str(data["video_hook"]).strip()
+    if len(hook_raw) > 256:
+        hook_raw = hook_raw[:256].rstrip()
+    word_count = len(hook_raw.split())
+    if word_count < 2 or word_count > 5:
+        raise RuntimeError(
+            f"[creative_agent] ERROR: 'video_hook' must be 2–4 punchy Hebrew words "
+            f"(allow up to 5 tokens); got {word_count} token(s): {hook_raw!r}."
+        )
+    data["video_hook"] = hook_raw
+
     print(
-        "[creative_agent] Step 1/3: OK — headline, subhead, bullet_points (3), cta, brand_color, image_prompt received."
+        "[creative_agent] Step 1/3: OK — headline, subhead, bullet_points (3), cta, video_hook, "
+        "brand_color, image_prompt received."
     )
     return data
 

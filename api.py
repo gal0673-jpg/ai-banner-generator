@@ -1,13 +1,14 @@
 """
 FastAPI backend for the banner generator React app.
 
-Run: uvicorn api:app --reload --host 0.0.0.0 --port 8000
+Run: uvicorn api:app --reload --host 0.0.0.0 --port 8888
 
 Requires: see requirements.txt (fastapi, uvicorn, sqlalchemy, auth libs, DB driver).
 """
 
 from __future__ import annotations
 
+import asyncio
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Annotated, Any, Literal
@@ -22,17 +23,18 @@ from dotenv import load_dotenv
 
 load_dotenv(Path(__file__).resolve().parent / ".env")
 
-from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordRequestForm
 from fastapi.staticfiles import StaticFiles
-from starlette.responses import Response
+from starlette.responses import Response, StreamingResponse
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import select
 from sqlalchemy.orm import Session, joinedload
 
 from auth import create_access_token, get_current_superuser, get_current_user, get_password_hash, verify_password
 from ai_banner_context import OUTPUT_FILENAME, build_document
+from celery_app import celery_app
 from database import Base, SessionLocal, engine, get_db
 from main import BASE_DIR, crawl_from_url, run_agency_banner_pipeline
 from models import BannerTask, User
@@ -70,6 +72,36 @@ def _rendered_banner_urls_for_task(task_id: str) -> tuple[str | None, str | None
     if (work / "rendered_banner_2.png").is_file():
         u2 = f"/task-files/{task_id}/rendered_banner_2.png"
     return u1, u2
+
+
+def _banner_task_status_dict(task_id: str, row: BannerTask) -> dict[str, Any]:
+    """Full task payload for REST status, SSE, and /banners/latest (includes url/brief for form restore)."""
+    fs1, fs2 = _rendered_banner_urls_for_task(task_id)
+    status_val: TaskStatus = row.status  # type: ignore[assignment]
+    return {
+        "task_id": task_id,
+        "url": row.url,
+        "brief": row.brief,
+        "status": status_val,
+        "error": row.error,
+        "headline": row.headline,
+        "subhead": row.subhead,
+        "bullet_points": row.bullet_points,
+        "cta": row.cta,
+        "video_hook": row.video_hook,
+        "brand_color": row.brand_color,
+        "background_url": row.background_url,
+        "logo_url": row.logo_url,
+        "rendered_banner_1_url": row.rendered_banner_1_url or fs1,
+        "rendered_banner_2_url": row.rendered_banner_2_url or fs2,
+        "canvas_state": row.canvas_state,
+        "video_url_1": row.video_url_1,
+        "video_url_2": row.video_url_2,
+        "rendered_banner_1_vertical_url": row.rendered_banner_1_vertical_url,
+        "rendered_banner_2_vertical_url": row.rendered_banner_2_vertical_url,
+        "video_url_1_vertical": row.video_url_1_vertical,
+        "video_url_2_vertical": row.video_url_2_vertical,
+    }
 
 
 def _persist_task(task_uuid: uuid.UUID, **kwargs: Any) -> None:
@@ -110,16 +142,22 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Banner generator API", lifespan=lifespan)
 
+# With allow_credentials=True, browsers require explicit origins (not "*").
+# Add comma-separated URLs in CORS_ORIGINS for LAN / custom Vite ports (e.g. http://192.168.1.5:5173).
+_default_cors_origins = [
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+    "http://localhost:5174",
+    "http://127.0.0.1:5174",
+    "http://[::1]:5173",
+    "http://[::1]:5174",
+]
+_extra = [o.strip() for o in os.environ.get("CORS_ORIGINS", "").split(",") if o.strip()]
+_cors_allow = list(dict.fromkeys(_default_cors_origins + _extra))
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:3000",
-        "http://127.0.0.1:3000",
-        "http://localhost:5173",
-        "http://127.0.0.1:5173",
-        "http://localhost:5174",    # <-- הוספנו את זה
-        "http://127.0.0.1:5174",
-    ],
+    allow_origins=_cors_allow,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -145,12 +183,36 @@ class GenerateRequest(BaseModel):
         max_length=12000,
         description="Optional campaign goal / target audience for the creative model",
     )
+    video_hook: str | None = Field(
+        default=None,
+        max_length=256,
+        description="Optional custom video hook that overrides the AI-generated one",
+    )
 
 
 class RenderVideoRequest(BaseModel):
-    """Which on-canvas design to read from canvas_state (design1 vs design2)."""
+    """Which template to render (1 = split-panel, 2 = immersive) and which canvas slice to use."""
 
-    design: Literal[1, 2] = 1
+    design_type: Literal[1, 2] = 1
+    aspect_ratio: Literal["1:1", "9:16"] = "1:1"
+
+    @field_validator("design_type", mode="before")
+    @classmethod
+    def coerce_design_type(cls, v: Any) -> Any:
+        if v is None:
+            return 1
+        try:
+            n = int(v)
+        except (TypeError, ValueError):
+            return 1
+        return 2 if n == 2 else 1
+
+    @field_validator("aspect_ratio", mode="before")
+    @classmethod
+    def coerce_aspect_ratio(cls, v: Any) -> Any:
+        if v is None:
+            return "1:1"
+        return "9:16" if str(v).strip() == "9:16" else "1:1"
 
 
 class TaskPatchRequest(BaseModel):
@@ -160,6 +222,7 @@ class TaskPatchRequest(BaseModel):
     subhead: str | None = Field(default=None, max_length=1024)
     cta: str | None = Field(default=None, max_length=256)
     bullet_points: list[str] | None = None
+    video_hook: str | None = Field(default=None, max_length=256)
     canvas_state: dict[str, Any] | None = None
 
     @field_validator("bullet_points")
@@ -185,10 +248,13 @@ def _video_engine_render_url() -> str:
     return f"{base}/render"
 
 
-def _pick_canvas_slice(canvas_state: Any, design: int) -> dict[str, Any]:
+def _pick_canvas_slice(canvas_state: Any, design: int, aspect_ratio: str = "1:1") -> dict[str, Any]:
     if not isinstance(canvas_state, dict):
         return {}
-    key = "design1" if design == 1 else "design2"
+    if aspect_ratio == "9:16":
+        key = "design1_vertical" if design == 1 else "design2_vertical"
+    else:
+        key = "design1" if design == 1 else "design2"
     sl = canvas_state.get(key)
     return sl if isinstance(sl, dict) else {}
 
@@ -226,9 +292,9 @@ def _absolute_asset_url(public_base: str, path: str | None) -> str:
     return base + p
 
 
-def _banner_video_payload(row: BannerTask, design: int, public_base: str) -> dict[str, Any]:
-    """Merge DB columns with canvas_state (design1/design2); slice wins when a key is present."""
-    sl = _pick_canvas_slice(row.canvas_state, design)
+def _banner_video_payload(row: BannerTask, design: int, public_base: str, aspect_ratio: str = "1:1") -> dict[str, Any]:
+    """Merge DB columns with canvas_state (design1/design2/vertical); slice wins when a key is present."""
+    sl = _pick_canvas_slice(row.canvas_state, design, aspect_ratio)
     headline = _prefer_slice_str(sl, "headline", row.headline)
     subhead = _prefer_slice_str(sl, "subhead", row.subhead)
     cta = _prefer_slice_str(sl, "cta", row.cta)
@@ -243,6 +309,7 @@ def _banner_video_payload(row: BannerTask, design: int, public_base: str) -> dic
 
     background_url = _absolute_asset_url(public_base, row.background_url)
     logo_url = _absolute_asset_url(public_base, row.logo_url)
+    video_hook = _prefer_slice_str(sl, "video_hook", row.video_hook)
 
     return {
         "headline": headline,
@@ -252,21 +319,41 @@ def _banner_video_payload(row: BannerTask, design: int, public_base: str) -> dic
         "brand_color": brand_color,
         "background_url": background_url,
         "logo_url": logo_url,
+        "video_hook": video_hook,
     }
 
 
+def _video_payload_for_engine(row: BannerTask, design_type: int, public_base: str, aspect_ratio: str = "1:1") -> dict[str, Any]:
+    """Banner fields + explicit layout flags for the Node /render endpoint."""
+    payload = _banner_video_payload(row, design_type, public_base, aspect_ratio)
+    hook = (payload.get("video_hook") or "").strip()
+    payload["video_hook"] = hook
+    payload["videoHook"] = hook
+    dt = 2 if int(design_type) == 2 else 1
+    payload["design_type"] = dt
+    payload["designTemplate"] = dt
+    # Explicit string so Remotion never mis-reads template (split = עיצוב 1, immersive = עיצוב 2)
+    payload["video_layout"] = "immersive" if dt == 2 else "split"
+    payload["videoLayout"] = payload["video_layout"]
+    payload["aspect_ratio"] = aspect_ratio
+    payload["aspectRatio"] = aspect_ratio
+    payload["isVertical"] = aspect_ratio == "9:16"
+    return payload
+
+
 def _merge_canvas_state(prev: Any, patch: dict[str, Any] | None) -> dict[str, Any] | None:
-    """Merge partial canvas_state from PATCH; replace design1/design2 when provided."""
+    """Merge partial canvas_state from PATCH; replace any known design key when provided."""
     if patch is None:
         return prev if isinstance(prev, dict) else None
     base: dict[str, Any] = dict(prev) if isinstance(prev, dict) else {}
-    for key in ("v", "design1", "design2"):
+    for key in ("v", "design1", "design2", "design1_vertical", "design2_vertical"):
         if key in patch:
             base[key] = patch[key]
     return base or None
 
 
-def run_banner_task(task_id: str, url: str, brief: str | None) -> None:
+@celery_app.task(name="run_banner_task")
+def run_banner_task(task_id: str, url: str, brief: str | None, custom_video_hook: str | None = None) -> None:
     task_uuid = uuid.UUID(task_id)
     work_dir = TASKS_DIR / task_id
     try:
@@ -302,6 +389,12 @@ def run_banner_task(task_id: str, url: str, brief: str | None) -> None:
                     error=f"Invalid creative_campaign.json: missing or empty {key!r}",
                 )
                 return
+
+        # video_hook: custom hook from the user overrides the AI-generated one;
+        # fall back to creative_campaign.json; tolerate absence for legacy JSON.
+        raw_hook = data.get("video_hook")
+        ai_hook: str | None = str(raw_hook).strip()[:256] if raw_hook and str(raw_hook).strip() else None
+        video_hook_val: str | None = custom_video_hook or ai_hook
         bullets = data.get("bullet_points")
         if not isinstance(bullets, list) or len(bullets) != 3:
             _persist_task(
@@ -339,6 +432,7 @@ def run_banner_task(task_id: str, url: str, brief: str | None) -> None:
             subhead=str(data["subhead"]).strip(),
             bullet_points=[str(b).strip() for b in bullets],
             cta=str(data["cta"]).strip(),
+            video_hook=video_hook_val,
             brand_color=bc.upper(),
             background_url=f"/task-files/{task_id}/background.png",
             logo_url=f"/task-files/{task_id}/logo.png",
@@ -368,24 +462,43 @@ def register(body: RegisterRequest, db: Annotated[Session, Depends(get_db)]) -> 
     return {"id": str(user.id), "email": user.email}
 
 
-@app.post("/auth/login", response_model=TokenResponse)
+@app.post("/auth/login")
 def login(
     form_data: Annotated[OAuth2PasswordRequestForm, Depends()],
+    response: Response,
     db: Annotated[Session, Depends(get_db)],
-) -> TokenResponse:
+) -> dict[str, str]:
     # OAuth2PasswordRequestForm uses "username"; we treat it as the user's email.
     email = form_data.username.strip().lower()
     user = db.execute(select(User).where(User.email == email)).scalar_one_or_none()
     if user is None or not verify_password(form_data.password, user.hashed_password):
         raise HTTPException(status_code=401, detail="Incorrect email or password")
     token = create_access_token(subject=str(user.id))
-    return TokenResponse(access_token=token)
+    response.set_cookie(
+        key="access_token",
+        value=f"Bearer {token}",
+        httponly=True,
+        samesite="lax",
+        secure=False,   # set to True in production behind HTTPS
+    )
+    return {"message": "Login successful"}
+
+
+@app.get("/auth/me")
+def auth_me(current_user: Annotated[User, Depends(get_current_user)]) -> dict[str, str]:
+    """Return the current user when the HttpOnly session cookie is valid (SPA bootstrap)."""
+    return {"email": current_user.email}
+
+
+@app.post("/auth/logout")
+def logout_user(response: Response) -> dict[str, str]:
+    response.delete_cookie("access_token")
+    return {"message": "Logged out"}
 
 
 @app.post("/generate")
 def generate(
     body: GenerateRequest,
-    background_tasks: BackgroundTasks,
     current_user: Annotated[User, Depends(get_current_user)],
     db: Annotated[Session, Depends(get_db)],
 ) -> dict[str, str]:
@@ -407,19 +520,53 @@ def generate(
         subhead=None,
         bullet_points=None,
         cta=None,
+        video_hook=None,
         brand_color=None,
         background_url=None,
         logo_url=None,
         rendered_banner_1_url=None,
         rendered_banner_2_url=None,
         canvas_state=None,
-        video_url=None,
+        video_url_1=None,
+        video_url_2=None,
+        rendered_banner_1_vertical_url=None,
+        rendered_banner_2_vertical_url=None,
+        video_url_1_vertical=None,
+        video_url_2_vertical=None,
     )
     db.add(row)
     db.commit()
     tid = str(task_id)
-    background_tasks.add_task(run_banner_task, tid, url, brief)
+    try:
+        run_banner_task.delay(tid, url, brief)
+    except Exception as exc:
+        _persist_task(task_id, status="failed", error=str(exc))
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "לא ניתן לשלוח את המשימה לתור (Celery). ודא ש-Redis רץ (למשל ב-Laragon) "
+                "ושה-worker פעיל."
+            ),
+        ) from exc
     return {"task_id": tid}
+
+
+@app.get("/banners/latest")
+def get_latest_banner(
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> dict[str, Any]:
+    """Latest banner task for the current user (by created_at), or task_id null when none."""
+    stmt = (
+        select(BannerTask)
+        .where(BannerTask.user_id == current_user.id)
+        .order_by(BannerTask.created_at.desc())
+        .limit(1)
+    )
+    row = db.execute(stmt).scalar_one_or_none()
+    if row is None:
+        return {"task_id": None, "url": None, "brief": None}
+    return _banner_task_status_dict(str(row.id), row)
 
 
 @app.get("/status/{task_id}")
@@ -439,28 +586,61 @@ def get_status(
     if not current_user.is_superuser and row.user_id != current_user.id:
         raise HTTPException(status_code=404, detail="Unknown task_id")
 
-    status_val: TaskStatus = row.status  # type: ignore[assignment]
+    return _banner_task_status_dict(task_id, row)
 
-    fs1, fs2 = _rendered_banner_urls_for_task(task_id)
-    rendered_banner_1_url = row.rendered_banner_1_url or fs1
-    rendered_banner_2_url = row.rendered_banner_2_url or fs2
 
-    return {
-        "task_id": task_id,
-        "status": status_val,
-        "error": row.error,
-        "headline": row.headline,
-        "subhead": row.subhead,
-        "bullet_points": row.bullet_points,
-        "cta": row.cta,
-        "brand_color": row.brand_color,
-        "background_url": row.background_url,
-        "logo_url": row.logo_url,
-        "rendered_banner_1_url": rendered_banner_1_url,
-        "rendered_banner_2_url": rendered_banner_2_url,
-        "canvas_state": row.canvas_state,
-        "video_url": row.video_url,
-    }
+@app.get("/status/{task_id}/stream")
+async def stream_task_status(
+    task_id: str,
+    current_user: Annotated[User, Depends(get_current_user)],
+) -> StreamingResponse:
+    """Stream live task-status updates as Server-Sent Events (text/event-stream)."""
+    try:
+        tid = uuid.UUID(task_id)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Unknown task_id") from None
+
+    # Authorisation check before opening the stream.
+    with SessionLocal() as db:
+        row = db.get(BannerTask, tid)
+        if row is None or (not current_user.is_superuser and row.user_id != current_user.id):
+            raise HTTPException(status_code=404, detail="Unknown task_id")
+
+    async def event_generator():
+        # Emit the first snapshot immediately on connect, then only when status changes
+        # (reconnect / refresh still get one fresh frame).
+        last_emitted_status: str | None = None
+        while True:
+            event_payload: dict[str, Any] | None = None
+            current_status: str | None = None
+
+            # Open a fresh short-lived session on every tick so we always
+            # read the latest committed state from the database.
+            with SessionLocal() as db:
+                row = db.get(BannerTask, tid)
+                if row is None:
+                    break
+                current_status = row.status  # type: ignore[assignment]
+                if last_emitted_status is None or current_status != last_emitted_status:
+                    last_emitted_status = current_status
+                    event_payload = _banner_task_status_dict(task_id, row)
+
+            if event_payload is not None:
+                yield f"data: {json.dumps(event_payload)}\n\n"
+
+            if current_status in ("completed", "failed"):
+                break  # close the stream; client will receive the final event
+
+            await asyncio.sleep(1.5)
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",  # prevent Nginx / proxy buffering
+        },
+    )
 
 
 @app.patch("/tasks/{task_id}")
@@ -494,6 +674,8 @@ def patch_task(
         row.cta = body.cta.strip() or None
     if body.bullet_points is not None:
         row.bullet_points = body.bullet_points
+    if body.video_hook is not None:
+        row.video_hook = body.video_hook.strip() or None
 
     if body.canvas_state is not None:
         row.canvas_state = _merge_canvas_state(row.canvas_state, body.canvas_state)
@@ -507,6 +689,7 @@ def patch_task(
         "subhead": row.subhead,
         "bullet_points": row.bullet_points,
         "cta": row.cta,
+        "video_hook": row.video_hook,
         "canvas_state": row.canvas_state,
     }
 
@@ -536,7 +719,8 @@ def render_task_video(
         )
 
     public_base = _public_api_base(request)
-    payload = _banner_video_payload(row, body.design, public_base)
+    payload = _video_payload_for_engine(row, body.design_type, public_base, body.aspect_ratio)
+    payload["task_id"] = task_id
     if not payload["headline"]:
         raise HTTPException(status_code=400, detail="headline is required for video render.")
     if not payload["background_url"]:
@@ -586,11 +770,31 @@ def render_task_video(
             detail="Video engine response missing videoUrl.",
         )
 
-    row.video_url = video_url.strip()
+    cleaned = video_url.strip()
+    is_vertical = body.aspect_ratio == "9:16"
+    if body.design_type == 2:
+        if is_vertical:
+            row.video_url_2_vertical = cleaned
+        else:
+            row.video_url_2 = cleaned
+    else:
+        if is_vertical:
+            row.video_url_1_vertical = cleaned
+        else:
+            row.video_url_1 = cleaned
     db.commit()
     db.refresh(row)
 
-    return {"task_id": task_id, "video_url": row.video_url, "design": body.design}
+    return {
+        "task_id": task_id,
+        "design_type": body.design_type,
+        "aspect_ratio": body.aspect_ratio,
+        "video_url": cleaned,
+        "video_url_1": row.video_url_1,
+        "video_url_2": row.video_url_2,
+        "video_url_1_vertical": row.video_url_1_vertical,
+        "video_url_2_vertical": row.video_url_2_vertical,
+    }
 
 
 @app.get("/admin/tasks")
@@ -617,13 +821,19 @@ def admin_list_tasks(
                 "subhead": t.subhead,
                 "bullet_points": t.bullet_points,
                 "cta": t.cta,
+                "video_hook": t.video_hook,
                 "brand_color": t.brand_color,
                 "background_url": t.background_url,
                 "logo_url": t.logo_url,
                 "rendered_banner_1_url": t.rendered_banner_1_url or fs1,
                 "rendered_banner_2_url": t.rendered_banner_2_url or fs2,
                 "canvas_state": t.canvas_state,
-                "video_url": t.video_url,
+                "video_url_1": t.video_url_1,
+                "video_url_2": t.video_url_2,
+                "rendered_banner_1_vertical_url": t.rendered_banner_1_vertical_url,
+                "rendered_banner_2_vertical_url": t.rendered_banner_2_vertical_url,
+                "video_url_1_vertical": t.video_url_1_vertical,
+                "video_url_2_vertical": t.video_url_2_vertical,
             }
         )
     return out
@@ -638,5 +848,9 @@ def download_ai_banner_context(_: Annotated[User, Depends(require_primary_admin)
     return Response(
         content=text.encode("utf-8"),
         media_type="text/plain; charset=utf-8",
-        headers={"Content-Disposition": f'attachment; filename="{OUTPUT_FILENAME}"'},
+        headers={
+            "Content-Disposition": f'attachment; filename="{OUTPUT_FILENAME}"',
+            "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+            "Pragma": "no-cache",
+        },
     )

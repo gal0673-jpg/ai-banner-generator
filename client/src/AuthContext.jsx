@@ -3,24 +3,30 @@ import api from './api.js'
 
 const AuthContext = createContext(null)
 
-const USER_KEY = 'user'
-
 export function AuthProvider({ children }) {
   const [user, setUser] = useState(null)
   const [ready, setReady] = useState(false)
 
+  // Restore session from the HttpOnly cookie via the server (no localStorage).
   useEffect(() => {
-    const token = localStorage.getItem('token')
-    const raw = localStorage.getItem(USER_KEY)
-    if (token && raw) {
-      try {
-        setUser(JSON.parse(raw))
-      } catch {
-        localStorage.removeItem(USER_KEY)
-        localStorage.removeItem('token')
-      }
+    let cancelled = false
+    api
+      .get('/auth/me')
+      .then((res) => {
+        const email = res.data?.email
+        if (!cancelled && email) {
+          setUser({ email: String(email).trim().toLowerCase() })
+        }
+      })
+      .catch(() => {
+        /* not logged in or expired cookie */
+      })
+      .finally(() => {
+        if (!cancelled) setReady(true)
+      })
+    return () => {
+      cancelled = true
     }
-    setReady(true)
   }, [])
 
   const login = useCallback(async (email, password) => {
@@ -28,27 +34,22 @@ export function AuthProvider({ children }) {
     body.set('username', email.trim())
     body.set('password', password)
 
-    const { data } = await api.post('/auth/login', body, {
+    await api.post('/auth/login', body, {
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     })
 
-    const accessToken = data?.access_token
-    if (!accessToken) {
-      throw new Error('No access token in response')
-    }
-
     const normalizedEmail = email.trim().toLowerCase()
     const nextUser = { email: normalizedEmail }
-
-    localStorage.setItem('token', accessToken)
-    localStorage.setItem(USER_KEY, JSON.stringify(nextUser))
     setUser(nextUser)
     return nextUser
   }, [])
 
-  const logout = useCallback(() => {
-    localStorage.removeItem('token')
-    localStorage.removeItem(USER_KEY)
+  const logout = useCallback(async () => {
+    try {
+      await api.post('/auth/logout')
+    } catch {
+      /* still clear local UI state */
+    }
     setUser(null)
   }, [])
 

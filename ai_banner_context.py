@@ -1,8 +1,8 @@
 """
 Generate ai-banner-context.txt: compact handoff for AI (architecture, DB, tree, source).
 
-Skipped: .git, __pycache__, node_modules, venv, dist, build, .cursor, tasks/* contents,
-         and embedding of previous giant context dumps.
+Skipped: .git, __pycache__, node_modules, venv, dist, build, .cursor, output/ (e.g. video renders),
+         tasks/* contents, and embedding of previous giant context dumps.
 
 CLI:  python ai_banner_context.py
       python ai_banner_context.py --root .
@@ -29,6 +29,7 @@ IGNORE_DIR_NAMES = frozenset({
     "build",
     ".eggs",
     ".cursor",
+    "output",  # e.g. video_engine/output (rendered .mp4 artifacts)
 })
 
 # Do not paste these into the bundle (self-bloat / regenerated artifacts).
@@ -51,6 +52,7 @@ _TREE_ARTIFACT_SUFFIXES = (
     ".woff2",
     ".ttf",
     ".pdf",
+    ".mp4",
 )
 
 
@@ -172,6 +174,23 @@ def iter_client_source_files(root: Path) -> list[Path]:
     return sorted(set(paths), key=lambda p: str(p).lower())
 
 
+def iter_video_engine_files(root: Path) -> list[Path]:
+    """Remotion/Node video engine: .js, .jsx, and package.json (skips output/, node_modules, etc.)."""
+    ve = root / "video_engine"
+    if not ve.is_dir():
+        return []
+    paths: list[Path] = []
+    root_res = root.resolve()
+    for dirpath, dirnames, filenames in os.walk(os.fspath(ve.resolve())):
+        dirnames[:] = [d for d in dirnames if not _dir_skipped(d)]
+        for name in filenames:
+            if name.endswith((".js", ".jsx")) or name == "package.json":
+                p = Path(dirpath) / name
+                if not _should_skip_file_for_content(p, root_res):
+                    paths.append(p)
+    return sorted(set(paths), key=lambda p: str(p).lower())
+
+
 def iter_root_config_files(root: Path) -> list[Path]:
     names = ("requirements.txt", ".env.example")
     out: list[Path] = []
@@ -210,6 +229,7 @@ SYSTEM OVERVIEW (banner generator)
 - Bootstrap: on startup, creates superuser gal0673@gmail.com if missing (see SUPERUSER_EMAIL in api.py).
 - Flow: POST /generate enqueues crawl + creative pipeline (main.py); task row in banner_tasks; static files under tasks/<uuid>/ served at /task-files/...
 - Client: Vite + React (client/) — Login, BannerWorkspace, BannerCanvas (Framer Motion + re-resizable, html-to-image export).
+- Video engine: Node/Remotion under video_engine/ (see VIDEO ENGINE SOURCE FILES section in export).
 - Pipeline pieces: creative_agent.py, generate_copy.py, html_renderer.py, composite_banner.py (image generation path).
 - Admin: GET /admin/tasks (superuser). Primary-admin-only: GET /admin/ai-banner-context (same email as SUPERUSER_EMAIL).
 
@@ -249,8 +269,9 @@ def build_document(root: Path) -> str:
         f"Project root: {root}",
         f"Output filename: {OUTPUT_FILENAME}",
         "",
-        "Includes: architecture summary, DB summary, filtered tree, Python sources, client sources, root config.",
-        "Excluded: .git, __pycache__, node_modules, venv, dist, build, .cursor, tasks/* file contents,",
+        "Includes: architecture summary, DB summary, filtered tree, Python sources, client sources, "
+        "video engine sources, root config.",
+        "Excluded: .git, __pycache__, node_modules, venv, dist, build, .cursor, output/, tasks/* file contents,",
         f"         {', '.join(sorted(SKIP_CONTENT_FILENAMES))}.",
         "",
     ]
@@ -273,6 +294,12 @@ def build_document(root: Path) -> str:
     client_paths = iter_client_source_files(root)
     parts.extend(header_block(f"SECTION: CLIENT SOURCE FILES ({len(client_paths)})"))
     for path in client_paths:
+        rel = path.relative_to(root).as_posix()
+        parts.extend(file_block(rel, read_utf8(path)))
+
+    video_paths = iter_video_engine_files(root)
+    parts.extend(header_block(f"SECTION: VIDEO ENGINE SOURCE FILES ({len(video_paths)})"))
+    for path in video_paths:
         rel = path.relative_to(root).as_posix()
         parts.extend(file_block(rel, read_utf8(path)))
 

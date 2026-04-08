@@ -157,6 +157,21 @@
   align-items: stretch;
 }
 
+/* 9:16 — modifier: stack pills (apply with .bc2-feat-grid.bc2-feat-grid--vertical) */
+.bc2-feat-grid.bc2-feat-grid--vertical {
+  flex-direction: column;
+  gap: 14px;
+  align-items: stretch;
+  justify-content: flex-start;
+}
+
+.bc2-feat-grid--vertical .bc2-feat-pill {
+  flex: 0 0 auto;
+  width: 100%;
+  min-width: 0;
+  min-height: 100px;
+}
+
 .bc2-feat-pill {
   flex: 1;
   min-width: 0;

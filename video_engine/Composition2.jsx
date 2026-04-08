@@ -1,21 +1,25 @@
 import {
   AbsoluteFill,
+  Audio,
   Img,
   interpolate,
+  Sequence,
   spring,
+  staticFile,
   useCurrentFrame,
   useVideoConfig,
 } from "remotion";
 import { loadFont } from "@remotion/google-fonts/Heebo";
 
-/** Heebo with Hebrew + Latin subsets for RTL marketing copy */
 const heebo = loadFont("normal", {
   weights: ["400", "500", "600", "700", "800"],
   subsets: ["hebrew", "latin", "latin-ext"],
 });
 
-const BULLET_START_FRAMES = [20, 30, 40];
-const CTA_START_FRAME = 60;
+const SNAP_FRAMES = 30;
+const BASE_BULLET_START_FRAMES = [20, 30, 40];
+const BASE_CTA_START_FRAME = 60;
+const HOOK_FRAMES = 60;
 
 function normalizeBrandHex(input) {
   if (!input || typeof input !== "string") return "#4F46E5";
@@ -34,7 +38,6 @@ function hexToRgb(hex) {
   };
 }
 
-/** RTL-safe text wrapper: correct punctuation / mixed LTR runs */
 function RtlText({ as: Tag = "div", style, children, className, ...rest }) {
   return (
     <Tag
@@ -53,9 +56,6 @@ function RtlText({ as: Tag = "div", style, children, className, ...rest }) {
   );
 }
 
-/**
- * Default props mirror the banner JSON the FastAPI backend can send.
- */
 export const defaultBannerProps = {
   headline: "כותרת לדוגמה",
   background_url: "",
@@ -64,9 +64,12 @@ export const defaultBannerProps = {
   logo_url: "",
   brand_color: "#2563eb",
   bullet_points: [],
+  isVertical: false,
+  video_hook: "",
 };
 
-export const BannerComposition = ({
+/** Immersive full-bleed design (Design 2) — dynamic focus-pull background + glass cards */
+export const Design2Composition = ({
   headline = defaultBannerProps.headline,
   background_url = defaultBannerProps.background_url,
   subhead = defaultBannerProps.subhead,
@@ -74,41 +77,63 @@ export const BannerComposition = ({
   logo_url = defaultBannerProps.logo_url,
   brand_color = defaultBannerProps.brand_color,
   bullet_points = defaultBannerProps.bullet_points,
+  isVertical = false,
+  video_hook = "",
 }) => {
   const frame = useCurrentFrame();
   const { width, height, fps, durationInFrames } = useVideoConfig();
   const brandHex = normalizeBrandHex(brand_color);
   const { r: br, g: bg, b: bb } = hexToRgb(brandHex);
+  const lastF = Math.max(SNAP_FRAMES, durationInFrames - 1);
+
+  const hasHook = Boolean(video_hook?.trim());
+  const hookOffset = hasHook ? HOOK_FRAMES : 0;
 
   const bullets = Array.isArray(bullet_points)
     ? bullet_points.slice(0, 3).filter((x) => typeof x === "string" && x.trim())
     : [];
 
-  const kenBurnsScale = interpolate(
-    frame,
-    [0, Math.max(1, durationInFrames - 1)],
-    [1, 1.1],
-    { extrapolateLeft: "clamp", extrapolateRight: "clamp" },
-  );
+  // Background focus-pull animation runs from frame 0 regardless of hook
+  // (hook overlay covers it during the intro phase)
+  const bgScale =
+    frame <= SNAP_FRAMES
+      ? interpolate(frame, [0, SNAP_FRAMES], [1.3, 1.05], {
+          extrapolateLeft: "clamp",
+          extrapolateRight: "clamp",
+        })
+      : interpolate(frame, [SNAP_FRAMES, lastF], [1.05, 1.1], {
+          extrapolateLeft: "clamp",
+          extrapolateRight: "clamp",
+        });
 
-  const heroOpacity = interpolate(frame, [0, 22], [0, 1], {
+  const bgBlur =
+    frame <= SNAP_FRAMES
+      ? interpolate(frame, [0, SNAP_FRAMES], [20, 0], {
+          extrapolateLeft: "clamp",
+          extrapolateRight: "clamp",
+        })
+      : 0;
+
+  // All text-content timings shifted by hookOffset
+  const heroOpacity = interpolate(frame, [hookOffset, hookOffset + 22], [0, 1], {
     extrapolateLeft: "clamp",
     extrapolateRight: "clamp",
   });
-  const heroTranslateY = interpolate(frame, [0, 22], [44, 0], {
+  const heroTranslateY = interpolate(frame, [hookOffset, hookOffset + 22], [44, 0], {
     extrapolateLeft: "clamp",
     extrapolateRight: "clamp",
   });
 
-  const subOpacity = interpolate(frame, [10, 30], [0, 1], {
+  const subOpacity = interpolate(frame, [10 + hookOffset, 30 + hookOffset], [0, 1], {
     extrapolateLeft: "clamp",
     extrapolateRight: "clamp",
   });
-  const subTranslateY = interpolate(frame, [10, 30], [20, 0], {
+  const subTranslateY = interpolate(frame, [10 + hookOffset, 30 + hookOffset], [20, 0], {
     extrapolateLeft: "clamp",
     extrapolateRight: "clamp",
   });
 
+  const CTA_START_FRAME = BASE_CTA_START_FRAME + hookOffset;
   const ctaLocal = Math.max(0, frame - CTA_START_FRAME);
   const ctaScale = spring({
     frame: ctaLocal,
@@ -122,8 +147,31 @@ export const BannerComposition = ({
     extrapolateRight: "clamp",
   });
 
+  const BULLET_START_FRAMES = BASE_BULLET_START_FRAMES.map((f) => f + hookOffset);
+
+  // Hook intro animations
+  const hookTextScale = hasHook
+    ? spring({
+        frame: Math.min(frame, HOOK_FRAMES - 1),
+        fps,
+        from: 0.5,
+        to: 1,
+        config: { damping: 12, stiffness: 200 },
+      })
+    : 1;
+
+  const introSlideY = hasHook
+    ? interpolate(frame, [HOOK_FRAMES - 5, HOOK_FRAMES + 5], [0, -height], {
+        extrapolateLeft: "clamp",
+        extrapolateRight: "clamp",
+      })
+    : -height;
+
   const pad = Math.round(width * 0.06);
   const contentMaxW = width - pad * 2;
+
+  // For vertical: push content into the bottom 60% of the frame
+  const verticalTopPad = isVertical ? Math.round(height * 0.4) : 0;
 
   return (
     <AbsoluteFill
@@ -138,7 +186,7 @@ export const BannerComposition = ({
         overflow: "hidden",
       }}
     >
-      {/* Ken Burns background */}
+      {/* Full-bleed background with focus-pull zoom */}
       {background_url ? (
         <AbsoluteFill style={{ overflow: "hidden" }}>
           <div
@@ -148,22 +196,19 @@ export const BannerComposition = ({
               top: "50%",
               width: "100%",
               height: "100%",
-              transform: `translate(-50%, -50%) scale(${kenBurnsScale})`,
+              transform: `translate(-50%, -50%) scale(${bgScale})`,
+              filter: `blur(${bgBlur}px)`,
             }}
           >
             <Img
               src={background_url}
-              style={{
-                width: "100%",
-                height: "100%",
-                objectFit: "cover",
-              }}
+              style={{ width: "100%", height: "100%", objectFit: "cover" }}
             />
           </div>
         </AbsoluteFill>
       ) : null}
 
-      {/* Readability: vignette + bottom weight + brand wash */}
+      {/* Dark gradient overlay */}
       <AbsoluteFill
         style={{
           pointerEvents: "none",
@@ -175,26 +220,43 @@ export const BannerComposition = ({
         }}
       />
 
-      {/* Left brand accent (Immersive-style) */}
-      <div
-        style={{
-          position: "absolute",
-          left: 0,
-          top: 0,
-          bottom: 0,
-          width: 6,
-          background: brandHex,
-          boxShadow: `0 0 24px rgba(${br},${bg},${bb},0.5)`,
-        }}
-      />
+      {/* Brand accent bar — horizontal bottom edge for vertical, vertical left edge for horizontal */}
+      {isVertical ? (
+        <div
+          style={{
+            position: "absolute",
+            left: 0,
+            right: 0,
+            bottom: 0,
+            height: 6,
+            background: brandHex,
+            boxShadow: `0 0 24px rgba(${br},${bg},${bb},0.5)`,
+          }}
+        />
+      ) : (
+        <div
+          style={{
+            position: "absolute",
+            left: 0,
+            top: 0,
+            bottom: 0,
+            width: 6,
+            background: brandHex,
+            boxShadow: `0 0 24px rgba(${br},${bg},${bb},0.5)`,
+          }}
+        />
+      )}
 
-      {/* Content stack */}
+      {/* Main content — shifted to bottom 60% for vertical */}
       <AbsoluteFill
         style={{
-          padding: pad,
+          paddingTop: verticalTopPad + pad,
+          paddingBottom: pad,
+          paddingLeft: pad,
+          paddingRight: pad,
           display: "flex",
           flexDirection: "column",
-          justifyContent: "center",
+          justifyContent: isVertical ? "flex-start" : "center",
           alignItems: "stretch",
         }}
       >
@@ -209,7 +271,6 @@ export const BannerComposition = ({
             gap: height * 0.022,
           }}
         >
-          {/* Logo + headline — fade + slide up from below */}
           <div
             style={{
               opacity: heroOpacity,
@@ -246,7 +307,6 @@ export const BannerComposition = ({
             </RtlText>
           </div>
 
-          {/* Subhead */}
           {subhead ? (
             <RtlText
               as="p"
@@ -265,7 +325,6 @@ export const BannerComposition = ({
             </RtlText>
           ) : null}
 
-          {/* Glass-morphism bullet cards — spring pop, staggered */}
           {bullets.length > 0 ? (
             <div
               style={{
@@ -276,7 +335,7 @@ export const BannerComposition = ({
               }}
             >
               {bullets.map((text, i) => {
-                const start = BULLET_START_FRAMES[i] ?? 20 + i * 10;
+                const start = BULLET_START_FRAMES[i] ?? 20 + hookOffset + i * 10;
                 const local = Math.max(0, frame - start);
                 const pop = spring({
                   frame: local,
@@ -351,7 +410,6 @@ export const BannerComposition = ({
             </div>
           ) : null}
 
-          {/* CTA — pop at frame 60 */}
           {cta ? (
             <div
               style={{
@@ -382,6 +440,54 @@ export const BannerComposition = ({
           ) : null}
         </div>
       </AbsoluteFill>
+
+      {/* Whoosh sound fires exactly at the hook transition frame */}
+      {hasHook && (
+        <Sequence from={HOOK_FRAMES}>
+          <Audio src={staticFile("whoosh.mp3")} />
+        </Sequence>
+      )}
+
+      {/* Ding fires at the start frame of each feature bullet */}
+      {bullets.map((_, i) => {
+        const st = BULLET_START_FRAMES[i] ?? 20 + hookOffset + i * 10;
+        return (
+          <Sequence key={`ding-${i}`} from={st}>
+            <Audio src={staticFile("ding.mp3")} />
+          </Sequence>
+        );
+      })}
+
+      {/* Hook intro overlay — spring-scales in, then slides up out of frame at HOOK_FRAMES */}
+      {hasHook && (
+        <AbsoluteFill
+          style={{
+            backgroundColor: brandHex,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            transform: `translateY(${introSlideY}px)`,
+            zIndex: 10,
+          }}
+        >
+          <div
+            dir="rtl"
+            style={{
+              fontSize: Math.min(120, height * 0.11),
+              fontWeight: 800,
+              color: "#ffffff",
+              textAlign: "center",
+              padding: "0 60px",
+              transform: `scale(${hookTextScale})`,
+              lineHeight: 1.2,
+              textShadow: "0 4px 32px rgba(0,0,0,0.3)",
+              fontFamily: `${heebo.fontFamily}, "Segoe UI", sans-serif`,
+            }}
+          >
+            {video_hook}
+          </div>
+        </AbsoluteFill>
+      )}
     </AbsoluteFill>
   );
 };

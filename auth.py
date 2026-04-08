@@ -7,8 +7,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Annotated, Any
 from uuid import UUID
 
-from fastapi import Depends, HTTPException, status
-from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from fastapi import Depends, HTTPException, Request, status
 from jose import JWTError, jwt
 from passlib.context import CryptContext
 from sqlalchemy.orm import Session
@@ -21,8 +20,6 @@ pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 SECRET_KEY = os.environ.get("JWT_SECRET_KEY", "")
 ALGORITHM = os.environ.get("JWT_ALGORITHM", "HS256")
 ACCESS_TOKEN_EXPIRE_MINUTES = int(os.environ.get("ACCESS_TOKEN_EXPIRE_MINUTES", "10080"))
-
-http_bearer = HTTPBearer(auto_error=False)
 
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
@@ -64,16 +61,25 @@ def decode_access_token(token: str) -> str:
 
 
 def get_current_user(
-    credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(http_bearer)],
+    request: Request,
     db: Annotated[Session, Depends(get_db)],
 ) -> User:
-    if credentials is None or credentials.scheme.lower() != "bearer":
+    cookie_val = request.cookies.get("access_token")
+    if not cookie_val:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Not authenticated",
             headers={"WWW-Authenticate": "Bearer"},
         )
-    user_id_str = decode_access_token(credentials.credentials)
+    # Cookie is stored as "Bearer <token>"; strip the scheme prefix.
+    token = cookie_val.removeprefix("Bearer ").strip()
+    if not token:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Not authenticated",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    user_id_str = decode_access_token(token)
     try:
         user_uuid = UUID(user_id_str)
     except ValueError:

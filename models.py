@@ -42,6 +42,9 @@ class BannerTask(Base):
     user_id: Mapped[uuid.UUID] = mapped_column(
         Uuid(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
     )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utc_now, nullable=False
+    )
     status: Mapped[str] = mapped_column(String(64), nullable=False)
     url: Mapped[str] = mapped_column(Text, nullable=False)
     brief: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -50,12 +53,20 @@ class BannerTask(Base):
     subhead: Mapped[str | None] = mapped_column(String(1024), nullable=True)
     bullet_points: Mapped[list | None] = mapped_column(JSON, nullable=True)
     cta: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    video_hook: Mapped[str | None] = mapped_column(String(256), nullable=True)
     brand_color: Mapped[str | None] = mapped_column(String(32), nullable=True)
     background_url: Mapped[str | None] = mapped_column(String(1024), nullable=True)
     logo_url: Mapped[str | None] = mapped_column(String(1024), nullable=True)
     rendered_banner_1_url: Mapped[str | None] = mapped_column(String(1024), nullable=True)
     rendered_banner_2_url: Mapped[str | None] = mapped_column(String(1024), nullable=True)
     canvas_state: Mapped[dict | None] = mapped_column(JSON, nullable=True)
-    video_url: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    video_url_1: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    video_url_2: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+
+    # 9:16 vertical / Shorts format columns
+    rendered_banner_1_vertical_url: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    rendered_banner_2_vertical_url: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    video_url_1_vertical: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    video_url_2_vertical: Mapped[str | None] = mapped_column(String(1024), nullable=True)
 
     user: Mapped["User"] = relationship("User", back_populates="tasks")

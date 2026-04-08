@@ -7,9 +7,12 @@ openai
 requests
 selenium
 pillow
+celery
+redis
 
 # API: SQLAlchemy + auth (install one DB driver: pymysql for MySQL, psycopg[binary] for PostgreSQL)
 sqlalchemy>=2.0
+alembic>=1.13
 passlib[bcrypt]
 bcrypt==4.0.1
 python-jose[cryptography]

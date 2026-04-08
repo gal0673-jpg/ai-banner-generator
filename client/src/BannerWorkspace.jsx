@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import api, { API_BASE_URL } from './api.js'
+import api, { API_BASE_URL, API_BASE_URL_DISPLAY } from './api.js'
 import { useAuth } from './AuthContext.jsx'
 import BannerCanvas from './BannerCanvas.jsx'
 import BannerCanvas2 from './BannerCanvas2.jsx'
@@ -58,11 +58,12 @@ function Spinner({ className = '' }) {
 // ─── Main workspace ───────────────────────────────────────────────────────────
 
 export default function BannerWorkspace() {
-  const { user, logout } = useAuth()
+  const { user, logout, ready } = useAuth()
   const navigate = useNavigate()
 
   const [url,           setUrl]           = useState('')
   const [brief,         setBrief]         = useState('')
+  const [customHook,    setCustomHook]    = useState('')
   const [taskId,        setTaskId]        = useState(null)
   const [statusPayload, setStatusPayload] = useState(null)
   const [submitError,   setSubmitError]   = useState(null)
@@ -70,8 +71,20 @@ export default function BannerWorkspace() {
   const [aiContextBusy, setAiContextBusy] = useState(false)
   const [aiContextErr,  setAiContextErr]  = useState(null)
   const [activeDesign,  setActiveDesign]  = useState(1)
+  const [aspectRatio,   setAspectRatio]   = useState('1:1')
   const [isRenderingVideo, setIsRenderingVideo] = useState(false)
   const [videoRenderError, setVideoRenderError] = useState(null)
+  const [videoHook,        setVideoHook]        = useState('')
+  // Tracks the taskId for which we've already initialised videoHook from the
+  // server, so that subsequent statusPayload updates don't overwrite user edits.
+  const hookSyncedForTask = useRef(null)
+  const taskIdRef = useRef(null)
+  const terminalRef = useRef(false)
+  const sseTerminalRef = useRef(false)
+
+  useEffect(() => {
+    taskIdRef.current = taskId
+  }, [taskId])
 
   const terminal  = statusPayload?.status === 'completed' || statusPayload?.status === 'failed'
   const isPolling = Boolean(taskId && !terminal)
@@ -80,36 +93,104 @@ export default function BannerWorkspace() {
     statusPayload?.background_url &&
     statusPayload?.logo_url
 
+  const currentVideoUrl = useMemo(() => {
+    if (!statusPayload) return null
+    let u
+    if (aspectRatio === '9:16') {
+      u = activeDesign === 1 ? statusPayload.video_url_1_vertical : statusPayload.video_url_2_vertical
+    } else {
+      u = activeDesign === 1 ? statusPayload.video_url_1 : statusPayload.video_url_2
+    }
+    return typeof u === 'string' && u.trim() ? u.trim() : null
+  }, [statusPayload, activeDesign, aspectRatio])
+
   useEffect(() => {
-    if (!taskId) { setStatusPayload(null); return undefined }
+    terminalRef.current = terminal
+  }, [terminal])
 
-    let alive = true
-    let intervalId
+  // Restore latest banner task after refresh (same user session / cookie).
+  useEffect(() => {
+    if (!ready || !user) return undefined
+    let cancelled = false
+    ;(async () => {
+      try {
+        const { data } = await api.get('/banners/latest')
+        if (cancelled || !data?.task_id) return
+        if (taskIdRef.current != null) return
+        setTaskId(data.task_id)
+        setStatusPayload(data)
+        if (typeof data.url === 'string') setUrl(data.url)
+        setBrief(typeof data.brief === 'string' ? data.brief : '')
+        if (typeof data.video_hook === 'string' && data.video_hook.trim()) {
+          setCustomHook(data.video_hook.trim())
+        }
+      } catch {
+        /* not authenticated or network */
+      }
+    })()
+    return () => { cancelled = true }
+  }, [ready, user])
 
+  // While a task is non-terminal, poll status so we still pick up DB updates if SSE drops.
+  useEffect(() => {
+    if (!taskId) return undefined
     const tick = async () => {
+      if (terminalRef.current) return
       try {
         const { data } = await api.get(`/status/${taskId}`)
-        if (!alive) return
         setStatusPayload(data)
-        if (data.status === 'completed' || data.status === 'failed') clearInterval(intervalId)
-      } catch (err) {
-        if (!alive) return
-        setStatusPayload({
-          task_id: taskId, status: 'failed', error: axiosErrorMessage(err),
-          headline: null, subhead: null, bullet_points: null,
-          cta: null, brand_color: null, background_url: null, logo_url: null,
-          rendered_banner_1_url: null, rendered_banner_2_url: null,
-          canvas_state: null,
-          video_url: null,
-        })
-        clearInterval(intervalId)
+      } catch {
+        /* ignore */
+      }
+    }
+    void tick()
+    const id = setInterval(tick, 4000)
+    return () => clearInterval(id)
+  }, [taskId])
+
+  useEffect(() => {
+    if (!taskId) {
+      setStatusPayload(null)
+      sseTerminalRef.current = false
+      return undefined
+    }
+
+    sseTerminalRef.current = false
+    const sse = new EventSource(
+      `${API_BASE_URL}/status/${taskId}/stream`,
+      { withCredentials: true },
+    )
+
+    sse.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data)
+        setStatusPayload(data)
+        if (data.status === 'completed' || data.status === 'failed') {
+          sseTerminalRef.current = true
+          sse.close()
+        }
+      } catch {
+        // ignore malformed frames
       }
     }
 
-    tick()
-    intervalId = setInterval(tick, 3000)
-    return () => { alive = false; clearInterval(intervalId) }
+    sse.onerror = () => {
+      if (sseTerminalRef.current) return
+      // Do not close() or mark failed: let the browser reconnect, and polling covers gaps.
+    }
+
+    return () => { sse.close() }
   }, [taskId])
+
+  // Initialise videoHook from the server value exactly once per task (when the
+  // task first arrives in a completed state).  After that we leave local state
+  // alone so we don't clobber whatever the user has typed.
+  useEffect(() => {
+    if (completed && taskId && hookSyncedForTask.current !== taskId) {
+      setVideoHook(statusPayload?.video_hook ?? '')
+      hookSyncedForTask.current = taskId
+    }
+  }, [completed, taskId, statusPayload?.video_hook])
 
   const handleLogout = () => { logout(); navigate('/login', { replace: true }) }
 
@@ -117,10 +198,11 @@ export default function BannerWorkspace() {
     if (!taskId || !partial) return
     try {
       const body = {}
-      if (partial.headline !== undefined) body.headline = partial.headline
-      if (partial.subhead !== undefined) body.subhead = partial.subhead
-      if (partial.cta !== undefined) body.cta = partial.cta
+      if (partial.headline !== undefined)     body.headline     = partial.headline
+      if (partial.subhead !== undefined)      body.subhead      = partial.subhead
+      if (partial.cta !== undefined)          body.cta          = partial.cta
       if (partial.bullet_points !== undefined) body.bullet_points = partial.bullet_points
+      if (partial.video_hook !== undefined)   body.video_hook   = partial.video_hook
       if (partial.canvas_state !== undefined) body.canvas_state = partial.canvas_state
       if (Object.keys(body).length === 0) return
       const { data } = await api.patch(`/tasks/${taskId}`, body)
@@ -128,11 +210,12 @@ export default function BannerWorkspace() {
         p
           ? {
               ...p,
-              headline: data.headline ?? p.headline,
-              subhead: data.subhead ?? p.subhead,
-              cta: data.cta ?? p.cta,
+              headline:      data.headline      ?? p.headline,
+              subhead:       data.subhead       ?? p.subhead,
+              cta:           data.cta           ?? p.cta,
               bullet_points: data.bullet_points ?? p.bullet_points,
-              canvas_state: data.canvas_state ?? p.canvas_state,
+              video_hook:    data.video_hook    !== undefined ? data.video_hook : p.video_hook,
+              canvas_state:  data.canvas_state  ?? p.canvas_state,
             }
           : p,
       )
@@ -148,23 +231,35 @@ export default function BannerWorkspace() {
     setVideoRenderError(null)
     setIsRenderingVideo(true)
     try {
-      const { data } = await api.post(`/tasks/${taskId}/render-video`, { design: activeDesign })
-      const u = data?.video_url
-      if (typeof u === 'string' && u.trim()) {
-        setStatusPayload((p) => (p ? { ...p, video_url: u.trim() } : p))
-      }
+      const { data } = await api.post(`/tasks/${taskId}/render-video`, {
+        design_type: activeDesign,
+        aspect_ratio: aspectRatio,
+      })
+      setStatusPayload((p) => {
+        if (!p) return p
+        return {
+          ...p,
+          video_url_1: typeof data?.video_url_1 === 'string' ? data.video_url_1 : p.video_url_1,
+          video_url_2: typeof data?.video_url_2 === 'string' ? data.video_url_2 : p.video_url_2,
+          video_url_1_vertical: typeof data?.video_url_1_vertical === 'string' ? data.video_url_1_vertical : p.video_url_1_vertical,
+          video_url_2_vertical: typeof data?.video_url_2_vertical === 'string' ? data.video_url_2_vertical : p.video_url_2_vertical,
+        }
+      })
     } catch (err) {
       setVideoRenderError(axiosErrorMessage(err))
     } finally {
       setIsRenderingVideo(false)
     }
-  }, [taskId, activeDesign])
+  }, [taskId, activeDesign, aspectRatio])
 
   const handleDownloadAiContext = useCallback(async () => {
     setAiContextErr(null)
     setAiContextBusy(true)
     try {
-      const res = await api.get('/admin/ai-banner-context', { responseType: 'blob' })
+      const res = await api.get('/admin/ai-banner-context', {
+        responseType: 'blob',
+        params: { _: Date.now() },
+      })
       const blob = res.data instanceof Blob ? res.data : new Blob([res.data], { type: 'text/plain;charset=utf-8' })
       const url = URL.createObjectURL(blob)
       const a = document.createElement('a')
@@ -193,7 +288,11 @@ export default function BannerWorkspace() {
     setIsPosting(true)
 
     try {
-      const { data } = await api.post('/generate', { url: trimmed, brief: brief.trim() || null })
+      const { data } = await api.post('/generate', {
+        url: trimmed,
+        brief: brief.trim() || null,
+        video_hook: customHook.trim() || null,
+      })
       const id = data?.task_id
       if (!id) throw new Error('לא התקבל מזהה משימה מהשרת')
       setTaskId(id)
@@ -330,6 +429,31 @@ export default function BannerWorkspace() {
                 />
               </div>
 
+              <div>
+                <label
+                  htmlFor="bw-custom-hook"
+                  className="block text-xs font-medium text-slate-600 dark:text-slate-300 mb-1.5"
+                >
+                  סלוגן פתיחה לווידאו{' '}
+                  <span className="text-slate-400 font-normal">(אופציונלי)</span>
+                </label>
+                <input
+                  id="bw-custom-hook"
+                  name="video_hook"
+                  type="text"
+                  maxLength={256}
+                  placeholder="לדוגמה: מבצע חסר תקדים!"
+                  value={customHook}
+                  onChange={(ev) => setCustomHook(ev.target.value)}
+                  disabled={formLocked}
+                  className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 px-3 py-2.5 text-sm text-right outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/20 disabled:opacity-60 transition"
+                  dir="rtl"
+                />
+                <p className="mt-1.5 text-[11px] text-slate-400 dark:text-slate-500 leading-relaxed">
+                  אם מולא — יחליף את ה-hook שה-AI מייצר. ישמש כטקסט פתיחה של 2 שניות בסרטון.
+                </p>
+              </div>
+
               {submitError && (
                 <div
                   role="alert"
@@ -351,7 +475,7 @@ export default function BannerWorkspace() {
             <p className="mt-4 text-[10px] text-slate-400 dark:text-slate-500 text-right">
               כתובת API:{' '}
               <code className="rounded bg-slate-100 dark:bg-slate-800 px-1" dir="ltr">
-                {API_BASE_URL}
+                {API_BASE_URL_DISPLAY}
               </code>
             </p>
           </div>
@@ -397,34 +521,90 @@ export default function BannerWorkspace() {
               {completed && (
                 <div className="space-y-6">
 
-                  {/* ── Design tabs ───────────────────────────────────────── */}
+                  {/* ── Design + Aspect-ratio controls ────────────────────── */}
                   <div>
-                    {/* Tab bar */}
-                    <div className="flex items-center gap-1 rounded-xl bg-slate-100 dark:bg-slate-800/80 p-1 mb-4 w-fit">
-                      {[
-                        { id: 1, label: 'עיצוב 1', sub: 'Split Panel' },
-                        { id: 2, label: 'עיצוב 2', sub: 'Immersive' },
-                      ].map(({ id, label, sub }) => (
-                        <button
-                          key={id}
-                          type="button"
-                          onClick={() => setActiveDesign(id)}
-                          className={`flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-medium transition-all ${
-                            activeDesign === id
-                              ? 'bg-white dark:bg-slate-700 shadow text-slate-900 dark:text-white'
-                              : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200'
-                          }`}
-                        >
-                          {label}
-                          <span className={`text-[10px] font-normal rounded-full px-1.5 py-0.5 ${
-                            activeDesign === id
-                              ? 'bg-indigo-100 dark:bg-indigo-900/50 text-indigo-600 dark:text-indigo-300'
-                              : 'bg-slate-200 dark:bg-slate-700 text-slate-400 dark:text-slate-500'
-                          }`}>
-                            {sub}
-                          </span>
-                        </button>
-                      ))}
+                    {/* Row: Design tabs + Aspect ratio toggle */}
+                    <div className="flex flex-wrap items-center gap-3 mb-4">
+
+                      {/* Design tabs */}
+                      <div className="flex items-center gap-1 rounded-xl bg-slate-100 dark:bg-slate-800/80 p-1">
+                        {[
+                          { id: 1, label: 'עיצוב 1', sub: 'Split Panel' },
+                          { id: 2, label: 'עיצוב 2', sub: 'Immersive' },
+                        ].map(({ id, label, sub }) => (
+                          <button
+                            key={id}
+                            type="button"
+                            onClick={() => setActiveDesign(id)}
+                            className={`flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-medium transition-all ${
+                              activeDesign === id
+                                ? 'bg-white dark:bg-slate-700 shadow text-slate-900 dark:text-white'
+                                : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200'
+                            }`}
+                          >
+                            {label}
+                            <span className={`text-[10px] font-normal rounded-full px-1.5 py-0.5 ${
+                              activeDesign === id
+                                ? 'bg-indigo-100 dark:bg-indigo-900/50 text-indigo-600 dark:text-indigo-300'
+                                : 'bg-slate-200 dark:bg-slate-700 text-slate-400 dark:text-slate-500'
+                            }`}>
+                              {sub}
+                            </span>
+                          </button>
+                        ))}
+                      </div>
+
+                      {/* Aspect ratio toggle */}
+                      <div
+                        className="flex items-center gap-1 rounded-xl bg-slate-100 dark:bg-slate-800/80 p-1"
+                        role="group"
+                        aria-label="פורמט תמונה"
+                      >
+                        {[
+                          {
+                            ratio: '1:1',
+                            label: '1:1',
+                            sub: 'פיד',
+                            icon: (
+                              <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden className="shrink-0">
+                                <rect x="1" y="1" width="12" height="12" rx="1.5" stroke="currentColor" strokeWidth="1.5" />
+                              </svg>
+                            ),
+                          },
+                          {
+                            ratio: '9:16',
+                            label: '9:16',
+                            sub: 'סטורי',
+                            icon: (
+                              <svg width="10" height="14" viewBox="0 0 10 14" fill="none" aria-hidden className="shrink-0">
+                                <rect x="1" y="1" width="8" height="12" rx="1.5" stroke="currentColor" strokeWidth="1.5" />
+                              </svg>
+                            ),
+                          },
+                        ].map(({ ratio, label, sub, icon }) => (
+                          <button
+                            key={ratio}
+                            type="button"
+                            onClick={() => setAspectRatio(ratio)}
+                            className={`flex items-center gap-1.5 rounded-lg px-3 py-2 text-xs font-medium transition-all ${
+                              aspectRatio === ratio
+                                ? 'bg-white dark:bg-slate-700 shadow text-slate-900 dark:text-white'
+                                : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200'
+                            }`}
+                          >
+                            {icon}
+                            <span dir="ltr" className="font-mono tracking-tight">{label}</span>
+                            <span className={`text-[9px] font-normal rounded-full px-1.5 py-0.5 hidden sm:inline ${
+                              aspectRatio === ratio
+                                ? 'bg-violet-100 dark:bg-violet-900/50 text-violet-600 dark:text-violet-300'
+                                : 'bg-slate-200 dark:bg-slate-700 text-slate-400 dark:text-slate-500'
+                            }`}>
+                              {sub}
+                            </span>
+                          </button>
+                        ))}
+                      </div>
+
                     </div>
 
                     {/* Hint */}
@@ -432,10 +612,45 @@ export default function BannerWorkspace() {
                       גרור אלמנטים, שנה גודל, לחץ על טקסט לעריכה ישירה
                     </p>
 
+                    {/* ── Video Hook ──────────────────────────────────────── */}
+                    <div className="mb-4 rounded-2xl border border-amber-200/80 dark:border-amber-700/40 bg-amber-50/60 dark:bg-amber-950/20 px-4 py-3.5 space-y-2">
+                      <label
+                        htmlFor="bw-video-hook"
+                        className="flex items-center gap-2 text-xs font-semibold text-amber-800 dark:text-amber-300 tracking-wide"
+                      >
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden className="shrink-0">
+                          <polygon points="23 7 16 12 23 17 23 7" />
+                          <rect x="1" y="5" width="15" height="14" rx="2" ry="2" />
+                        </svg>
+                        סלוגן פתיחה לווידאו
+                        <span className="font-normal text-amber-600/80 dark:text-amber-400/70">(video hook – אופציונלי)</span>
+                      </label>
+                      <p className="text-[11px] text-amber-700/60 dark:text-amber-400/60 leading-relaxed">
+                        טקסט קצר ופוצץ שיופיע 2 שניות בתחילת הסרטון לפני הבאנר הראשי.
+                      </p>
+                      <input
+                        id="bw-video-hook"
+                        type="text"
+                        maxLength={256}
+                        placeholder="לדוגמה: אל תחמיצו את המבצע!"
+                        value={videoHook}
+                        onChange={(e) => setVideoHook(e.target.value)}
+                        onBlur={() => handleTaskPersist({ video_hook: videoHook })}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') {
+                            e.currentTarget.blur()
+                          }
+                        }}
+                        className="w-full rounded-xl border border-amber-200 dark:border-amber-700/50 bg-white dark:bg-slate-900 px-3 py-2.5 text-sm text-right outline-none focus:border-amber-400 dark:focus:border-amber-500 focus:ring-2 focus:ring-amber-400/20 transition placeholder:text-slate-400 dark:placeholder:text-slate-600"
+                        dir="rtl"
+                      />
+                    </div>
+
                     {/* Design 1 */}
                     {activeDesign === 1 && (
                       <div className="overflow-hidden rounded-2xl border border-slate-200 dark:border-slate-700 shadow-2xl">
                         <BannerCanvas
+                          key={`${taskId}-d1-${aspectRatio}`}
                           apiBase={API_BASE_URL}
                           taskId={taskId}
                           backgroundUrl={statusPayload.background_url}
@@ -446,10 +661,15 @@ export default function BannerWorkspace() {
                           cta={statusPayload.cta}
                           brandColor={statusPayload.brand_color}
                           siteUrl={url}
-                          savedCanvasSlice={statusPayload.canvas_state?.design1 ?? null}
+                          savedCanvasSlice={
+                            aspectRatio === '9:16'
+                              ? (statusPayload.canvas_state?.design1_vertical ?? null)
+                              : (statusPayload.canvas_state?.design1 ?? null)
+                          }
                           onPersist={handleTaskPersist}
                           onRenderVideo={handleRenderVideo}
                           isRenderingVideo={isRenderingVideo}
+                          aspectRatio={aspectRatio}
                         />
                       </div>
                     )}
@@ -458,6 +678,7 @@ export default function BannerWorkspace() {
                     {activeDesign === 2 && (
                       <div className="overflow-hidden rounded-2xl border border-slate-800 shadow-2xl">
                         <BannerCanvas2
+                          key={`${taskId}-d2-${aspectRatio}`}
                           apiBase={API_BASE_URL}
                           taskId={taskId}
                           backgroundUrl={statusPayload.background_url}
@@ -468,10 +689,15 @@ export default function BannerWorkspace() {
                           cta={statusPayload.cta}
                           brandColor={statusPayload.brand_color}
                           siteUrl={url}
-                          savedCanvasSlice={statusPayload.canvas_state?.design2 ?? null}
+                          savedCanvasSlice={
+                            aspectRatio === '9:16'
+                              ? (statusPayload.canvas_state?.design2_vertical ?? null)
+                              : (statusPayload.canvas_state?.design2 ?? null)
+                          }
                           onPersist={handleTaskPersist}
                           onRenderVideo={handleRenderVideo}
                           isRenderingVideo={isRenderingVideo}
+                          aspectRatio={aspectRatio}
                         />
                       </div>
                     )}
@@ -486,14 +712,19 @@ export default function BannerWorkspace() {
                     </div>
                   )}
 
-                  {statusPayload.video_url ? (
+                  {currentVideoUrl ? (
                     <div className="rounded-2xl border border-slate-200 dark:border-slate-700 bg-gradient-to-b from-white to-slate-50 dark:from-slate-900 dark:to-slate-950 p-5 shadow-sm space-y-4">
                       <div className="flex flex-wrap items-center justify-between gap-2">
                         <h3 className="text-sm font-semibold text-slate-800 dark:text-slate-100">
                           סרטון אנימציה
+                          <span className="text-slate-400 font-normal ms-2">
+                            (עיצוב {activeDesign}
+                            {aspectRatio === '9:16' && <span className="ms-1 text-violet-500 dark:text-violet-400">· 9:16</span>}
+                            )
+                          </span>
                         </h3>
                         <a
-                          href={statusPayload.video_url}
+                          href={currentVideoUrl}
                           download
                           target="_blank"
                           rel="noopener noreferrer"
@@ -505,9 +736,9 @@ export default function BannerWorkspace() {
                       </div>
                       <div className="rounded-xl overflow-hidden border border-slate-200/80 dark:border-slate-700 bg-black/5 dark:bg-black/40 max-w-lg mx-auto">
                         <video
-                          key={statusPayload.video_url}
+                          key={currentVideoUrl}
                           className="w-full h-auto max-h-[min(70vh,520px)] object-contain"
-                          src={statusPayload.video_url}
+                          src={currentVideoUrl}
                           controls
                           playsInline
                           loop
@@ -517,7 +748,7 @@ export default function BannerWorkspace() {
                         </video>
                       </div>
                       <p className="text-[11px] text-slate-500 dark:text-slate-400 font-mono break-all text-center" dir="ltr">
-                        {statusPayload.video_url}
+                        {currentVideoUrl}
                       </p>
                     </div>
                   ) : null}

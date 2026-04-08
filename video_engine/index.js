@@ -28,9 +28,16 @@ if (!fs.existsSync(outputDir)) {
 }
 app.use("/output", express.static(outputDir));
 
+function normalizeDesignType(body) {
+  const raw = body?.design_type ?? body?.designType;
+  if (raw === undefined || raw === null) return 1;
+  const n = Number(raw);
+  if (n === 2) return 2;
+  return 1;
+}
+
 /**
  * Expected payload shape from the Python FastAPI banner pipeline (subset).
- * Optional fields mirror models/api responses for forward compatibility.
  */
 function validateRenderPayload(body) {
   const errors = [];
@@ -79,6 +86,27 @@ function validateRenderPayload(body) {
     }
   }
 
+  const dt = body.design_type ?? body.designType ?? body.designTemplate;
+  if (dt !== undefined && dt !== null && Number(dt) !== 1 && Number(dt) !== 2) {
+    errors.push("design_type / designTemplate must be 1 or 2 when provided");
+  }
+  const vl = body.video_layout ?? body.videoLayout;
+  if (
+    vl !== undefined &&
+    vl !== null &&
+    vl !== "split" &&
+    vl !== "immersive"
+  ) {
+    errors.push("video_layout must be 'split' or 'immersive' when provided");
+  }
+  if (
+    body.task_id !== undefined &&
+    body.task_id !== null &&
+    (typeof body.task_id !== "string" || !body.task_id.trim())
+  ) {
+    errors.push("task_id must be a non-empty string when provided");
+  }
+
   return { ok: errors.length === 0, errors };
 }
 
@@ -97,13 +125,20 @@ app.post("/render", async (req, res) => {
     });
   }
 
+  const designType = normalizeDesignType(req.body);
+
   try {
     const inputProps = buildBannerInputProps(req.body);
-    console.log("[/render] starting Remotion bundle + renderMedia…");
-
-    const { fileName, outputPath, videoUrl } = await renderBannerVideo(inputProps, {
-      publicBaseUrl: PUBLIC_BASE_URL,
+    console.log("[/render] starting Remotion bundle + renderMedia…", {
+      designType,
+      video_layout: inputProps.video_layout,
+      composition: designType === 2 ? "Design2" : "Design1",
     });
+
+    const { fileName, outputPath, videoUrl, designTemplate } = await renderBannerVideo(
+      inputProps,
+      { publicBaseUrl: PUBLIC_BASE_URL },
+    );
 
     if (!videoUrl) {
       const msg = "Render completed but videoUrl was empty";
@@ -111,10 +146,18 @@ app.post("/render", async (req, res) => {
       return res.status(500).json({ error: msg });
     }
 
-    console.log("Video rendered successfully", { videoUrl, fileName, outputPath });
+    console.log("Video rendered successfully", {
+      videoUrl,
+      fileName,
+      outputPath,
+      designType,
+      designTemplate: designTemplate ?? inputProps.designTemplate,
+    });
     return res.status(200).json({
       success: true,
       videoUrl,
+      designType,
+      designTemplate: designTemplate ?? inputProps.designTemplate,
       fileName,
       outputPath,
     });

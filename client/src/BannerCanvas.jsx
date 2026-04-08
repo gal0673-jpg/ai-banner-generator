@@ -1,317 +1,44 @@
-import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
-import { motion as Motion, useDragControls } from 'framer-motion'
-import { Resizable } from 're-resizable'
-import { toPng } from 'html-to-image'
+import { useCallback, useEffect, useId, useRef, useState } from 'react'
+import { useDragControls } from 'framer-motion'
 import './BannerCanvas.css'
+import BannerLayer from './components/canvas/BannerLayer.jsx'
+import EditableText from './components/canvas/EditableText.jsx'
+import TextControls from './components/canvas/TextControls.jsx'
+import {
+  BANNER_SQUARE_1_1,
+  BANNER_VERTICAL_9_16,
+  captureBannerNodeToPng,
+  contrastingTextColor,
+  extractDomain,
+  hexToRgb,
+  normalizeBrandHex,
+} from './components/canvas/canvasUtils.js'
+import {
+  computeDesign1VerticalMetrics,
+  DESIGN1_DEFAULT_BOXES_VERTICAL,
+  useBannerCanvasState,
+} from './components/canvas/useBannerCanvasState.js'
 
-// ─── Default font sizes (+10% over original CSS) ─────────────────────────────
+// ─── Design 1 shared horizontal layout constants ──────────────────────────────
 const DF = { headline: 51, subhead: 22, bullets: 18, cta: 26 }
-
-/** Hex #RRGGBB for <input type="color" /> */
-function colorInputHex(hex) {
-  if (!hex || typeof hex !== 'string') return '#000000'
-  let s = hex.trim()
-  if (!s.startsWith('#')) s = `#${s}`
-  if (/^#[0-9A-Fa-f]{6}$/.test(s)) return s.toLowerCase()
-  return '#000000'
-}
-
-// ─── Default text colours (Design 1 — light panel) ───────────────────────────
 const DC = { headline: '#0f172a', subhead: '#475569', bullets: '#1e293b' }
 
-// ─── TextControls — top-right corner, hidden during PNG export ───────────────
-function TextControls({ fontSize, onFontSize, align, onAlign, color, onColor }) {
-  /** stopPropagation only — preventDefault on mousedown breaks <input type="color" /> picker */
-  const stopDrag = (e) => { e.stopPropagation() }
-  const stopBtn = (e) => {
-    e.preventDefault()
-    e.stopPropagation()
-  }
-  const cv = colorInputHex(color)
-  return (
-    <div className="banner-text-controls" onMouseDown={stopDrag} onClick={stopDrag}>
-      <div className="btc-group">
-        <button type="button" className="btc-btn" onMouseDown={(e) => { stopBtn(e); onFontSize(Math.max(10, fontSize - 2)) }} title="הקטן גופן">A−</button>
-        <span className="btc-val">{fontSize}px</span>
-        <button type="button" className="btc-btn" onMouseDown={(e) => { stopBtn(e); onFontSize(Math.min(130, fontSize + 2)) }} title="הגדל גופן">A+</button>
-      </div>
-      <span className="btc-sep" aria-hidden />
-      <label className="btc-color-wrap" title="צבע טקסט" onMouseDown={stopDrag}>
-        <span className="btc-color-swatch" style={{ backgroundColor: cv }} aria-hidden />
-        <input
-          type="color"
-          className="btc-color-input"
-          value={cv}
-          onChange={(e) => onColor(e.target.value)}
-          onMouseDown={stopDrag}
-          aria-label="צבע טקסט"
-        />
-      </label>
-      <span className="btc-sep" aria-hidden />
-      <div className="btc-group">
-        {[['right','ימין'],['center','מרכז'],['left','שמאל']].map(([a, label]) => (
-          <button
-            type="button"
-            key={a}
-            className={`btc-btn${align === a ? ' btc-btn--on' : ''}`}
-            onMouseDown={(e) => { stopBtn(e); onAlign(a) }}
-            title={label}
-          >{label}</button>
-        ))}
-      </div>
-    </div>
-  )
-}
-
-// ─── Layout constants (all in "banner px" space, 1080×1080) ──────────────────
-const BANNER_PX  = 1080
-const LEFT_W     = 475   // left photo panel width  (~44%)
-const DIVIDER_W  = 6     // brand-colour accent bar
-const RIGHT_X    = LEFT_W + DIVIDER_W   // 481 – where right panel begins
-const STRIP_H    = 70    // bottom domain strip height
-const CONTENT_H  = BANNER_PX - STRIP_H // 1010 – usable vertical height
-const RPAD       = 44    // horizontal padding inside right panel
-const CONTENT_X  = RIGHT_X + RPAD      // 525 – left edge of text content
-const CONTENT_W  = BANNER_PX - CONTENT_X - RPAD  // 511 – text column width
-
-const DEFAULT_BRAND_HEX = '#4F46E5'
-
-// Logo default: right-aligned in the right panel (mirroring the reference design)
+const LEFT_W = 475
+const DIVIDER_W = 6
+const RIGHT_X = LEFT_W + DIVIDER_W
+const STRIP_H = 70
+const RPAD = 44
+const CONTENT_X = RIGHT_X + RPAD
+const CONTENT_W = 1080 - CONTENT_X - RPAD  // 511
 const LOGO_W = 200
-/** Default layer positions — all inside the right content panel. */
-const DEFAULT_LOGO     = { x: BANNER_PX - RPAD - LOGO_W, y: 44,  width: LOGO_W,    height: 72  }
-const DEFAULT_HEADLINE = { x: CONTENT_X,                 y: 148, width: CONTENT_W, height: 210 }
-const DEFAULT_SUBHEAD  = { x: CONTENT_X,                 y: 372, width: CONTENT_W, height: 110 }
-const DEFAULT_BULLETS  = { x: CONTENT_X,                 y: 494, width: CONTENT_W, height: 292 }
-const DEFAULT_CTA      = { x: CONTENT_X,                 y: 802, width: CONTENT_W, height: 86  }
 
-// ─── Utility helpers ─────────────────────────────────────────────────────────
-
-function clamp(n, lo, hi) {
-  return Math.min(hi, Math.max(lo, n))
-}
-
-function normalizeBrandHex(input) {
-  if (!input || typeof input !== 'string') return DEFAULT_BRAND_HEX
-  let s = input.trim()
-  if (!s.startsWith('#')) s = `#${s}`
-  if (/^#[0-9A-Fa-f]{6}$/.test(s)) return s.toUpperCase()
-  return DEFAULT_BRAND_HEX
-}
-
-function hexToRgb(hex) {
-  const h = hex.replace('#', '')
-  return [
-    parseInt(h.slice(0, 2), 16),
-    parseInt(h.slice(2, 4), 16),
-    parseInt(h.slice(4, 6), 16),
-  ]
-}
-
-function contrastingTextColor(bgHex) {
-  const h = (bgHex && bgHex.startsWith('#') ? bgHex : DEFAULT_BRAND_HEX).slice(1)
-  if (h.length !== 6) return '#ffffff'
-  const r = parseInt(h.slice(0, 2), 16) / 255
-  const g = parseInt(h.slice(2, 4), 16) / 255
-  const b = parseInt(h.slice(4, 6), 16) / 255
-  const lum = 0.2126 * r + 0.7152 * g + 0.0722 * b
-  return lum > 0.55 ? '#0f172a' : '#ffffff'
-}
-
-function extractDomain(url) {
-  if (!url) return ''
-  try {
-    const u = url.includes('://') ? url : `https://${url}`
-    return new URL(u).hostname
-  } catch {
-    return url
-  }
-}
-
-function waitForImagesInNode(root) {
-  const imgs = root.querySelectorAll('img')
-  return Promise.all(
-    [...imgs].map(
-      (img) =>
-        new Promise((resolve) => {
-          const done = () => {
-            if (typeof img.decode === 'function') {
-              img.decode().then(resolve).catch(resolve)
-            } else {
-              resolve()
-            }
-          }
-          if (img.complete) done()
-          else {
-            img.addEventListener('load', done, { once: true })
-            img.addEventListener('error', () => resolve(), { once: true })
-          }
-        }),
-    ),
-  )
-}
-
-/** Normalize drag end to banner-px using the canvas root rect. */
-function commitPositionInBanner(canvasEl, layerEl, setBox) {
-  if (!canvasEl || !layerEl) return
-  const cr = canvasEl.getBoundingClientRect()
-  const lr = layerEl.getBoundingClientRect()
-  if (cr.width <= 0 || cr.height <= 0) return
-  const nx = ((lr.left - cr.left) / cr.width) * BANNER_PX
-  const ny = ((lr.top - cr.top) / cr.height) * BANNER_PX
-  setBox((b) => ({
-    ...b,
-    x: clamp(Math.round(nx), 0, Math.max(0, BANNER_PX - b.width)),
-    y: clamp(Math.round(ny), 0, Math.max(0, BANNER_PX - b.height)),
-  }))
-}
-
-// ─── EditableText ─────────────────────────────────────────────────────────────
-
-function EditableText({ className, style, text, resetKey, onTextChange, dir = 'rtl', as = 'div' }) {
-  const ref = useRef(null)
-
-  useEffect(() => {
-    const el = ref.current
-    if (!el) return
-    const next = text ?? ''
-    if (el.textContent !== next) el.textContent = next
-  }, [text, resetKey])
-
-  const emit = (el) => {
-    onTextChange?.(el.textContent ?? '')
-  }
-
-  const common = {
-    ref,
-    dir,
-    className,
-    style,
-    contentEditable: true,
-    suppressContentEditableWarning: true,
-    spellCheck: false,
-    onMouseDown: (e) => e.stopPropagation(),
-    onInput: (e) => emit(e.currentTarget),
-    onBlur: (e) => emit(e.currentTarget),
-  }
-
-  return as === 'span' ? <span {...common} /> : <div {...common} />
-}
-
-// ─── Resize handle config ─────────────────────────────────────────────────────
-
-const RESIZE_ENABLE = {
-  top: false, left: false, topLeft: false, topRight: false, bottomLeft: false,
-  right: true, bottom: true, bottomRight: true,
-}
-
-// ─── BannerLayer ─────────────────────────────────────────────────────────────
-
-function BannerLayer({
-  canvasRef, box, setBox, className, layerKey, setDraggingKey,
-  viewportScale, minWidth, minHeight, lockAspectRatio, dragHandleOnly, dragControls, children,
-  onUserCommit,
-}) {
-  const layerRef = useRef(null)
-
-  return (
-    <Motion.div
-      ref={layerRef}
-      layout={false}
-      className={`z-10 box-border ${className}`}
-      drag
-      dragElastic={0}
-      dragMomentum={false}
-      dragConstraints={canvasRef}
-      dragListener={!dragHandleOnly}
-      dragControls={dragControls}
-      whileDrag={{ zIndex: 50, cursor: 'grabbing' }}
-      style={{ position: 'absolute', left: box.x, top: box.y, width: box.width, height: box.height }}
-      onDragStart={() => setDraggingKey(layerKey)}
-      onDragEnd={() => {
-        commitPositionInBanner(canvasRef.current, layerRef.current, setBox)
-        setDraggingKey(null)
-        onUserCommit?.()
-      }}
-    >
-      <Resizable
-        size={{ width: box.width, height: box.height }}
-        scale={viewportScale}
-        minWidth={minWidth}
-        minHeight={minHeight}
-        lockAspectRatio={lockAspectRatio}
-        enable={RESIZE_ENABLE}
-        handleWrapperClass="banner-resize-handle-root"
-        onResizeStop={(_e, _dir, ref) => {
-          setBox((b) => ({ ...b, width: ref.offsetWidth, height: ref.offsetHeight }))
-          onUserCommit?.()
-        }}
-        className="box-border h-full w-full"
-        style={{ display: 'block', boxSizing: 'border-box' }}
-      >
-        <div className="banner-layer-inner box-border h-full w-full overflow-visible p-1">
-          {children}
-        </div>
-      </Resizable>
-    </Motion.div>
-  )
-}
-
-// ─── BannerCanvas ─────────────────────────────────────────────────────────────
-
-function buildDesign1CanvasSlice(s) {
-  return {
-    headline: s.headline,
-    subhead: s.subhead,
-    cta: s.cta,
-    bullets: s.bullets,
-    brand_color: s.brand_color,
-    logoBox: s.logoBox,
-    headlineBox: s.headlineBox,
-    subheadBox: s.subheadBox,
-    bulletsBox: s.bulletsBox,
-    ctaBox: s.ctaBox,
-    headlineFs: s.headlineFs,
-    headlineAlign: s.headlineAlign,
-    headlineColor: s.headlineColor,
-    subheadFs: s.subheadFs,
-    subheadAlign: s.subheadAlign,
-    subheadColor: s.subheadColor,
-    bulletsFs: s.bulletsFs,
-    bulletsAlign: s.bulletsAlign,
-    bulletsColor: s.bulletsColor,
-    ctaFs: s.ctaFs,
-    ctaAlign: s.ctaAlign,
-    ctaColor: s.ctaColor,
-  }
-}
-
-function applyDesign1Slice(slice, setters) {
-  const {
-    setLogoBox, setHeadlineBox, setSubheadBox, setBulletsBox, setCtaBox,
-    setHeadlineFs, setHeadlineAlign, setHeadlineColor,
-    setSubheadFs, setSubheadAlign, setSubheadColor,
-    setBulletsFs, setBulletsAlign, setBulletsColor,
-    setCtaFs, setCtaAlign, setCtaColor,
-  } = setters
-  if (!slice || typeof slice !== 'object') return
-  if (slice.logoBox) setLogoBox({ ...slice.logoBox })
-  if (slice.headlineBox) setHeadlineBox({ ...slice.headlineBox })
-  if (slice.subheadBox) setSubheadBox({ ...slice.subheadBox })
-  if (slice.bulletsBox) setBulletsBox({ ...slice.bulletsBox })
-  if (slice.ctaBox) setCtaBox({ ...slice.ctaBox })
-  if (typeof slice.headlineFs === 'number') setHeadlineFs(slice.headlineFs)
-  if (slice.headlineAlign) setHeadlineAlign(slice.headlineAlign)
-  if (slice.headlineColor) setHeadlineColor(slice.headlineColor)
-  if (typeof slice.subheadFs === 'number') setSubheadFs(slice.subheadFs)
-  if (slice.subheadAlign) setSubheadAlign(slice.subheadAlign)
-  if (slice.subheadColor) setSubheadColor(slice.subheadColor)
-  if (typeof slice.bulletsFs === 'number') setBulletsFs(slice.bulletsFs)
-  if (slice.bulletsAlign) setBulletsAlign(slice.bulletsAlign)
-  if (slice.bulletsColor) setBulletsColor(slice.bulletsColor)
-  if (typeof slice.ctaFs === 'number') setCtaFs(slice.ctaFs)
-  if (slice.ctaAlign) setCtaAlign(slice.ctaAlign)
-  if (slice.ctaColor) setCtaColor(slice.ctaColor)
+// ─── Default layer boxes — two variants ──────────────────────────────────────
+const DESIGN1_SQUARE_BOXES = {
+  logo:     { x: 1080 - RPAD - LOGO_W, y: 44,  width: LOGO_W,    height: 72  },
+  headline: { x: CONTENT_X,            y: 148, width: CONTENT_W, height: 210 },
+  subhead:  { x: CONTENT_X,            y: 372, width: CONTENT_W, height: 110 },
+  bullets:  { x: CONTENT_X,            y: 494, width: CONTENT_W, height: 292 },
+  cta:      { x: CONTENT_X,            y: 802, width: CONTENT_W, height: 86  },
 }
 
 export default function BannerCanvas({
@@ -329,9 +56,20 @@ export default function BannerCanvas({
   onPersist,
   onRenderVideo,
   isRenderingVideo = false,
+  aspectRatio = '1:1',
 }) {
+  const isVertical = aspectRatio === '9:16'
+  const designSize = isVertical ? BANNER_VERTICAL_9_16 : BANNER_SQUARE_1_1
+  const BANNER_W = designSize.width   // always 1080
+  const BANNER_H = designSize.height  // 1080 or 1920
+  const CONTENT_H = BANNER_H - STRIP_H
+
+  const defaultBoxes = isVertical ? DESIGN1_DEFAULT_BOXES_VERTICAL : DESIGN1_SQUARE_BOXES
+  const persistDesignKey = isVertical ? 'design1_vertical' : 'design1'
+  const verticalMetrics = isVertical ? computeDesign1VerticalMetrics(BANNER_H) : null
+
   const viewportRef = useRef(null)
-  const captureRef  = useRef(null)
+  const captureRef = useRef(null)
   const reactSurfaceSuffix = useId().replace(/:/g, '')
   const boundsSurfaceId = taskId
     ? `banner-surface-${taskId}`
@@ -339,184 +77,59 @@ export default function BannerCanvas({
 
   const ctaDragControls = useDragControls()
 
-  const [scale,         setScale]         = useState(1)
-  const [exporting,     setExporting]     = useState(false)
+  const [scale, setScale] = useState(1)
+  const [exporting, setExporting] = useState(false)
   const [downloadError, setDownloadError] = useState(null)
 
-  const [headline, setHeadline] = useState(headlineInitial ?? '')
-  const [subhead,  setSubhead]  = useState(subheadInitial ?? '')
-  const [bullets,  setBullets]  = useState(() => [...(bulletPoints || [])])
-  const [cta,      setCta]      = useState(ctaInitial ?? '')
-
-  const [logoBox,     setLogoBox]     = useState(() => ({ ...DEFAULT_LOGO     }))
-  const [headlineBox, setHeadlineBox] = useState(() => ({ ...DEFAULT_HEADLINE }))
-  const [subheadBox,  setSubheadBox]  = useState(() => ({ ...DEFAULT_SUBHEAD  }))
-  const [bulletsBox,  setBulletsBox]  = useState(() => ({ ...DEFAULT_BULLETS  }))
-  const [ctaBox,      setCtaBox]      = useState(() => ({ ...DEFAULT_CTA      }))
-  const [draggingKey, setDraggingKey] = useState(null)
-
-  // ── Typography controls state ────────────────────────────────────────────
-  const [headlineFs,    setHeadlineFs]    = useState(DF.headline)
-  const [headlineAlign, setHeadlineAlign] = useState('right')
-  const [subheadFs,     setSubheadFs]     = useState(DF.subhead)
-  const [subheadAlign,  setSubheadAlign]  = useState('right')
-  const [bulletsFs,     setBulletsFs]     = useState(DF.bullets)
-  const [bulletsAlign,  setBulletsAlign]  = useState('right')
-  const [ctaFs,         setCtaFs]         = useState(DF.cta)
-  const [ctaAlign,      setCtaAlign]      = useState('center')
-  const [headlineColor, setHeadlineColor] = useState(DC.headline)
-  const [subheadColor,  setSubheadColor]  = useState(DC.subhead)
-  const [bulletsColor,  setBulletsColor]  = useState(DC.bullets)
-  const [ctaColor,      setCtaColor]      = useState('#ffffff')
-
-  const persistTimerRef = useRef(null)
-  const stateRef = useRef({})
-
-  const flushPersist = useCallback(() => {
-    if (!onPersist || !taskId) return
-    const s = stateRef.current
-    onPersist({
-      headline: s.headline,
-      subhead: s.subhead,
-      cta: s.cta,
-      bullet_points: s.bullets,
-      canvas_state: { v: 1, design1: buildDesign1CanvasSlice(s) },
-    })
-  }, [onPersist, taskId])
-
-  const flushPersistRef = useRef(flushPersist)
-  flushPersistRef.current = flushPersist
-
-  const schedulePersist = useCallback(() => {
-    if (!onPersist || !taskId) return
-    clearTimeout(persistTimerRef.current)
-    persistTimerRef.current = setTimeout(() => {
-      persistTimerRef.current = null
-      flushPersist()
-    }, 1000)
-  }, [onPersist, taskId, flushPersist])
-
-  useEffect(
-    () => () => {
-      clearTimeout(persistTimerRef.current)
-      persistTimerRef.current = null
-      flushPersistRef.current()
-    },
-    [],
-  )
-
-  useEffect(() => {
-    stateRef.current = {
-      headline,
-      subhead,
-      bullets,
-      cta,
-      brand_color: brandColor,
-      logoBox,
-      headlineBox,
-      subheadBox,
-      bulletsBox,
-      ctaBox,
-      headlineFs,
-      headlineAlign,
-      headlineColor,
-      subheadFs,
-      subheadAlign,
-      subheadColor,
-      bulletsFs,
-      bulletsAlign,
-      bulletsColor,
-      ctaFs,
-      ctaAlign,
-      ctaColor,
-    }
-  }, [
-    headline, subhead, bullets, cta,
-    logoBox, headlineBox, subheadBox, bulletsBox, ctaBox,
-    headlineFs, headlineAlign, headlineColor,
-    subheadFs, subheadAlign, subheadColor,
-    bulletsFs, bulletsAlign, bulletsColor,
-    ctaFs, ctaAlign, ctaColor,
-    brandColor,
-  ])
-
-  const bulletsKey = bulletPoints ? JSON.stringify(bulletPoints) : ''
-  const savedSliceKey = useMemo(
-    () => (savedCanvasSlice && typeof savedCanvasSlice === 'object' ? JSON.stringify(savedCanvasSlice) : ''),
-    [savedCanvasSlice],
-  )
-
-  useEffect(() => {
-    setHeadline(headlineInitial ?? '')
-    setSubhead(subheadInitial ?? '')
-    setBullets([...(bulletPoints || [])])
-    setCta(ctaInitial ?? '')
-    setLogoBox({ ...DEFAULT_LOGO })
-    setHeadlineBox({ ...DEFAULT_HEADLINE })
-    setSubheadBox({ ...DEFAULT_SUBHEAD })
-    setBulletsBox({ ...DEFAULT_BULLETS })
-    setCtaBox({ ...DEFAULT_CTA })
-    setDraggingKey(null)
-    setHeadlineFs(DF.headline)
-    setHeadlineAlign('right')
-    setSubheadFs(DF.subhead)
-    setSubheadAlign('right')
-    setBulletsFs(DF.bullets)
-    setBulletsAlign('right')
-    setCtaFs(DF.cta)
-    setCtaAlign('center')
-    setHeadlineColor(DC.headline)
-    setSubheadColor(DC.subhead)
-    setBulletsColor(DC.bullets)
-    const bg = normalizeBrandHex(brandColor)
-    setCtaColor(contrastingTextColor(bg))
-    if (savedCanvasSlice && typeof savedCanvasSlice === 'object') {
-      applyDesign1Slice(savedCanvasSlice, {
-        setLogoBox,
-        setHeadlineBox,
-        setSubheadBox,
-        setBulletsBox,
-        setCtaBox,
-        setHeadlineFs,
-        setHeadlineAlign,
-        setHeadlineColor,
-        setSubheadFs,
-        setSubheadAlign,
-        setSubheadColor,
-        setBulletsFs,
-        setBulletsAlign,
-        setBulletsColor,
-        setCtaFs,
-        setCtaAlign,
-        setCtaColor,
-      })
-    }
-  }, [
+  const canvasState = useBannerCanvasState({
     taskId,
-    bulletsKey,
-    bulletPoints,
-    savedSliceKey,
+    brandColor,
     headlineInitial,
     subheadInitial,
+    bulletPoints,
     ctaInitial,
-    brandColor,
     savedCanvasSlice,
-  ])
+    onPersist,
+    persistDesignKey,
+    defaults: {
+      fontSizes: DF,
+      textColors: DC,
+      boxes: defaultBoxes,
+    },
+  })
 
-  const setBulletAt = useCallback((index, value) => {
-    setBullets((prev) => {
-      const next = [...prev]
-      next[index] = value
-      return next
-    })
-    schedulePersist()
-  }, [schedulePersist])
+  const {
+    headline, setHeadline,
+    subhead, setSubhead,
+    bullets,
+    cta, setCta,
+    logoBox, setLogoBox,
+    headlineBox, setHeadlineBox,
+    subheadBox, setSubheadBox,
+    bulletsBox, setBulletsBox,
+    ctaBox, setCtaBox,
+    draggingKey, setDraggingKey,
+    headlineFs, setHeadlineFs,
+    headlineAlign, setHeadlineAlign,
+    headlineColor, setHeadlineColor,
+    subheadFs, setSubheadFs,
+    subheadAlign, setSubheadAlign,
+    subheadColor, setSubheadColor,
+    bulletsFs, setBulletsFs,
+    bulletsAlign, setBulletsAlign,
+    bulletsColor, setBulletsColor,
+    ctaFs, setCtaFs,
+    ctaAlign, setCtaAlign,
+    ctaColor, setCtaColor,
+    schedulePersist,
+    setBulletAt,
+  } = canvasState
 
   const bgSrc   = backgroundUrl ? `${apiBase}${backgroundUrl}` : ''
   const logoSrc = logoUrl       ? `${apiBase}${logoUrl}`       : ''
 
-  const ctaBgHex  = normalizeBrandHex(brandColor)
-  const ctaFgHex  = contrastingTextColor(ctaBgHex)
+  const ctaBgHex = normalizeBrandHex(brandColor)
+  const ctaFgHex = contrastingTextColor(ctaBgHex)
   const [brandR, brandG, brandB] = hexToRgb(ctaBgHex)
 
   const leftOverlay = `linear-gradient(145deg, rgba(10,18,36,0.92) 0%, rgba(${brandR},${brandG},${brandB},0.58) 48%, rgba(10,18,36,0.82) 100%)`
@@ -528,29 +141,22 @@ export default function BannerCanvas({
     if (!el) return
     const ro = new ResizeObserver(() => {
       const w = el.clientWidth
-      if (w > 0) setScale(w / BANNER_PX)
+      if (w > 0) setScale(w / BANNER_W)
     })
     ro.observe(el)
-    setScale(el.clientWidth / BANNER_PX)
+    setScale(el.clientWidth / BANNER_W)
     return () => ro.disconnect()
-  }, [])
+  }, [BANNER_W])
 
   const handleDownload = useCallback(async () => {
     const node = captureRef.current
     if (!node) return
     setDownloadError(null)
     setExporting(true)
-    await new Promise((r) => requestAnimationFrame(r))
-    await new Promise((r) => requestAnimationFrame(r))
     try {
-      await waitForImagesInNode(node)
-      await new Promise((r) => requestAnimationFrame(r))
-
-      const dataUrl = await toPng(node, {
-        cacheBust: true,
-        pixelRatio: 1,
-        width: BANNER_PX,
-        height: BANNER_PX,
+      const dataUrl = await captureBannerNodeToPng(node, {
+        width: BANNER_W,
+        height: BANNER_H,
         backgroundColor: '#ffffff',
         style: {
           transform: 'scale(1)',
@@ -568,14 +174,14 @@ export default function BannerCanvas({
       })
       const a = document.createElement('a')
       a.href = dataUrl
-      a.download = `banner-${(taskId || 'export').slice(0, 8)}.png`
+      a.download = `banner-d1${isVertical ? '-vertical' : ''}-${(taskId || 'export').slice(0, 8)}.png`
       a.click()
     } catch (e) {
       setDownloadError(e.message || String(e))
     } finally {
       setExporting(false)
     }
-  }, [taskId])
+  }, [taskId, BANNER_W, BANNER_H, isVertical])
 
   const layerClass = (id) =>
     `banner-layer banner-layer--${id}${draggingKey === id ? ' banner-layer--dragging' : ''}`
@@ -587,54 +193,103 @@ export default function BannerCanvas({
       <div className="banner-viewport" ref={viewportRef} dir="ltr">
         <div
           className="banner-viewport-inner"
-          style={{ width: BANNER_PX * scale, height: BANNER_PX * scale }}
+          style={{ width: BANNER_W * scale, height: BANNER_H * scale }}
         >
           <div
             ref={captureRef}
             id={boundsSurfaceId}
             dir="ltr"
-            className={`absolute left-0 top-0 w-[1080px] h-[1080px] shrink-0 origin-top-left overflow-hidden banner-canvas${exporting ? ' capture-mode' : ''}`}
-            style={{ transform: `scale(${scale})` }}
+            className={`absolute left-0 top-0 shrink-0 origin-top-left overflow-hidden banner-canvas${exporting ? ' capture-mode' : ''}`}
+            style={{ width: BANNER_W, height: BANNER_H, transform: `scale(${scale})` }}
           >
 
-            {/* ── Left photo panel ────────────────────────────────── */}
-            <div
-              className="absolute left-0 top-0 pointer-events-none overflow-hidden"
-              style={{ width: LEFT_W, height: CONTENT_H }}
-              aria-hidden
-            >
-              <div
-                className={`absolute inset-0 bg-cover bg-center bg-no-repeat ${bgSrc ? '' : 'bg-slate-700'}`}
-                style={bgImageStyle}
-              />
-              {bgSrc ? (
-                <img
-                  src={bgSrc}
-                  alt=""
-                  crossOrigin="anonymous"
-                  referrerPolicy="no-referrer"
-                  loading="eager"
-                  decoding="async"
-                  className="pointer-events-none absolute left-0 top-0 h-px w-px opacity-0"
+            {isVertical && verticalMetrics ? (
+              <>
+                {/* ── 9:16: top 40% — full-width image hero ───────────── */}
+                <div
+                  className="absolute left-0 top-0 pointer-events-none overflow-hidden"
+                  style={{ width: BANNER_W, height: verticalMetrics.imageZoneH }}
+                  aria-hidden
+                >
+                  <div
+                    className={`absolute inset-0 bg-cover bg-center bg-no-repeat ${bgSrc ? '' : 'bg-slate-700'}`}
+                    style={bgImageStyle}
+                  />
+                  {bgSrc ? (
+                    <img
+                      src={bgSrc}
+                      alt=""
+                      crossOrigin="anonymous"
+                      referrerPolicy="no-referrer"
+                      loading="eager"
+                      decoding="async"
+                      className="pointer-events-none absolute left-0 top-0 h-px w-px opacity-0"
+                      aria-hidden
+                    />
+                  ) : null}
+                  <div className="absolute inset-0" style={{ background: leftOverlay }} />
+                </div>
+                {/* ── Horizontal brand accent between zones ───────────── */}
+                <div
+                  className="absolute left-0 pointer-events-none"
+                  style={{
+                    top: verticalMetrics.imageZoneH,
+                    width: BANNER_W,
+                    height: verticalMetrics.dividerH,
+                    backgroundColor: ctaBgHex,
+                  }}
                   aria-hidden
                 />
-              ) : null}
-              <div className="absolute inset-0" style={{ background: leftOverlay }} />
-            </div>
-
-            {/* ── Brand accent divider ─────────────────────────────── */}
-            <div
-              className="absolute top-0 pointer-events-none"
-              style={{ left: LEFT_W, width: DIVIDER_W, height: CONTENT_H, backgroundColor: ctaBgHex }}
-              aria-hidden
-            />
-
-            {/* ── Right content panel ──────────────────────────────── */}
-            <div
-              className="absolute top-0 pointer-events-none"
-              style={{ left: RIGHT_X, right: 0, height: CONTENT_H, background: rightPanelBg }}
-              aria-hidden
-            />
+                {/* ── Bottom ~60% — text content panel ───────────────── */}
+                <div
+                  className="absolute left-0 pointer-events-none"
+                  style={{
+                    top: verticalMetrics.textZoneTop,
+                    width: BANNER_W,
+                    height: verticalMetrics.textZoneH,
+                    background: rightPanelBg,
+                  }}
+                  aria-hidden
+                />
+              </>
+            ) : (
+              <>
+                {/* ── 1:1: left photo panel ──────────────────────────── */}
+                <div
+                  className="absolute left-0 top-0 pointer-events-none overflow-hidden"
+                  style={{ width: LEFT_W, height: CONTENT_H }}
+                  aria-hidden
+                >
+                  <div
+                    className={`absolute inset-0 bg-cover bg-center bg-no-repeat ${bgSrc ? '' : 'bg-slate-700'}`}
+                    style={bgImageStyle}
+                  />
+                  {bgSrc ? (
+                    <img
+                      src={bgSrc}
+                      alt=""
+                      crossOrigin="anonymous"
+                      referrerPolicy="no-referrer"
+                      loading="eager"
+                      decoding="async"
+                      className="pointer-events-none absolute left-0 top-0 h-px w-px opacity-0"
+                      aria-hidden
+                    />
+                  ) : null}
+                  <div className="absolute inset-0" style={{ background: leftOverlay }} />
+                </div>
+                <div
+                  className="absolute top-0 pointer-events-none"
+                  style={{ left: LEFT_W, width: DIVIDER_W, height: CONTENT_H, backgroundColor: ctaBgHex }}
+                  aria-hidden
+                />
+                <div
+                  className="absolute top-0 pointer-events-none"
+                  style={{ left: RIGHT_X, right: 0, height: CONTENT_H, background: rightPanelBg }}
+                  aria-hidden
+                />
+              </>
+            )}
 
             {/* ── Bottom domain strip ──────────────────────────────── */}
             <div
@@ -661,25 +316,17 @@ export default function BannerCanvas({
             {/* ── Logo layer ──────────────────────────────────────── */}
             <BannerLayer
               canvasRef={captureRef}
-              box={logoBox}
-              setBox={setLogoBox}
+              box={logoBox} setBox={setLogoBox}
               className={layerClass('logo')}
-              layerKey="logo"
-              setDraggingKey={setDraggingKey}
-              viewportScale={scale}
-              minWidth={80}
-              minHeight={48}
-              lockAspectRatio
-              onUserCommit={schedulePersist}
+              layerKey="logo" setDraggingKey={setDraggingKey}
+              viewportScale={scale} minWidth={80} minHeight={48}
+              lockAspectRatio onUserCommit={schedulePersist}
+              designSize={designSize}
             >
               <img
-                src={logoSrc}
-                alt=""
-                crossOrigin="anonymous"
-                referrerPolicy="no-referrer"
-                loading="eager"
-                decoding="async"
-                draggable={false}
+                src={logoSrc} alt=""
+                crossOrigin="anonymous" referrerPolicy="no-referrer"
+                loading="eager" decoding="async" draggable={false}
                 className="banner-layer-logo-img mx-auto block max-h-full max-w-full object-contain"
               />
             </BannerLayer>
@@ -687,30 +334,22 @@ export default function BannerCanvas({
             {/* ── Headline layer ──────────────────────────────────── */}
             <BannerLayer
               canvasRef={captureRef}
-              box={headlineBox}
-              setBox={setHeadlineBox}
+              box={headlineBox} setBox={setHeadlineBox}
               className={`${layerClass('headline')} banner-layer--text`}
-              layerKey="headline"
-              setDraggingKey={setDraggingKey}
-              viewportScale={scale}
-              minWidth={280}
-              minHeight={56}
-              onUserCommit={schedulePersist}
+              layerKey="headline" setDraggingKey={setDraggingKey}
+              viewportScale={scale} minWidth={280} minHeight={56}
+              onUserCommit={schedulePersist} designSize={designSize}
             >
               <TextControls
-                fontSize={headlineFs}
-                onFontSize={(v) => { setHeadlineFs(v); schedulePersist() }}
-                align={headlineAlign}
-                onAlign={(v) => { setHeadlineAlign(v); schedulePersist() }}
-                color={headlineColor}
-                onColor={(v) => { setHeadlineColor(v); schedulePersist() }}
+                fontSize={headlineFs} onFontSize={(v) => { setHeadlineFs(v); schedulePersist() }}
+                align={headlineAlign} onAlign={(v) => { setHeadlineAlign(v); schedulePersist() }}
+                color={headlineColor} onColor={(v) => { setHeadlineColor(v); schedulePersist() }}
               />
               <div className="banner-text-shell min-w-[280px]" dir="rtl">
                 <EditableText
                   className="banner-text banner-headline min-w-[260px] whitespace-normal"
                   style={{ fontSize: headlineFs, textAlign: headlineAlign, color: headlineColor }}
-                  text={headline}
-                  resetKey={taskId}
+                  text={headline} resetKey={taskId}
                   onTextChange={(v) => { setHeadline(v); schedulePersist() }}
                 />
               </div>
@@ -719,75 +358,57 @@ export default function BannerCanvas({
             {/* ── Subhead layer ───────────────────────────────────── */}
             <BannerLayer
               canvasRef={captureRef}
-              box={subheadBox}
-              setBox={setSubheadBox}
+              box={subheadBox} setBox={setSubheadBox}
               className={`${layerClass('subhead')} banner-layer--text`}
-              layerKey="subhead"
-              setDraggingKey={setDraggingKey}
-              viewportScale={scale}
-              minWidth={280}
-              minHeight={48}
-              onUserCommit={schedulePersist}
+              layerKey="subhead" setDraggingKey={setDraggingKey}
+              viewportScale={scale} minWidth={280} minHeight={48}
+              onUserCommit={schedulePersist} designSize={designSize}
             >
               <TextControls
-                fontSize={subheadFs}
-                onFontSize={(v) => { setSubheadFs(v); schedulePersist() }}
-                align={subheadAlign}
-                onAlign={(v) => { setSubheadAlign(v); schedulePersist() }}
-                color={subheadColor}
-                onColor={(v) => { setSubheadColor(v); schedulePersist() }}
+                fontSize={subheadFs} onFontSize={(v) => { setSubheadFs(v); schedulePersist() }}
+                align={subheadAlign} onAlign={(v) => { setSubheadAlign(v); schedulePersist() }}
+                color={subheadColor} onColor={(v) => { setSubheadColor(v); schedulePersist() }}
               />
               <div className="banner-text-shell min-w-[280px]" dir="rtl">
                 <EditableText
                   className="banner-text banner-subhead min-w-[260px] whitespace-normal"
                   style={{ fontSize: subheadFs, textAlign: subheadAlign, color: subheadColor }}
-                  text={subhead}
-                  resetKey={taskId}
+                  text={subhead} resetKey={taskId}
                   onTextChange={(v) => { setSubhead(v); schedulePersist() }}
                 />
               </div>
             </BannerLayer>
 
-            {/* ── Feature-cards layer (replaces bullet list) ──────── */}
+            {/* ── Feature-cards layer ─────────────────────────────── */}
             <BannerLayer
               canvasRef={captureRef}
-              box={bulletsBox}
-              setBox={setBulletsBox}
+              box={bulletsBox} setBox={setBulletsBox}
               className={`${layerClass('bullets')} banner-layer--text`}
-              layerKey="bullets"
-              setDraggingKey={setDraggingKey}
-              viewportScale={scale}
-              minWidth={280}
-              minHeight={200}
-              onUserCommit={schedulePersist}
+              layerKey="bullets" setDraggingKey={setDraggingKey}
+              viewportScale={scale} minWidth={280} minHeight={200}
+              onUserCommit={schedulePersist} designSize={designSize}
             >
               <TextControls
-                fontSize={bulletsFs}
-                onFontSize={(v) => { setBulletsFs(v); schedulePersist() }}
-                align={bulletsAlign}
-                onAlign={(v) => { setBulletsAlign(v); schedulePersist() }}
-                color={bulletsColor}
-                onColor={(v) => { setBulletsColor(v); schedulePersist() }}
+                fontSize={bulletsFs} onFontSize={(v) => { setBulletsFs(v); schedulePersist() }}
+                align={bulletsAlign} onAlign={(v) => { setBulletsAlign(v); schedulePersist() }}
+                color={bulletsColor} onColor={(v) => { setBulletsColor(v); schedulePersist() }}
               />
-              <div className="banner-feat-grid" dir="rtl">
+              <div
+                className={`banner-feat-grid${isVertical ? ' banner-feat-grid--vertical' : ''}`}
+                dir="rtl"
+              >
                 {bullets.map((b, i) => (
                   <div
                     key={`${taskId}-b-${i}`}
                     className="banner-feat-card"
                     style={{ borderTopColor: ctaBgHex }}
                   >
-                    <div
-                      className="banner-feat-icon"
-                      style={{ backgroundColor: ctaBgHex, color: ctaFgHex }}
-                    >
-                      ✓
-                    </div>
+                    <div className="banner-feat-icon" style={{ backgroundColor: ctaBgHex, color: ctaFgHex }}>✓</div>
                     <EditableText
                       as="span"
                       className="banner-feat-text"
                       style={{ fontSize: bulletsFs, textAlign: bulletsAlign, color: bulletsColor }}
-                      text={b}
-                      resetKey={`${taskId}-${i}`}
+                      text={b} resetKey={`${taskId}-${i}`}
                       onTextChange={(t) => setBulletAt(i, t)}
                     />
                   </div>
@@ -798,25 +419,17 @@ export default function BannerCanvas({
             {/* ── CTA layer ───────────────────────────────────────── */}
             <BannerLayer
               canvasRef={captureRef}
-              box={ctaBox}
-              setBox={setCtaBox}
+              box={ctaBox} setBox={setCtaBox}
               className={`${layerClass('cta')} banner-layer--cta`}
-              layerKey="cta"
-              setDraggingKey={setDraggingKey}
-              viewportScale={scale}
-              minWidth={160}
-              minHeight={52}
-              dragHandleOnly
-              dragControls={ctaDragControls}
-              onUserCommit={schedulePersist}
+              layerKey="cta" setDraggingKey={setDraggingKey}
+              viewportScale={scale} minWidth={160} minHeight={52}
+              dragHandleOnly dragControls={ctaDragControls}
+              onUserCommit={schedulePersist} designSize={designSize}
             >
               <TextControls
-                fontSize={ctaFs}
-                onFontSize={(v) => { setCtaFs(v); schedulePersist() }}
-                align={ctaAlign}
-                onAlign={(v) => { setCtaAlign(v); schedulePersist() }}
-                color={ctaColor}
-                onColor={(v) => { setCtaColor(v); schedulePersist() }}
+                fontSize={ctaFs} onFontSize={(v) => { setCtaFs(v); schedulePersist() }}
+                align={ctaAlign} onAlign={(v) => { setCtaAlign(v); schedulePersist() }}
+                color={ctaColor} onColor={(v) => { setCtaColor(v); schedulePersist() }}
               />
               <div className="banner-text-shell min-w-[160px]">
                 <div
@@ -830,8 +443,7 @@ export default function BannerCanvas({
                 <div className="mt-1" style={{ textAlign: ctaAlign }} dir="rtl">
                   <EditableText
                     className="banner-text banner-cta inline-block min-w-[120px] max-w-full whitespace-nowrap"
-                    text={cta}
-                    resetKey={taskId}
+                    text={cta} resetKey={taskId}
                     onTextChange={(v) => { setCta(v); schedulePersist() }}
                     style={{
                       fontSize: ctaFs,
@@ -850,29 +462,17 @@ export default function BannerCanvas({
 
       {/* ── Download row ──────────────────────────────────────────── */}
       <div className="banner-download-row">
-        <button
-          type="button"
-          className="btn-download"
-          onClick={handleDownload}
-          disabled={exporting}
-        >
+        <button type="button" className="btn-download" onClick={handleDownload} disabled={exporting}>
           {exporting ? 'מכין PNG…' : '⬇ הורד באנר PNG'}
         </button>
         {typeof onRenderVideo === 'function' && (
-          <button
-            type="button"
-            className="btn-download"
-            onClick={onRenderVideo}
-            disabled={isRenderingVideo}
-          >
+          <button type="button" className="btn-download" onClick={onRenderVideo} disabled={isRenderingVideo}>
             {isRenderingVideo ? 'מייצר וידאו…' : '🎬 ייצר סרטון אנימציה'}
           </button>
         )}
       </div>
       {downloadError && (
-        <p className="banner-download-error" role="alert">
-          {downloadError}
-        </p>
+        <p className="banner-download-error" role="alert">{downloadError}</p>
       )}
     </div>
   )

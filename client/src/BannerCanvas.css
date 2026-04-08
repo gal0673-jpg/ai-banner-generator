@@ -160,6 +160,21 @@
   align-items: stretch;
 }
 
+/* 9:16 — modifier: stack feature cards (apply with .banner-feat-grid.banner-feat-grid--vertical) */
+.banner-feat-grid.banner-feat-grid--vertical {
+  flex-direction: column;
+  gap: 14px;
+  align-items: stretch;
+  justify-content: flex-start;
+}
+
+.banner-feat-grid--vertical .banner-feat-card {
+  flex: 0 0 auto;
+  width: 100%;
+  min-width: 0;
+  min-height: 100px;
+}
+
 .banner-feat-card {
   flex: 1;
   min-width: 0;
