@@ -262,6 +262,8 @@ export function useBannerCanvasState({
     ctaInitial,
     brandColor,
     savedCanvasSlice,
+    persistDesignKey,
+    defaults,
   ])
 
   const setBulletAt = useCallback(

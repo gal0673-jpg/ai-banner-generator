@@ -262,7 +262,7 @@ export const Design1Composition = ({
           as="h1"
           style={{
             margin: 0,
-            fontSize: Math.min(52, containerH * 0.1),
+            fontSize: Math.min(68, containerH * 0.125),
             fontWeight: 800,
             lineHeight: 1.15,
             color: "#0f172a",
@@ -278,7 +278,7 @@ export const Design1Composition = ({
             as="p"
             style={{
               margin: `${containerH * 0.018}px 0 0`,
-              fontSize: Math.min(24, containerH * 0.05),
+              fontSize: Math.min(32, containerH * 0.068),
               fontWeight: 500,
               lineHeight: 1.5,
               color: "#475569",
@@ -326,7 +326,7 @@ export const Design1Composition = ({
                       display: "flex",
                       alignItems: "center",
                       justifyContent: "center",
-                      fontSize: 14,
+                      fontSize: 17,
                       fontWeight: 700,
                       marginTop: 3,
                       boxShadow: `0 4px 12px rgba(${br},${bg},${bb},0.35)`,
@@ -338,7 +338,7 @@ export const Design1Composition = ({
                   <RtlText
                     style={{
                       flex: 1,
-                      fontSize: Math.min(20, containerH * 0.04),
+                      fontSize: Math.min(27, containerH * 0.053),
                       fontWeight: 500,
                       lineHeight: 1.45,
                       color: "#1e293b",
@@ -369,7 +369,7 @@ export const Design1Composition = ({
                 backgroundColor: brandHex,
                 color: "#ffffff",
                 fontWeight: 800,
-                fontSize: Math.min(26, containerH * 0.055),
+                fontSize: Math.min(34, containerH * 0.072),
                 textAlign: "center",
                 boxShadow: `0 10px 32px rgba(${br},${bg},${bb},0.4)`,
               }}
@@ -432,7 +432,7 @@ export const Design1Composition = ({
           <div
             dir="rtl"
             style={{
-              fontSize: Math.min(120, height * 0.11),
+              fontSize: Math.min(168, height * 0.15),
               fontWeight: 800,
               color: "#ffffff",
               textAlign: "center",

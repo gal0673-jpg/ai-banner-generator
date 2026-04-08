@@ -8,7 +8,8 @@ import './BannerCanvas2.css'
 import BannerWorkspaceContainer from './components/canvas/BannerWorkspaceContainer.jsx'
 import { DESIGN2_DEFAULT_BOXES_VERTICAL } from './components/canvas/useBannerCanvasState.js'
 
-const DF2 = { headline: 66, subhead: 26, bullets: 18, cta: 31 }
+const DF2_SQUARE = { headline: 76, subhead: 30, bullets: 22, cta: 36 }
+const DF2_VERTICAL = { headline: 86, subhead: 36, bullets: 26, cta: 42 }
 const DC2 = { headline: '#ffffff', subhead: '#e6e6e6', bullets: '#ebebeb' }
 
 const STRIP_H = 64
@@ -171,11 +172,11 @@ export default function BannerCanvas2({
 
   const stateDefaults = useMemo(
     () => ({
-      fontSizes: DF2,
+      fontSizes: isVertical ? DF2_VERTICAL : DF2_SQUARE,
       textColors: DC2,
       boxes: defaultBoxes,
     }),
-    [defaultBoxes],
+    [defaultBoxes, isVertical],
   )
 
   return (
@@ -200,7 +201,7 @@ export default function BannerCanvas2({
       stateDefaults={stateDefaults}
       surfaceIdPrefix="bc2-surface"
       rootClassName="bc2-root"
-      viewportClassName="bc2-viewport"
+      viewportClassName={`bc2-viewport${isVertical ? ' bc2-viewport--9-16' : ''}`}
       viewportInnerClassName="bc2-viewport-inner"
       captureClassName={(exporting) =>
         `absolute left-0 top-0 shrink-0 origin-top-left overflow-hidden bc2-canvas${exporting ? ' bc2-capture' : ''}`

@@ -3,6 +3,8 @@
 Start a worker locally (Windows requires gevent or solo pool):
     celery -A celery_app worker --loglevel=info -P gevent
 
+After changing task code, restart the worker so it reloads ``worker_tasks``.
+
 Banner pipeline task (`run_banner_task` in worker_tasks.py) uses bind=True with
 ``autoretry_for=(Exception,)``, ``retry_backoff=True``, and ``max_retries=3`` so
 transient failures (OpenAI, crawl, disk) can recover; deterministic failures use
@@ -35,3 +37,9 @@ celery_app.conf.update(
     timezone="UTC",
     enable_utc=True,
 )
+
+# ``include=`` alone does not import task modules when this file is loaded; the worker
+# must register tasks before consuming. Eager import avoids "unregistered task" for
+# e.g. ``render_video_task`` while ``run_banner_task`` might still appear registered
+# via other import paths.
+import worker_tasks  # noqa: E402, F401

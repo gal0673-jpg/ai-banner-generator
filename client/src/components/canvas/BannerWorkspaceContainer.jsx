@@ -172,14 +172,19 @@ export default function BannerWorkspaceContainer({
   useEffect(() => {
     const el = viewportRef.current
     if (!el) return
-    const ro = new ResizeObserver(() => {
+    const update = () => {
       const w = el.clientWidth
-      if (w > 0) setScale(w / BANNER_W)
-    })
+      const h = el.clientHeight
+      if (w <= 0 || h <= 0) return
+      const sx = w / BANNER_W
+      const sy = h / BANNER_H
+      setScale(Math.min(sx, sy))
+    }
+    const ro = new ResizeObserver(update)
     ro.observe(el)
-    setScale(el.clientWidth / BANNER_W)
+    update()
     return () => ro.disconnect()
-  }, [BANNER_W])
+  }, [BANNER_W, BANNER_H])
 
   const handleDownload = useCallback(async () => {
     const node = captureRef.current

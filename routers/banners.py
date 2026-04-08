@@ -277,3 +277,35 @@ def render_task_video(
         ) from exc
 
     return {"status": "processing"}
+
+
+@router.post("/tasks/{task_id}/video-render/reset")
+def reset_stuck_video_render(
+    task_id: str,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Clear ``video_status=processing`` when the worker stopped or the job is stuck."""
+    try:
+        tid = uuid.UUID(task_id)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Unknown task_id") from None
+
+    row = db.get(BannerTask, tid)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Unknown task_id")
+    if not current_user.is_superuser and row.user_id != current_user.id:
+        raise HTTPException(status_code=404, detail="Unknown task_id")
+    if row.status != "completed":
+        raise HTTPException(status_code=409, detail="Task must be completed.")
+    if row.video_status != "processing":
+        raise HTTPException(
+            status_code=409,
+            detail="Video render is not marked as processing; nothing to reset.",
+        )
+
+    row.video_status = None
+    row.video_render_error = None
+    db.commit()
+    db.refresh(row)
+    return banner_task_status_dict(task_id, row)

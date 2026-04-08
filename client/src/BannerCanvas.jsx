@@ -7,7 +7,8 @@ import {
 } from './components/canvas/useBannerCanvasState.js'
 
 // ─── Design 1 shared horizontal layout constants ──────────────────────────────
-const DF = { headline: 51, subhead: 22, bullets: 18, cta: 26 }
+const DF_SQUARE = { headline: 58, subhead: 26, bullets: 22, cta: 30 }
+const DF_VERTICAL = { headline: 70, subhead: 32, bullets: 26, cta: 36 }
 const DC = { headline: '#0f172a', subhead: '#475569', bullets: '#1e293b' }
 
 const LEFT_W = 475
@@ -220,11 +221,11 @@ export default function BannerCanvas({
 
   const stateDefaults = useMemo(
     () => ({
-      fontSizes: DF,
+      fontSizes: isVertical ? DF_VERTICAL : DF_SQUARE,
       textColors: DC,
       boxes: defaultBoxes,
     }),
-    [defaultBoxes],
+    [defaultBoxes, isVertical],
   )
 
   return (
@@ -249,7 +250,7 @@ export default function BannerCanvas({
       stateDefaults={stateDefaults}
       surfaceIdPrefix="banner-surface"
       rootClassName="banner-canvas-root"
-      viewportClassName="banner-viewport"
+      viewportClassName={`banner-viewport${isVertical ? ' banner-viewport--9-16' : ''}`}
       viewportInnerClassName="banner-viewport-inner"
       captureClassName={(exporting) =>
         `absolute left-0 top-0 shrink-0 origin-top-left overflow-hidden banner-canvas${exporting ? ' capture-mode' : ''}`

@@ -1,5 +1,5 @@
 AI BANNER CONTEXT EXPORT
-Generated (UTC): 2026-04-08 00:28:20 UTC
+Generated (UTC): 2026-04-08 12:45:55 UTC
 Project root: C:\laragon\www\python
 Output filename: ai-banner-context.txt
 
@@ -59,7 +59,8 @@ python/
 │   │   ├── 27a9cc284ff3_add_video_hook_to_banner_tasks.py
 │   │   ├── 5b8aa1b1152b_baseline_existing_schema.py
 │   │   ├── b09ba5e8cf40_add_vertical_format_columns.py
-│   │   └── c4f1a2b8d9e0_add_created_at_banner_tasks.py
+│   │   ├── c4f1a2b8d9e0_add_created_at_banner_tasks.py
+│   │   └── d7e3c1a0b2f4_add_video_status_columns.py
 │   ├── env.py
 │   ├── README
 │   └── script.py.mako
@@ -76,6 +77,7 @@ python/
 │   │   ├── components
 │   │   │   └── canvas
 │   │   │       ├── BannerLayer.jsx
+│   │   │       ├── BannerWorkspaceContainer.jsx
 │   │   │       ├── canvasUtils.js
 │   │   │       ├── EditableText.jsx
 │   │   │       ├── TextControls.jsx
@@ -101,8 +103,17 @@ python/
 │   ├── package.json
 │   ├── README.md
 │   └── vite.config.js
+├── routers
+│   ├── __init__.py
+│   ├── admin.py
+│   ├── auth.py
+│   └── banners.py
+├── services
+│   ├── __init__.py
+│   ├── banner_service.py
+│   └── video_service.py
 ├── tasks
-│   └── [39 task UUID folders — runtime outputs omitted]
+│   └── [40 task UUID folders — runtime outputs omitted]
 ├── video_engine
 │   ├── public
 │   │   ├── ding.mp3
@@ -125,9 +136,11 @@ python/
 ├── banner_data.json
 ├── celery_app.py
 ├── composite_banner.py
+├── config.py
 ├── creative_agent.py
 ├── creative_campaign.json
 ├── database.py
+├── deps.py
 ├── export_context.py
 ├── generate_copy.py
 ├── html_renderer.py
@@ -136,10 +149,12 @@ python/
 ├── models.py
 ├── README.md
 ├── requirements.txt
-└── scraped_content.txt
+├── schemas.py
+├── scraped_content.txt
+└── worker_tasks.py
 
 ================================================================================
-SECTION: PYTHON FILES (17)
+SECTION: PYTHON FILES (29)
 ================================================================================
 
 
@@ -736,128 +751,85 @@ def downgrade() -> None:
 
 
 ================================================================================
+FILE: alembic/versions/d7e3c1a0b2f4_add_video_status_columns.py
+================================================================================
+
+"""Add video_status and video_render_error to banner_tasks
+
+Revision ID: d7e3c1a0b2f4
+Revises: c4f1a2b8d9e0
+Create Date: 2026-04-08
+
+"""
+from typing import Sequence, Union
+
+from alembic import op
+import sqlalchemy as sa
+
+revision: str = "d7e3c1a0b2f4"
+down_revision: Union[str, Sequence[str], None] = "c4f1a2b8d9e0"
+branch_labels: Union[str, Sequence[str], None] = None
+depends_on: Union[str, Sequence[str], None] = None
+
+
+def upgrade() -> None:
+    op.add_column(
+        "banner_tasks",
+        sa.Column("video_status", sa.String(length=64), nullable=True),
+    )
+    op.add_column(
+        "banner_tasks",
+        sa.Column("video_render_error", sa.Text(), nullable=True),
+    )
+
+
+def downgrade() -> None:
+    op.drop_column("banner_tasks", "video_render_error")
+    op.drop_column("banner_tasks", "video_status")
+
+
+================================================================================
 FILE: api.py
 ================================================================================
 
 """
-FastAPI backend for the banner generator React app.
+FastAPI application entrypoint.
 
 Run: uvicorn api:app --reload --host 0.0.0.0 --port 8888
 
-Requires: see requirements.txt (fastapi, uvicorn, sqlalchemy, auth libs, DB driver).
+Route handlers live under ``routers/``; Celery tasks in ``worker_tasks.py``;
+shared logic in ``services/``.
 """
 
 from __future__ import annotations
 
-import asyncio
+import os
+import secrets
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Annotated, Any, Literal
-import json
-import os
-import re
-import secrets
-import uuid
 
-import requests
 from dotenv import load_dotenv
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from sqlalchemy import select
 
 load_dotenv(Path(__file__).resolve().parent / ".env")
 
-from fastapi import Depends, FastAPI, HTTPException, Request
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.security import OAuth2PasswordRequestForm
-from fastapi.staticfiles import StaticFiles
-from starlette.responses import Response, StreamingResponse
-from pydantic import BaseModel, Field, field_validator
-from sqlalchemy import select
-from sqlalchemy.orm import Session, joinedload
-
-from auth import create_access_token, get_current_superuser, get_current_user, get_password_hash, verify_password
-from ai_banner_context import OUTPUT_FILENAME, build_document
-from celery_app import celery_app
-from database import Base, SessionLocal, engine, get_db
-from main import BASE_DIR, crawl_from_url, run_agency_banner_pipeline
-from models import BannerTask, User
-
-TASKS_DIR = BASE_DIR / "tasks"
-TASKS_DIR.mkdir(parents=True, exist_ok=True)
-
-TaskStatus = Literal["pending", "scraped", "generating_image", "completed", "failed"]
-
-SUPERUSER_EMAIL = "gal0673@gmail.com".lower()
-
-
-def require_primary_admin(user: Annotated[User, Depends(get_current_superuser)]) -> User:
-    """Only the bootstrapped primary admin (gal0673@gmail.com) may export AI context."""
-    if user.email.strip().lower() != SUPERUSER_EMAIL:
-        raise HTTPException(
-            status_code=403,
-            detail="ייצוא הקשר ל-AI זמין רק לחשבון האדמין הראשי.",
-        )
-    return user
-
-
-_BRAND_HEX = re.compile(r"^#[0-9A-Fa-f]{6}$")
-
-
-def _rendered_banner_urls_for_task(task_id: str) -> tuple[str | None, str | None]:
-    """Resolve static URLs for Design 1 / Design 2 PNGs; fall back to legacy rendered_banner.png for v1."""
-    work = TASKS_DIR / task_id
-    u1: str | None = None
-    u2: str | None = None
-    if (work / "rendered_banner_1.png").is_file():
-        u1 = f"/task-files/{task_id}/rendered_banner_1.png"
-    elif (work / "rendered_banner.png").is_file():
-        u1 = f"/task-files/{task_id}/rendered_banner.png"
-    if (work / "rendered_banner_2.png").is_file():
-        u2 = f"/task-files/{task_id}/rendered_banner_2.png"
-    return u1, u2
-
-
-def _banner_task_status_dict(task_id: str, row: BannerTask) -> dict[str, Any]:
-    """Full task payload for REST status, SSE, and /banners/latest (includes url/brief for form restore)."""
-    fs1, fs2 = _rendered_banner_urls_for_task(task_id)
-    status_val: TaskStatus = row.status  # type: ignore[assignment]
-    return {
-        "task_id": task_id,
-        "url": row.url,
-        "brief": row.brief,
-        "status": status_val,
-        "error": row.error,
-        "headline": row.headline,
-        "subhead": row.subhead,
-        "bullet_points": row.bullet_points,
-        "cta": row.cta,
-        "video_hook": row.video_hook,
-        "brand_color": row.brand_color,
-        "background_url": row.background_url,
-        "logo_url": row.logo_url,
-        "rendered_banner_1_url": row.rendered_banner_1_url or fs1,
-        "rendered_banner_2_url": row.rendered_banner_2_url or fs2,
-        "canvas_state": row.canvas_state,
-        "video_url_1": row.video_url_1,
-        "video_url_2": row.video_url_2,
-        "rendered_banner_1_vertical_url": row.rendered_banner_1_vertical_url,
-        "rendered_banner_2_vertical_url": row.rendered_banner_2_vertical_url,
-        "video_url_1_vertical": row.video_url_1_vertical,
-        "video_url_2_vertical": row.video_url_2_vertical,
-    }
-
-
-def _persist_task(task_uuid: uuid.UUID, **kwargs: Any) -> None:
-    with SessionLocal() as db:
-        row = db.get(BannerTask, task_uuid)
-        if row is None:
-            return
-        for key, value in kwargs.items():
-            setattr(row, key, value)
-        db.commit()
+from auth import get_password_hash  # noqa: E402 — after load_dotenv
+from config import SUPERUSER_EMAIL  # noqa: E402
+from database import Base, SessionLocal, engine  # noqa: E402
+from models import User  # noqa: E402
+from routers import admin as admin_router  # noqa: E402
+from routers import auth as auth_router  # noqa: E402
+from routers import banners as banners_router  # noqa: E402
+from services.banner_service import TASKS_DIR, ensure_tasks_dir  # noqa: E402
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     Base.metadata.create_all(bind=engine)
+    ensure_tasks_dir()
     if not os.environ.get("JWT_SECRET_KEY"):
         print(
             "[startup] WARNING: JWT_SECRET_KEY is not set; login and protected routes will fail until it is set."
@@ -883,8 +855,6 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Banner generator API", lifespan=lifespan)
 
-# With allow_credentials=True, browsers require explicit origins (not "*").
-# Add comma-separated URLs in CORS_ORIGINS for LAN / custom Vite ports (e.g. http://192.168.1.5:5173).
 _default_cors_origins = [
     "http://localhost:5173",
     "http://127.0.0.1:5173",
@@ -906,695 +876,9 @@ app.add_middleware(
 
 app.mount("/task-files", StaticFiles(directory=str(TASKS_DIR)), name="task_files")
 
-
-class RegisterRequest(BaseModel):
-    email: str = Field(..., min_length=3, max_length=255)
-    password: str = Field(..., min_length=8, max_length=128)
-
-
-class TokenResponse(BaseModel):
-    access_token: str
-    token_type: str = "bearer"
-
-
-class GenerateRequest(BaseModel):
-    url: str = Field(..., min_length=1, description="Site URL to crawl")
-    brief: str | None = Field(
-        default=None,
-        max_length=12000,
-        description="Optional campaign goal / target audience for the creative model",
-    )
-    video_hook: str | None = Field(
-        default=None,
-        max_length=256,
-        description="Optional custom video hook that overrides the AI-generated one",
-    )
-
-
-class RenderVideoRequest(BaseModel):
-    """Which template to render (1 = split-panel, 2 = immersive) and which canvas slice to use."""
-
-    design_type: Literal[1, 2] = 1
-    aspect_ratio: Literal["1:1", "9:16"] = "1:1"
-
-    @field_validator("design_type", mode="before")
-    @classmethod
-    def coerce_design_type(cls, v: Any) -> Any:
-        if v is None:
-            return 1
-        try:
-            n = int(v)
-        except (TypeError, ValueError):
-            return 1
-        return 2 if n == 2 else 1
-
-    @field_validator("aspect_ratio", mode="before")
-    @classmethod
-    def coerce_aspect_ratio(cls, v: Any) -> Any:
-        if v is None:
-            return "1:1"
-        return "9:16" if str(v).strip() == "9:16" else "1:1"
-
-
-class TaskPatchRequest(BaseModel):
-    """Partial update for an editable completed banner task."""
-
-    headline: str | None = Field(default=None, max_length=512)
-    subhead: str | None = Field(default=None, max_length=1024)
-    cta: str | None = Field(default=None, max_length=256)
-    bullet_points: list[str] | None = None
-    video_hook: str | None = Field(default=None, max_length=256)
-    canvas_state: dict[str, Any] | None = None
-
-    @field_validator("bullet_points")
-    @classmethod
-    def three_bullets(cls, v: list[str] | None) -> list[str] | None:
-        if v is None:
-            return None
-        if len(v) != 3:
-            raise ValueError("bullet_points must contain exactly 3 strings")
-        return [str(x).strip() for x in v]
-
-
-def _public_api_base(request: Request) -> str:
-    """Origin for turning /task-files/... into absolute URLs for the video microservice."""
-    env = os.environ.get("PUBLIC_API_BASE_URL", "").strip()
-    if env:
-        return env.rstrip("/")
-    return str(request.base_url).rstrip("/")
-
-
-def _video_engine_render_url() -> str:
-    base = os.environ.get("VIDEO_ENGINE_URL", "http://127.0.0.1:9000").rstrip("/")
-    return f"{base}/render"
-
-
-def _pick_canvas_slice(canvas_state: Any, design: int, aspect_ratio: str = "1:1") -> dict[str, Any]:
-    if not isinstance(canvas_state, dict):
-        return {}
-    if aspect_ratio == "9:16":
-        key = "design1_vertical" if design == 1 else "design2_vertical"
-    else:
-        key = "design1" if design == 1 else "design2"
-    sl = canvas_state.get(key)
-    return sl if isinstance(sl, dict) else {}
-
-
-def _prefer_slice_str(sl: dict[str, Any], key: str, row_val: str | None) -> str:
-    if key in sl:
-        v = sl[key]
-        if isinstance(v, str):
-            return v.strip()
-    if row_val is None:
-        return ""
-    return str(row_val).strip()
-
-
-def _prefer_slice_bullets(sl: dict[str, Any], row_bullets: list | None) -> list[str]:
-    raw = sl.get("bullets")
-    if not isinstance(raw, list):
-        raw = sl.get("bullet_points")
-    if isinstance(raw, list) and all(isinstance(x, str) for x in raw):
-        return [str(x).strip() for x in raw]
-    if isinstance(row_bullets, list):
-        return [str(x).strip() for x in row_bullets]
-    return []
-
-
-def _absolute_asset_url(public_base: str, path: str | None) -> str:
-    if not path:
-        return ""
-    p = str(path).strip()
-    if p.startswith("http://") or p.startswith("https://"):
-        return p
-    base = public_base.rstrip("/")
-    if not p.startswith("/"):
-        p = "/" + p
-    return base + p
-
-
-def _banner_video_payload(row: BannerTask, design: int, public_base: str, aspect_ratio: str = "1:1") -> dict[str, Any]:
-    """Merge DB columns with canvas_state (design1/design2/vertical); slice wins when a key is present."""
-    sl = _pick_canvas_slice(row.canvas_state, design, aspect_ratio)
-    headline = _prefer_slice_str(sl, "headline", row.headline)
-    subhead = _prefer_slice_str(sl, "subhead", row.subhead)
-    cta = _prefer_slice_str(sl, "cta", row.cta)
-    bullet_points = _prefer_slice_bullets(sl, row.bullet_points)
-    bc_sl = sl.get("brand_color")
-    if isinstance(bc_sl, str) and bc_sl.strip():
-        brand_color = bc_sl.strip()
-    else:
-        brand_color = (row.brand_color or "#2563eb").strip() or "#2563eb"
-    if not brand_color.startswith("#"):
-        brand_color = "#" + brand_color
-
-    background_url = _absolute_asset_url(public_base, row.background_url)
-    logo_url = _absolute_asset_url(public_base, row.logo_url)
-    video_hook = _prefer_slice_str(sl, "video_hook", row.video_hook)
-
-    return {
-        "headline": headline,
-        "subhead": subhead,
-        "cta": cta,
-        "bullet_points": bullet_points,
-        "brand_color": brand_color,
-        "background_url": background_url,
-        "logo_url": logo_url,
-        "video_hook": video_hook,
-    }
-
-
-def _video_payload_for_engine(row: BannerTask, design_type: int, public_base: str, aspect_ratio: str = "1:1") -> dict[str, Any]:
-    """Banner fields + explicit layout flags for the Node /render endpoint."""
-    payload = _banner_video_payload(row, design_type, public_base, aspect_ratio)
-    hook = (payload.get("video_hook") or "").strip()
-    payload["video_hook"] = hook
-    payload["videoHook"] = hook
-    dt = 2 if int(design_type) == 2 else 1
-    payload["design_type"] = dt
-    payload["designTemplate"] = dt
-    # Explicit string so Remotion never mis-reads template (split = עיצוב 1, immersive = עיצוב 2)
-    payload["video_layout"] = "immersive" if dt == 2 else "split"
-    payload["videoLayout"] = payload["video_layout"]
-    payload["aspect_ratio"] = aspect_ratio
-    payload["aspectRatio"] = aspect_ratio
-    payload["isVertical"] = aspect_ratio == "9:16"
-    return payload
-
-
-def _merge_canvas_state(prev: Any, patch: dict[str, Any] | None) -> dict[str, Any] | None:
-    """Merge partial canvas_state from PATCH; replace any known design key when provided."""
-    if patch is None:
-        return prev if isinstance(prev, dict) else None
-    base: dict[str, Any] = dict(prev) if isinstance(prev, dict) else {}
-    for key in ("v", "design1", "design2", "design1_vertical", "design2_vertical"):
-        if key in patch:
-            base[key] = patch[key]
-    return base or None
-
-
-@celery_app.task(name="run_banner_task")
-def run_banner_task(task_id: str, url: str, brief: str | None, custom_video_hook: str | None = None) -> None:
-    task_uuid = uuid.UUID(task_id)
-    work_dir = TASKS_DIR / task_id
-    try:
-        crawl_from_url(url, work_dir=work_dir, campaign_brief=brief)
-        _persist_task(task_uuid, status="scraped")
-
-        if not os.environ.get("OPENAI_API_KEY"):
-            _persist_task(task_uuid, status="failed", error="OPENAI_API_KEY is not set")
-            return
-
-        _persist_task(task_uuid, status="generating_image")
-        run_agency_banner_pipeline(work_dir=work_dir, site_url=url)
-
-        campaign_path = work_dir / "creative_campaign.json"
-        background = work_dir / "background.png"
-        logo = work_dir / "logo.png"
-        if not campaign_path.is_file() or not background.is_file() or not logo.is_file():
-            _persist_task(
-                task_uuid,
-                status="failed",
-                error="Missing creative_campaign.json, background.png, or logo.png after pipeline.",
-            )
-            return
-
-        with campaign_path.open(encoding="utf-8") as f:
-            data = json.load(f)
-
-        for key in ("headline", "subhead", "cta"):
-            if key not in data or not str(data[key]).strip():
-                _persist_task(
-                    task_uuid,
-                    status="failed",
-                    error=f"Invalid creative_campaign.json: missing or empty {key!r}",
-                )
-                return
-
-        # video_hook: custom hook from the user overrides the AI-generated one;
-        # fall back to creative_campaign.json; tolerate absence for legacy JSON.
-        raw_hook = data.get("video_hook")
-        ai_hook: str | None = str(raw_hook).strip()[:256] if raw_hook and str(raw_hook).strip() else None
-        video_hook_val: str | None = custom_video_hook or ai_hook
-        bullets = data.get("bullet_points")
-        if not isinstance(bullets, list) or len(bullets) != 3:
-            _persist_task(
-                task_uuid,
-                status="failed",
-                error="Invalid creative_campaign.json: bullet_points must be 3 strings.",
-            )
-            return
-
-        bc_raw = data.get("brand_color")
-        if not isinstance(bc_raw, str) or not bc_raw.strip():
-            _persist_task(
-                task_uuid,
-                status="failed",
-                error="Invalid creative_campaign.json: missing or empty brand_color.",
-            )
-            return
-        bc = bc_raw.strip()
-        if not bc.startswith("#"):
-            bc = "#" + bc
-        if not _BRAND_HEX.match(bc):
-            _persist_task(
-                task_uuid,
-                status="failed",
-                error="Invalid creative_campaign.json: brand_color must be #RRGGBB hex.",
-            )
-            return
-
-        rb1, rb2 = _rendered_banner_urls_for_task(task_id)
-        _persist_task(
-            task_uuid,
-            status="completed",
-            error=None,
-            headline=str(data["headline"]).strip(),
-            subhead=str(data["subhead"]).strip(),
-            bullet_points=[str(b).strip() for b in bullets],
-            cta=str(data["cta"]).strip(),
-            video_hook=video_hook_val,
-            brand_color=bc.upper(),
-            background_url=f"/task-files/{task_id}/background.png",
-            logo_url=f"/task-files/{task_id}/logo.png",
-            rendered_banner_1_url=rb1,
-            rendered_banner_2_url=rb2,
-        )
-    except Exception as exc:  # noqa: BLE001 — surface any pipeline failure to the client
-        _persist_task(task_uuid, status="failed", error=str(exc))
-
-
-@app.post("/auth/register", status_code=201)
-def register(body: RegisterRequest, db: Annotated[Session, Depends(get_db)]) -> dict[str, str]:
-    email = body.email.strip().lower()
-    if not email:
-        raise HTTPException(status_code=400, detail="email must not be empty")
-    existing = db.execute(select(User).where(User.email == email)).scalar_one_or_none()
-    if existing is not None:
-        raise HTTPException(status_code=400, detail="Email already registered")
-    user = User(
-        email=email,
-        hashed_password=get_password_hash(body.password),
-        is_superuser=False,
-    )
-    db.add(user)
-    db.commit()
-    db.refresh(user)
-    return {"id": str(user.id), "email": user.email}
-
-
-@app.post("/auth/login")
-def login(
-    form_data: Annotated[OAuth2PasswordRequestForm, Depends()],
-    response: Response,
-    db: Annotated[Session, Depends(get_db)],
-) -> dict[str, str]:
-    # OAuth2PasswordRequestForm uses "username"; we treat it as the user's email.
-    email = form_data.username.strip().lower()
-    user = db.execute(select(User).where(User.email == email)).scalar_one_or_none()
-    if user is None or not verify_password(form_data.password, user.hashed_password):
-        raise HTTPException(status_code=401, detail="Incorrect email or password")
-    token = create_access_token(subject=str(user.id))
-    response.set_cookie(
-        key="access_token",
-        value=f"Bearer {token}",
-        httponly=True,
-        samesite="lax",
-        secure=False,   # set to True in production behind HTTPS
-    )
-    return {"message": "Login successful"}
-
-
-@app.get("/auth/me")
-def auth_me(current_user: Annotated[User, Depends(get_current_user)]) -> dict[str, str]:
-    """Return the current user when the HttpOnly session cookie is valid (SPA bootstrap)."""
-    return {"email": current_user.email}
-
-
-@app.post("/auth/logout")
-def logout_user(response: Response) -> dict[str, str]:
-    response.delete_cookie("access_token")
-    return {"message": "Logged out"}
-
-
-@app.post("/generate")
-def generate(
-    body: GenerateRequest,
-    current_user: Annotated[User, Depends(get_current_user)],
-    db: Annotated[Session, Depends(get_db)],
-) -> dict[str, str]:
-    url = body.url.strip()
-    if not url:
-        raise HTTPException(status_code=400, detail="url must not be empty")
-
-    brief = (body.brief or "").strip() or None
-
-    task_id = uuid.uuid4()
-    row = BannerTask(
-        id=task_id,
-        user_id=current_user.id,
-        status="pending",
-        url=url,
-        brief=brief,
-        error=None,
-        headline=None,
-        subhead=None,
-        bullet_points=None,
-        cta=None,
-        video_hook=None,
-        brand_color=None,
-        background_url=None,
-        logo_url=None,
-        rendered_banner_1_url=None,
-        rendered_banner_2_url=None,
-        canvas_state=None,
-        video_url_1=None,
-        video_url_2=None,
-        rendered_banner_1_vertical_url=None,
-        rendered_banner_2_vertical_url=None,
-        video_url_1_vertical=None,
-        video_url_2_vertical=None,
-    )
-    db.add(row)
-    db.commit()
-    tid = str(task_id)
-    try:
-        run_banner_task.delay(tid, url, brief)
-    except Exception as exc:
-        _persist_task(task_id, status="failed", error=str(exc))
-        raise HTTPException(
-            status_code=503,
-            detail=(
-                "לא ניתן לשלוח את המשימה לתור (Celery). ודא ש-Redis רץ (למשל ב-Laragon) "
-                "ושה-worker פעיל."
-            ),
-        ) from exc
-    return {"task_id": tid}
-
-
-@app.get("/banners/latest")
-def get_latest_banner(
-    current_user: Annotated[User, Depends(get_current_user)],
-    db: Annotated[Session, Depends(get_db)],
-) -> dict[str, Any]:
-    """Latest banner task for the current user (by created_at), or task_id null when none."""
-    stmt = (
-        select(BannerTask)
-        .where(BannerTask.user_id == current_user.id)
-        .order_by(BannerTask.created_at.desc())
-        .limit(1)
-    )
-    row = db.execute(stmt).scalar_one_or_none()
-    if row is None:
-        return {"task_id": None, "url": None, "brief": None}
-    return _banner_task_status_dict(str(row.id), row)
-
-
-@app.get("/status/{task_id}")
-def get_status(
-    task_id: str,
-    current_user: Annotated[User, Depends(get_current_user)],
-    db: Annotated[Session, Depends(get_db)],
-) -> dict[str, Any]:
-    try:
-        tid = uuid.UUID(task_id)
-    except ValueError:
-        raise HTTPException(status_code=404, detail="Unknown task_id") from None
-
-    row = db.get(BannerTask, tid)
-    if row is None:
-        raise HTTPException(status_code=404, detail="Unknown task_id")
-    if not current_user.is_superuser and row.user_id != current_user.id:
-        raise HTTPException(status_code=404, detail="Unknown task_id")
-
-    return _banner_task_status_dict(task_id, row)
-
-
-@app.get("/status/{task_id}/stream")
-async def stream_task_status(
-    task_id: str,
-    current_user: Annotated[User, Depends(get_current_user)],
-) -> StreamingResponse:
-    """Stream live task-status updates as Server-Sent Events (text/event-stream)."""
-    try:
-        tid = uuid.UUID(task_id)
-    except ValueError:
-        raise HTTPException(status_code=404, detail="Unknown task_id") from None
-
-    # Authorisation check before opening the stream.
-    with SessionLocal() as db:
-        row = db.get(BannerTask, tid)
-        if row is None or (not current_user.is_superuser and row.user_id != current_user.id):
-            raise HTTPException(status_code=404, detail="Unknown task_id")
-
-    async def event_generator():
-        # Emit the first snapshot immediately on connect, then only when status changes
-        # (reconnect / refresh still get one fresh frame).
-        last_emitted_status: str | None = None
-        while True:
-            event_payload: dict[str, Any] | None = None
-            current_status: str | None = None
-
-            # Open a fresh short-lived session on every tick so we always
-            # read the latest committed state from the database.
-            with SessionLocal() as db:
-                row = db.get(BannerTask, tid)
-                if row is None:
-                    break
-                current_status = row.status  # type: ignore[assignment]
-                if last_emitted_status is None or current_status != last_emitted_status:
-                    last_emitted_status = current_status
-                    event_payload = _banner_task_status_dict(task_id, row)
-
-            if event_payload is not None:
-                yield f"data: {json.dumps(event_payload)}\n\n"
-
-            if current_status in ("completed", "failed"):
-                break  # close the stream; client will receive the final event
-
-            await asyncio.sleep(1.5)
-
-    return StreamingResponse(
-        event_generator(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "X-Accel-Buffering": "no",  # prevent Nginx / proxy buffering
-        },
-    )
-
-
-@app.patch("/tasks/{task_id}")
-def patch_task(
-    task_id: str,
-    body: TaskPatchRequest,
-    current_user: Annotated[User, Depends(get_current_user)],
-    db: Annotated[Session, Depends(get_db)],
-) -> dict[str, Any]:
-    try:
-        tid = uuid.UUID(task_id)
-    except ValueError:
-        raise HTTPException(status_code=404, detail="Unknown task_id") from None
-
-    row = db.get(BannerTask, tid)
-    if row is None:
-        raise HTTPException(status_code=404, detail="Unknown task_id")
-    if not current_user.is_superuser and row.user_id != current_user.id:
-        raise HTTPException(status_code=404, detail="Unknown task_id")
-    if row.status != "completed":
-        raise HTTPException(
-            status_code=409,
-            detail="Task can only be edited after it is completed.",
-        )
-
-    if body.headline is not None:
-        row.headline = body.headline.strip() or None
-    if body.subhead is not None:
-        row.subhead = body.subhead.strip() or None
-    if body.cta is not None:
-        row.cta = body.cta.strip() or None
-    if body.bullet_points is not None:
-        row.bullet_points = body.bullet_points
-    if body.video_hook is not None:
-        row.video_hook = body.video_hook.strip() or None
-
-    if body.canvas_state is not None:
-        row.canvas_state = _merge_canvas_state(row.canvas_state, body.canvas_state)
-
-    db.commit()
-    db.refresh(row)
-
-    return {
-        "task_id": task_id,
-        "headline": row.headline,
-        "subhead": row.subhead,
-        "bullet_points": row.bullet_points,
-        "cta": row.cta,
-        "video_hook": row.video_hook,
-        "canvas_state": row.canvas_state,
-    }
-
-
-@app.post("/tasks/{task_id}/render-video")
-def render_task_video(
-    task_id: str,
-    body: RenderVideoRequest,
-    request: Request,
-    current_user: Annotated[User, Depends(get_current_user)],
-    db: Annotated[Session, Depends(get_db)],
-) -> dict[str, Any]:
-    try:
-        tid = uuid.UUID(task_id)
-    except ValueError:
-        raise HTTPException(status_code=404, detail="Unknown task_id") from None
-
-    row = db.get(BannerTask, tid)
-    if row is None:
-        raise HTTPException(status_code=404, detail="Unknown task_id")
-    if not current_user.is_superuser and row.user_id != current_user.id:
-        raise HTTPException(status_code=404, detail="Unknown task_id")
-    if row.status != "completed":
-        raise HTTPException(
-            status_code=409,
-            detail="Task must be completed before rendering video.",
-        )
-
-    public_base = _public_api_base(request)
-    payload = _video_payload_for_engine(row, body.design_type, public_base, body.aspect_ratio)
-    payload["task_id"] = task_id
-    if not payload["headline"]:
-        raise HTTPException(status_code=400, detail="headline is required for video render.")
-    if not payload["background_url"]:
-        raise HTTPException(status_code=400, detail="background_url is missing for this task.")
-
-    render_url = _video_engine_render_url()
-    try:
-        r = requests.post(render_url, json=payload, timeout=600)
-    except requests.RequestException as exc:
-        raise HTTPException(
-            status_code=502,
-            detail=f"Video engine unreachable ({render_url}): {exc}",
-        ) from exc
-
-    if r.status_code >= 400:
-        detail = r.text[:500] if r.text else r.reason
-        try:
-            err_json = r.json()
-            if isinstance(err_json, dict):
-                raw_d = err_json.get("details") or err_json.get("error") or detail
-                if isinstance(raw_d, list):
-                    detail = " ".join(str(x) for x in raw_d)
-                else:
-                    detail = raw_d
-        except (json.JSONDecodeError, ValueError):
-            pass
-        raise HTTPException(status_code=502, detail=f"Video engine error: {detail}")
-
-    try:
-        data = r.json()
-    except json.JSONDecodeError as exc:
-        raise HTTPException(
-            status_code=502,
-            detail="Video engine returned invalid JSON.",
-        ) from exc
-
-    if not data.get("success"):
-        fail = data.get("error") or data.get("details") or "Video render failed"
-        if isinstance(fail, list):
-            fail = " ".join(str(x) for x in fail)
-        raise HTTPException(status_code=502, detail=str(fail))
-
-    video_url = data.get("videoUrl") or data.get("video_url")
-    if not video_url or not isinstance(video_url, str):
-        raise HTTPException(
-            status_code=502,
-            detail="Video engine response missing videoUrl.",
-        )
-
-    cleaned = video_url.strip()
-    is_vertical = body.aspect_ratio == "9:16"
-    if body.design_type == 2:
-        if is_vertical:
-            row.video_url_2_vertical = cleaned
-        else:
-            row.video_url_2 = cleaned
-    else:
-        if is_vertical:
-            row.video_url_1_vertical = cleaned
-        else:
-            row.video_url_1 = cleaned
-    db.commit()
-    db.refresh(row)
-
-    return {
-        "task_id": task_id,
-        "design_type": body.design_type,
-        "aspect_ratio": body.aspect_ratio,
-        "video_url": cleaned,
-        "video_url_1": row.video_url_1,
-        "video_url_2": row.video_url_2,
-        "video_url_1_vertical": row.video_url_1_vertical,
-        "video_url_2_vertical": row.video_url_2_vertical,
-    }
-
-
-@app.get("/admin/tasks")
-def admin_list_tasks(
-    _: Annotated[User, Depends(get_current_superuser)],
-    db: Annotated[Session, Depends(get_db)],
-) -> list[dict[str, Any]]:
-    stmt = select(BannerTask).options(joinedload(BannerTask.user)).order_by(BannerTask.id)
-    rows = db.scalars(stmt).unique().all()
-    out: list[dict[str, Any]] = []
-    for t in rows:
-        tid = str(t.id)
-        fs1, fs2 = _rendered_banner_urls_for_task(tid)
-        out.append(
-            {
-                "task_id": tid,
-                "user_id": str(t.user_id),
-                "user_email": t.user.email,
-                "status": t.status,
-                "url": t.url,
-                "brief": t.brief,
-                "error": t.error,
-                "headline": t.headline,
-                "subhead": t.subhead,
-                "bullet_points": t.bullet_points,
-                "cta": t.cta,
-                "video_hook": t.video_hook,
-                "brand_color": t.brand_color,
-                "background_url": t.background_url,
-                "logo_url": t.logo_url,
-                "rendered_banner_1_url": t.rendered_banner_1_url or fs1,
-                "rendered_banner_2_url": t.rendered_banner_2_url or fs2,
-                "canvas_state": t.canvas_state,
-                "video_url_1": t.video_url_1,
-                "video_url_2": t.video_url_2,
-                "rendered_banner_1_vertical_url": t.rendered_banner_1_vertical_url,
-                "rendered_banner_2_vertical_url": t.rendered_banner_2_vertical_url,
-                "video_url_1_vertical": t.video_url_1_vertical,
-                "video_url_2_vertical": t.video_url_2_vertical,
-            }
-        )
-    return out
-
-
-@app.get("/admin/ai-banner-context")
-def download_ai_banner_context(_: Annotated[User, Depends(require_primary_admin)]) -> Response:
-    """Regenerate ai-banner-context.txt on disk and return it as a download (primary admin only)."""
-    root = Path(__file__).resolve().parent
-    text = build_document(root)
-    (root / OUTPUT_FILENAME).write_text(text, encoding="utf-8")
-    return Response(
-        content=text.encode("utf-8"),
-        media_type="text/plain; charset=utf-8",
-        headers={
-            "Content-Disposition": f'attachment; filename="{OUTPUT_FILENAME}"',
-            "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
-            "Pragma": "no-cache",
-        },
-    )
+app.include_router(auth_router.router)
+app.include_router(banners_router.router)
+app.include_router(admin_router.router)
 
 
 ================================================================================
@@ -1716,6 +1000,14 @@ FILE: celery_app.py
 
 Start a worker locally (Windows requires gevent or solo pool):
     celery -A celery_app worker --loglevel=info -P gevent
+
+After changing task code, restart the worker so it reloads ``worker_tasks``.
+
+Banner pipeline task (`run_banner_task` in worker_tasks.py) uses bind=True with
+``autoretry_for=(Exception,)``, ``retry_backoff=True``, and ``max_retries=3`` so
+transient failures (OpenAI, crawl, disk) can recover; deterministic failures use
+``BannerPipelineFatalError`` (no Celery retry). OpenAI calls in ``creative_agent``
+use tenacity (3 attempts per call site) before surfacing an error to the task.
 """
 
 from __future__ import annotations
@@ -1732,7 +1024,7 @@ celery_app = Celery(
     "banner_generator",
     broker="redis://127.0.0.1:6379/0",
     backend="redis://127.0.0.1:6379/0",
-    include=['api']
+    include=["worker_tasks"],
 )
 
 celery_app.conf.update(
@@ -1743,6 +1035,12 @@ celery_app.conf.update(
     timezone="UTC",
     enable_utc=True,
 )
+
+# ``include=`` alone does not import task modules when this file is loaded; the worker
+# must register tasks before consuming. Eager import avoids "unregistered task" for
+# e.g. ``render_video_task`` while ``run_banner_task`` might still appear registered
+# via other import paths.
+import worker_tasks  # noqa: E402, F401
 
 
 ================================================================================
@@ -1869,6 +1167,15 @@ if __name__ == "__main__":
 
 
 ================================================================================
+FILE: config.py
+================================================================================
+
+"""Application constants (avoid import cycles between api, routers, and workers)."""
+
+SUPERUSER_EMAIL = "gal0673@gmail.com".lower()
+
+
+================================================================================
 FILE: creative_agent.py
 ================================================================================
 
@@ -1876,7 +1183,7 @@ FILE: creative_agent.py
 Elite marketing-agency banner: GPT-4o copy (any industry), DALL-E 3 background.
 
 Requires:
-  pip install openai requests
+  pip install openai requests tenacity
   Env: OPENAI_API_KEY
 
 Inputs:  scraped_content.txt (UTF-8)
@@ -1895,7 +1202,15 @@ from pathlib import Path
 
 import requests
 from dotenv import load_dotenv
-from openai import OpenAI
+from openai import (
+    APIConnectionError,
+    APIStatusError,
+    APITimeoutError,
+    InternalServerError,
+    OpenAI,
+    RateLimitError,
+)
+from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
 
 BASE = Path(__file__).resolve().parent
 load_dotenv(BASE / ".env")
@@ -1950,6 +1265,81 @@ Output ONLY valid JSON (no markdown, no commentary, no extra keys) with exactly 
 You MUST bake the above into image_prompt: the scene is NEVER allowed to include people, faces, silhouettes, crowds, workers, customers, hands, or any living figures—only empty spaces, props, food/drink/plants/objects without holders, or fully abstract backdrops. Prefer compositions where pseudo-text cannot appear — abstract textures, nature, architecture without signs, heavily blurred backgrounds, macro details, empty/minimal surfaces, or depth-of-field that keeps screens/devices out of focus. Avoid prompts that invite laptops, phones, monitors, whiteboards, posters, books with visible pages, or wall art with glyphs. Reiterate in your own words: NO text, NO numbers, NO UI gibberish, NO logos, watermarks, or readable signage anywhere."""
 
 
+_TRANSIENT_HTTP_STATUS = frozenset({408, 429, 500, 502, 503, 504})
+
+
+def _is_transient_openai_error(exc: BaseException) -> bool:
+    if isinstance(exc, (APIConnectionError, APITimeoutError, RateLimitError, InternalServerError)):
+        return True
+    if isinstance(exc, APIStatusError):
+        return exc.status_code in _TRANSIENT_HTTP_STATUS
+    return False
+
+
+def _is_transient_requests_error(exc: BaseException) -> bool:
+    if isinstance(
+        exc,
+        (
+            requests.exceptions.ConnectionError,
+            requests.exceptions.Timeout,
+            requests.exceptions.ChunkedEncodingError,
+        ),
+    ):
+        return True
+    if isinstance(exc, requests.exceptions.HTTPError):
+        resp = exc.response
+        return resp is not None and resp.status_code in _TRANSIENT_HTTP_STATUS
+    return False
+
+
+def _is_transient_dalle_step(exc: BaseException) -> bool:
+    return _is_transient_openai_error(exc) or _is_transient_requests_error(exc)
+
+
+_OPENAI_CHAT_RETRY = retry(
+    reraise=True,
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=2, max=60),
+    retry=retry_if_exception(_is_transient_openai_error),
+)
+
+
+_OPENAI_DALLE_RETRY = retry(
+    reraise=True,
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=2, max=60),
+    retry=retry_if_exception(_is_transient_dalle_step),
+)
+
+
+@_OPENAI_CHAT_RETRY
+def _chat_completions_create_banner(client: OpenAI, user_content: str):
+    return client.chat.completions.create(
+        model="gpt-4o",
+        messages=[
+            {"role": "system", "content": ELITE_AGENCY_SYSTEM},
+            {"role": "user", "content": user_content[:16000]},
+        ],
+        response_format={"type": "json_object"},
+    )
+
+
+@_OPENAI_DALLE_RETRY
+def _images_generate_and_store(client: OpenAI, combined_prompt: str, dest: Path) -> None:
+    img_response = client.images.generate(
+        model="dall-e-3",
+        prompt=combined_prompt,
+        size="1024x1024",
+    )
+    image_url = img_response.data[0].url
+    if not image_url:
+        raise RuntimeError("[creative_agent] ERROR: DALL-E returned no image URL.")
+    print("[creative_agent] Step 2/3: Downloading image from OpenAI URL…")
+    img_req = requests.get(image_url, timeout=120)
+    img_req.raise_for_status()
+    dest.write_bytes(img_req.content)
+
+
 def _require_api_key() -> None:
     if not os.environ.get("OPENAI_API_KEY"):
         print(
@@ -1971,14 +1361,7 @@ def _read_scraped() -> str:
 
 def fetch_banner_payload(client: OpenAI, user_content: str) -> dict:
     print("[creative_agent] Step 1/3: Requesting copy + image brief from GPT-4o (Elite Marketing Agency)…")
-    response = client.chat.completions.create(
-        model="gpt-4o",
-        messages=[
-            {"role": "system", "content": ELITE_AGENCY_SYSTEM},
-            {"role": "user", "content": user_content[:16000]},
-        ],
-        response_format={"type": "json_object"},
-    )
+    response = _chat_completions_create_banner(client, user_content)
     text = response.choices[0].message.content
     if not text:
         raise RuntimeError("[creative_agent] ERROR: Empty response from GPT-4o.")
@@ -2039,18 +1422,7 @@ def generate_background_dalle3(
     dest.parent.mkdir(parents=True, exist_ok=True)
     print("[creative_agent] Step 2/3: Generating background with DALL-E 3 (1024×1024)…")
     combined_prompt = f"{image_prompt.strip()}\n\n{DALLE_IMAGE_API_ENFORCEMENT}"
-    img_response = client.images.generate(
-        model="dall-e-3",
-        prompt=combined_prompt,
-        size="1024x1024",
-    )
-    image_url = img_response.data[0].url
-    if not image_url:
-        raise RuntimeError("[creative_agent] ERROR: DALL-E returned no image URL.")
-    print("[creative_agent] Step 2/3: Downloading image from OpenAI URL…")
-    img_req = requests.get(image_url, timeout=120)
-    img_req.raise_for_status()
-    dest.write_bytes(img_req.content)
+    _images_generate_and_store(client, combined_prompt, dest)
     print(f"[creative_agent] Step 2/3: Wrote {dest}.")
     return dest
 
@@ -2122,6 +1494,33 @@ def get_db():
         yield db
     finally:
         db.close()
+
+
+================================================================================
+FILE: deps.py
+================================================================================
+
+"""FastAPI dependency callables shared by routers."""
+
+from __future__ import annotations
+
+from typing import Annotated
+
+from fastapi import Depends, HTTPException
+
+from auth import get_current_superuser
+from config import SUPERUSER_EMAIL
+from models import User
+
+
+def require_primary_admin(user: Annotated[User, Depends(get_current_superuser)]) -> User:
+    """Only the bootstrapped primary admin may export AI context."""
+    if user.email.strip().lower() != SUPERUSER_EMAIL:
+        raise HTTPException(
+            status_code=403,
+            detail="ייצוא הקשר ל-AI זמין רק לחשבון האדמין הראשי.",
+        )
+    return user
 
 
 ================================================================================
@@ -3669,11 +3068,1084 @@ class BannerTask(Base):
     video_url_1_vertical: Mapped[str | None] = mapped_column(String(1024), nullable=True)
     video_url_2_vertical: Mapped[str | None] = mapped_column(String(1024), nullable=True)
 
+    # Async video render: null | "processing" | "failed" (cleared on success)
+    video_status: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    video_render_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+
     user: Mapped["User"] = relationship("User", back_populates="tasks")
 
 
 ================================================================================
-SECTION: CLIENT SOURCE FILES (21)
+FILE: routers/__init__.py
+================================================================================
+
+"""FastAPI routers (HTTP route handlers only)."""
+
+
+================================================================================
+FILE: routers/admin.py
+================================================================================
+
+"""Superuser admin routes."""
+
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Annotated, Any
+
+from fastapi import APIRouter, Depends
+from fastapi.responses import Response
+from sqlalchemy import select
+from sqlalchemy.orm import Session, joinedload
+
+from ai_banner_context import OUTPUT_FILENAME, build_document
+from auth import get_current_superuser
+from database import get_db
+from deps import require_primary_admin
+from models import BannerTask, User
+from services.banner_service import rendered_banner_urls_for_task
+
+router = APIRouter(tags=["admin"])
+
+
+@router.get("/admin/tasks")
+def admin_list_tasks(
+    _: Annotated[User, Depends(get_current_superuser)],
+    db: Session = Depends(get_db),
+) -> list[dict[str, Any]]:
+    stmt = select(BannerTask).options(joinedload(BannerTask.user)).order_by(BannerTask.id)
+    rows = db.scalars(stmt).unique().all()
+    out: list[dict[str, Any]] = []
+    for t in rows:
+        tid = str(t.id)
+        fs1, fs2 = rendered_banner_urls_for_task(tid)
+        out.append(
+            {
+                "task_id": tid,
+                "user_id": str(t.user_id),
+                "user_email": t.user.email,
+                "status": t.status,
+                "url": t.url,
+                "brief": t.brief,
+                "error": t.error,
+                "headline": t.headline,
+                "subhead": t.subhead,
+                "bullet_points": t.bullet_points,
+                "cta": t.cta,
+                "video_hook": t.video_hook,
+                "brand_color": t.brand_color,
+                "background_url": t.background_url,
+                "logo_url": t.logo_url,
+                "rendered_banner_1_url": t.rendered_banner_1_url or fs1,
+                "rendered_banner_2_url": t.rendered_banner_2_url or fs2,
+                "canvas_state": t.canvas_state,
+                "video_url_1": t.video_url_1,
+                "video_url_2": t.video_url_2,
+                "rendered_banner_1_vertical_url": t.rendered_banner_1_vertical_url,
+                "rendered_banner_2_vertical_url": t.rendered_banner_2_vertical_url,
+                "video_url_1_vertical": t.video_url_1_vertical,
+                "video_url_2_vertical": t.video_url_2_vertical,
+                "video_status": t.video_status,
+                "video_render_error": t.video_render_error,
+            }
+        )
+    return out
+
+
+@router.get("/admin/ai-banner-context")
+def download_ai_banner_context(_: Annotated[User, Depends(require_primary_admin)]) -> Response:
+    """Regenerate ai-banner-context.txt on disk and return it as a download (primary admin only)."""
+    root = Path(__file__).resolve().parent.parent
+    text = build_document(root)
+    (root / OUTPUT_FILENAME).write_text(text, encoding="utf-8")
+    return Response(
+        content=text.encode("utf-8"),
+        media_type="text/plain; charset=utf-8",
+        headers={
+            "Content-Disposition": f'attachment; filename="{OUTPUT_FILENAME}"',
+            "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+            "Pragma": "no-cache",
+        },
+    )
+
+
+================================================================================
+FILE: routers/auth.py
+================================================================================
+
+"""Authentication routes."""
+
+from __future__ import annotations
+
+from typing import Annotated
+
+from fastapi import APIRouter, Depends, HTTPException, Response
+from fastapi.security import OAuth2PasswordRequestForm
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
+from auth import create_access_token, get_current_user, get_password_hash, verify_password
+from database import get_db
+from models import User
+from schemas import RegisterRequest
+
+router = APIRouter(tags=["auth"])
+
+
+@router.post("/auth/register", status_code=201)
+def register(body: RegisterRequest, db: Session = Depends(get_db)) -> dict[str, str]:
+    email = body.email.strip().lower()
+    if not email:
+        raise HTTPException(status_code=400, detail="email must not be empty")
+    existing = db.execute(select(User).where(User.email == email)).scalar_one_or_none()
+    if existing is not None:
+        raise HTTPException(status_code=400, detail="Email already registered")
+    user = User(
+        email=email,
+        hashed_password=get_password_hash(body.password),
+        is_superuser=False,
+    )
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+    return {"id": str(user.id), "email": user.email}
+
+
+@router.post("/auth/login")
+def login(
+    response: Response,
+    form_data: Annotated[OAuth2PasswordRequestForm, Depends()],
+    db: Session = Depends(get_db),
+) -> dict[str, str]:
+    email = form_data.username.strip().lower()
+    user = db.execute(select(User).where(User.email == email)).scalar_one_or_none()
+    if user is None or not verify_password(form_data.password, user.hashed_password):
+        raise HTTPException(status_code=401, detail="Incorrect email or password")
+    token = create_access_token(subject=str(user.id))
+    response.set_cookie(
+        key="access_token",
+        value=f"Bearer {token}",
+        httponly=True,
+        samesite="lax",
+        secure=False,
+    )
+    return {"message": "Login successful"}
+
+
+@router.get("/auth/me")
+def auth_me(current_user: Annotated[User, Depends(get_current_user)]) -> dict[str, str]:
+    """Return the current user when the HttpOnly session cookie is valid (SPA bootstrap)."""
+    return {"email": current_user.email}
+
+
+@router.post("/auth/logout")
+def logout_user(response: Response) -> dict[str, str]:
+    response.delete_cookie("access_token")
+    return {"message": "Logged out"}
+
+
+================================================================================
+FILE: routers/banners.py
+================================================================================
+
+"""Banner generation, status, editing, and video render queue routes."""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import uuid
+from typing import Annotated, Any
+
+from fastapi import APIRouter, Depends, HTTPException, Request
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+from starlette.responses import StreamingResponse
+
+from auth import get_current_user
+from database import SessionLocal, get_db
+from models import BannerTask, User
+from schemas import GenerateRequest, RenderVideoRequest, TaskPatchRequest
+from services.banner_service import (
+    banner_task_status_dict,
+    merge_canvas_state,
+    persist_task,
+    rendered_banner_urls_for_task,
+)
+from services.video_service import public_api_base, video_payload_for_engine
+from worker_tasks import persist_video_task_state, render_video_task, run_banner_task
+
+router = APIRouter(tags=["banners"])
+
+
+@router.post("/generate")
+def generate(
+    body: GenerateRequest,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Session = Depends(get_db),
+) -> dict[str, str]:
+    url = body.url.strip()
+    if not url:
+        raise HTTPException(status_code=400, detail="url must not be empty")
+
+    brief = (body.brief or "").strip() or None
+
+    task_id = uuid.uuid4()
+    row = BannerTask(
+        id=task_id,
+        user_id=current_user.id,
+        status="pending",
+        url=url,
+        brief=brief,
+        error=None,
+        headline=None,
+        subhead=None,
+        bullet_points=None,
+        cta=None,
+        video_hook=None,
+        brand_color=None,
+        background_url=None,
+        logo_url=None,
+        rendered_banner_1_url=None,
+        rendered_banner_2_url=None,
+        canvas_state=None,
+        video_url_1=None,
+        video_url_2=None,
+        rendered_banner_1_vertical_url=None,
+        rendered_banner_2_vertical_url=None,
+        video_url_1_vertical=None,
+        video_url_2_vertical=None,
+    )
+    db.add(row)
+    db.commit()
+    tid = str(task_id)
+    try:
+        run_banner_task.delay(tid, url, brief)
+    except Exception as exc:
+        persist_task(task_id, status="failed", error=str(exc))
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "לא ניתן לשלוח את המשימה לתור (Celery). ודא ש-Redis רץ (למשל ב-Laragon) "
+                "ושה-worker פעיל."
+            ),
+        ) from exc
+    return {"task_id": tid}
+
+
+@router.get("/banners/latest")
+def get_latest_banner(
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Latest banner task for the current user (by created_at), or task_id null when none."""
+    stmt = (
+        select(BannerTask)
+        .where(BannerTask.user_id == current_user.id)
+        .order_by(BannerTask.created_at.desc())
+        .limit(1)
+    )
+    row = db.execute(stmt).scalar_one_or_none()
+    if row is None:
+        return {"task_id": None, "url": None, "brief": None}
+    return banner_task_status_dict(str(row.id), row)
+
+
+@router.get("/status/{task_id}")
+def get_status(
+    task_id: str,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    try:
+        tid = uuid.UUID(task_id)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Unknown task_id") from None
+
+    row = db.get(BannerTask, tid)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Unknown task_id")
+    if not current_user.is_superuser and row.user_id != current_user.id:
+        raise HTTPException(status_code=404, detail="Unknown task_id")
+
+    return banner_task_status_dict(task_id, row)
+
+
+@router.get("/status/{task_id}/stream")
+async def stream_task_status(
+    task_id: str,
+    current_user: Annotated[User, Depends(get_current_user)],
+) -> StreamingResponse:
+    """Stream live task-status updates as Server-Sent Events (text/event-stream)."""
+    try:
+        tid = uuid.UUID(task_id)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Unknown task_id") from None
+
+    with SessionLocal() as db:
+        row = db.get(BannerTask, tid)
+        if row is None or (not current_user.is_superuser and row.user_id != current_user.id):
+            raise HTTPException(status_code=404, detail="Unknown task_id")
+
+    async def event_generator():
+        last_payload_json: str | None = None
+        while True:
+            with SessionLocal() as db:
+                row = db.get(BannerTask, tid)
+                if row is None:
+                    break
+                payload = banner_task_status_dict(task_id, row)
+                blob = json.dumps(payload, sort_keys=True, default=str)
+
+            if blob != last_payload_json:
+                last_payload_json = blob
+                yield f"data: {blob}\n\n"
+
+            current_status = payload["status"]
+            video_st = payload.get("video_status")
+
+            if current_status == "failed":
+                break
+            if current_status == "completed" and video_st != "processing":
+                break
+
+            await asyncio.sleep(1.5)
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+@router.patch("/tasks/{task_id}")
+def patch_task(
+    task_id: str,
+    body: TaskPatchRequest,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    try:
+        tid = uuid.UUID(task_id)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Unknown task_id") from None
+
+    row = db.get(BannerTask, tid)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Unknown task_id")
+    if not current_user.is_superuser and row.user_id != current_user.id:
+        raise HTTPException(status_code=404, detail="Unknown task_id")
+    if row.status != "completed":
+        raise HTTPException(
+            status_code=409,
+            detail="Task can only be edited after it is completed.",
+        )
+
+    if body.headline is not None:
+        row.headline = body.headline.strip() or None
+    if body.subhead is not None:
+        row.subhead = body.subhead.strip() or None
+    if body.cta is not None:
+        row.cta = body.cta.strip() or None
+    if body.bullet_points is not None:
+        row.bullet_points = body.bullet_points
+    if body.video_hook is not None:
+        row.video_hook = body.video_hook.strip() or None
+
+    if body.canvas_state is not None:
+        row.canvas_state = merge_canvas_state(row.canvas_state, body.canvas_state)
+
+    db.commit()
+    db.refresh(row)
+
+    return {
+        "task_id": task_id,
+        "headline": row.headline,
+        "subhead": row.subhead,
+        "bullet_points": row.bullet_points,
+        "cta": row.cta,
+        "video_hook": row.video_hook,
+        "canvas_state": row.canvas_state,
+    }
+
+
+@router.post("/tasks/{task_id}/render-video")
+def render_task_video(
+    task_id: str,
+    body: RenderVideoRequest,
+    request: Request,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    try:
+        tid = uuid.UUID(task_id)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Unknown task_id") from None
+
+    row = db.get(BannerTask, tid)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Unknown task_id")
+    if not current_user.is_superuser and row.user_id != current_user.id:
+        raise HTTPException(status_code=404, detail="Unknown task_id")
+    if row.status != "completed":
+        raise HTTPException(
+            status_code=409,
+            detail="Task must be completed before rendering video.",
+        )
+    if row.video_status == "processing":
+        raise HTTPException(
+            status_code=409,
+            detail="Video render is already in progress for this task.",
+        )
+
+    public_base = public_api_base(request)
+    payload = video_payload_for_engine(row, body.design_type, public_base, body.aspect_ratio)
+    payload["task_id"] = task_id
+    if not payload["headline"]:
+        raise HTTPException(status_code=400, detail="headline is required for video render.")
+    if not payload["background_url"]:
+        raise HTTPException(status_code=400, detail="background_url is missing for this task.")
+
+    row.video_status = "processing"
+    row.video_render_error = None
+    db.commit()
+
+    try:
+        render_video_task.delay(task_id, int(body.design_type), str(body.aspect_ratio), public_base)
+    except Exception as exc:
+        persist_video_task_state(
+            tid,
+            video_status="failed",
+            video_render_error=f"Could not queue video render: {exc}",
+        )
+        raise HTTPException(
+            status_code=503,
+            detail="לא ניתן לשלוח ייצור וידאו לתור (Celery). ודא ש-Redis רץ וה-worker פעיל.",
+        ) from exc
+
+    return {"status": "processing"}
+
+
+@router.post("/tasks/{task_id}/video-render/reset")
+def reset_stuck_video_render(
+    task_id: str,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Clear ``video_status=processing`` when the worker stopped or the job is stuck."""
+    try:
+        tid = uuid.UUID(task_id)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Unknown task_id") from None
+
+    row = db.get(BannerTask, tid)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Unknown task_id")
+    if not current_user.is_superuser and row.user_id != current_user.id:
+        raise HTTPException(status_code=404, detail="Unknown task_id")
+    if row.status != "completed":
+        raise HTTPException(status_code=409, detail="Task must be completed.")
+    if row.video_status != "processing":
+        raise HTTPException(
+            status_code=409,
+            detail="Video render is not marked as processing; nothing to reset.",
+        )
+
+    row.video_status = None
+    row.video_render_error = None
+    db.commit()
+    db.refresh(row)
+    return banner_task_status_dict(task_id, row)
+
+
+================================================================================
+FILE: schemas.py
+================================================================================
+
+"""Pydantic request/response models for the API."""
+
+from __future__ import annotations
+
+from typing import Any, Literal
+
+from pydantic import BaseModel, Field, field_validator
+
+
+class RegisterRequest(BaseModel):
+    email: str = Field(..., min_length=3, max_length=255)
+    password: str = Field(..., min_length=8, max_length=128)
+
+
+class TokenResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+
+
+class GenerateRequest(BaseModel):
+    url: str = Field(..., min_length=1, description="Site URL to crawl")
+    brief: str | None = Field(
+        default=None,
+        max_length=12000,
+        description="Optional campaign goal / target audience for the creative model",
+    )
+    video_hook: str | None = Field(
+        default=None,
+        max_length=256,
+        description="Optional custom video hook that overrides the AI-generated one",
+    )
+
+
+class RenderVideoRequest(BaseModel):
+    """Which template to render (1 = split-panel, 2 = immersive) and which canvas slice to use."""
+
+    design_type: Literal[1, 2] = 1
+    aspect_ratio: Literal["1:1", "9:16"] = "1:1"
+
+    @field_validator("design_type", mode="before")
+    @classmethod
+    def coerce_design_type(cls, v: Any) -> Any:
+        if v is None:
+            return 1
+        try:
+            n = int(v)
+        except (TypeError, ValueError):
+            return 1
+        return 2 if n == 2 else 1
+
+    @field_validator("aspect_ratio", mode="before")
+    @classmethod
+    def coerce_aspect_ratio(cls, v: Any) -> Any:
+        if v is None:
+            return "1:1"
+        return "9:16" if str(v).strip() == "9:16" else "1:1"
+
+
+class TaskPatchRequest(BaseModel):
+    """Partial update for an editable completed banner task."""
+
+    headline: str | None = Field(default=None, max_length=512)
+    subhead: str | None = Field(default=None, max_length=1024)
+    cta: str | None = Field(default=None, max_length=256)
+    bullet_points: list[str] | None = None
+    video_hook: str | None = Field(default=None, max_length=256)
+    canvas_state: dict[str, Any] | None = None
+
+    @field_validator("bullet_points")
+    @classmethod
+    def three_bullets(cls, v: list[str] | None) -> list[str] | None:
+        if v is None:
+            return None
+        if len(v) != 3:
+            raise ValueError("bullet_points must contain exactly 3 strings")
+        return [str(x).strip() for x in v]
+
+
+================================================================================
+FILE: services/__init__.py
+================================================================================
+
+"""Domain services (business logic outside HTTP and Celery task wiring)."""
+
+
+================================================================================
+FILE: services/banner_service.py
+================================================================================
+
+"""Banner task filesystem paths, DB persistence helpers, and status payloads."""
+
+from __future__ import annotations
+
+import uuid
+from pathlib import Path
+from typing import Any, Literal
+
+from database import SessionLocal
+from main import BASE_DIR
+from models import BannerTask
+
+TASKS_DIR: Path = BASE_DIR / "tasks"
+
+TaskStatus = Literal["pending", "scraped", "generating_image", "completed", "failed"]
+
+
+def ensure_tasks_dir() -> None:
+    TASKS_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def rendered_banner_urls_for_task(task_id: str) -> tuple[str | None, str | None]:
+    """Resolve static URLs for Design 1 / Design 2 PNGs; fall back to legacy rendered_banner.png for v1."""
+    work = TASKS_DIR / task_id
+    u1: str | None = None
+    u2: str | None = None
+    if (work / "rendered_banner_1.png").is_file():
+        u1 = f"/task-files/{task_id}/rendered_banner_1.png"
+    elif (work / "rendered_banner.png").is_file():
+        u1 = f"/task-files/{task_id}/rendered_banner.png"
+    if (work / "rendered_banner_2.png").is_file():
+        u2 = f"/task-files/{task_id}/rendered_banner_2.png"
+    return u1, u2
+
+
+def banner_task_status_dict(task_id: str, row: BannerTask) -> dict[str, Any]:
+    """Full task payload for REST status, SSE, and /banners/latest (includes url/brief for form restore)."""
+    fs1, fs2 = rendered_banner_urls_for_task(task_id)
+    status_val: TaskStatus = row.status  # type: ignore[assignment]
+    return {
+        "task_id": task_id,
+        "url": row.url,
+        "brief": row.brief,
+        "status": status_val,
+        "error": row.error,
+        "headline": row.headline,
+        "subhead": row.subhead,
+        "bullet_points": row.bullet_points,
+        "cta": row.cta,
+        "video_hook": row.video_hook,
+        "brand_color": row.brand_color,
+        "background_url": row.background_url,
+        "logo_url": row.logo_url,
+        "rendered_banner_1_url": row.rendered_banner_1_url or fs1,
+        "rendered_banner_2_url": row.rendered_banner_2_url or fs2,
+        "canvas_state": row.canvas_state,
+        "video_url_1": row.video_url_1,
+        "video_url_2": row.video_url_2,
+        "rendered_banner_1_vertical_url": row.rendered_banner_1_vertical_url,
+        "rendered_banner_2_vertical_url": row.rendered_banner_2_vertical_url,
+        "video_url_1_vertical": row.video_url_1_vertical,
+        "video_url_2_vertical": row.video_url_2_vertical,
+        "video_status": row.video_status,
+        "video_render_error": row.video_render_error,
+    }
+
+
+def persist_task(task_uuid: uuid.UUID, **kwargs: Any) -> None:
+    with SessionLocal() as db:
+        row = db.get(BannerTask, task_uuid)
+        if row is None:
+            return
+        for key, value in kwargs.items():
+            setattr(row, key, value)
+        db.commit()
+
+
+def merge_canvas_state(prev: Any, patch: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Merge partial canvas_state from PATCH; replace any known design key when provided."""
+    if patch is None:
+        return prev if isinstance(prev, dict) else None
+    base: dict[str, Any] = dict(prev) if isinstance(prev, dict) else {}
+    for key in ("v", "design1", "design2", "design1_vertical", "design2_vertical"):
+        if key in patch:
+            base[key] = patch[key]
+    return base or None
+
+
+================================================================================
+FILE: services/video_service.py
+================================================================================
+
+"""Video microservice payload building (Remotion /render contract)."""
+
+from __future__ import annotations
+
+import os
+from typing import Any
+
+from fastapi import Request
+
+from models import BannerTask
+
+
+def public_api_base(request: Request) -> str:
+    """Origin for turning /task-files/... into absolute URLs for the video microservice."""
+    env = os.environ.get("PUBLIC_API_BASE_URL", "").strip()
+    if env:
+        return env.rstrip("/")
+    return str(request.base_url).rstrip("/")
+
+
+def video_engine_render_url() -> str:
+    base = os.environ.get("VIDEO_ENGINE_URL", "http://127.0.0.1:9000").rstrip("/")
+    return f"{base}/render"
+
+
+def pick_canvas_slice(canvas_state: Any, design: int, aspect_ratio: str = "1:1") -> dict[str, Any]:
+    if not isinstance(canvas_state, dict):
+        return {}
+    if aspect_ratio == "9:16":
+        key = "design1_vertical" if design == 1 else "design2_vertical"
+    else:
+        key = "design1" if design == 1 else "design2"
+    sl = canvas_state.get(key)
+    return sl if isinstance(sl, dict) else {}
+
+
+def _prefer_slice_str(sl: dict[str, Any], key: str, row_val: str | None) -> str:
+    if key in sl:
+        v = sl[key]
+        if isinstance(v, str):
+            return v.strip()
+    if row_val is None:
+        return ""
+    return str(row_val).strip()
+
+
+def _prefer_slice_bullets(sl: dict[str, Any], row_bullets: list | None) -> list[str]:
+    raw = sl.get("bullets")
+    if not isinstance(raw, list):
+        raw = sl.get("bullet_points")
+    if isinstance(raw, list) and all(isinstance(x, str) for x in raw):
+        return [str(x).strip() for x in raw]
+    if isinstance(row_bullets, list):
+        return [str(x).strip() for x in row_bullets]
+    return []
+
+
+def absolute_asset_url(public_base: str, path: str | None) -> str:
+    if not path:
+        return ""
+    p = str(path).strip()
+    if p.startswith("http://") or p.startswith("https://"):
+        return p
+    base = public_base.rstrip("/")
+    if not p.startswith("/"):
+        p = "/" + p
+    return base + p
+
+
+def banner_video_payload(row: BannerTask, design: int, public_base: str, aspect_ratio: str = "1:1") -> dict[str, Any]:
+    """Merge DB columns with canvas_state (design1/design2/vertical); slice wins when a key is present."""
+    sl = pick_canvas_slice(row.canvas_state, design, aspect_ratio)
+    headline = _prefer_slice_str(sl, "headline", row.headline)
+    subhead = _prefer_slice_str(sl, "subhead", row.subhead)
+    cta = _prefer_slice_str(sl, "cta", row.cta)
+    bullet_points = _prefer_slice_bullets(sl, row.bullet_points)
+    bc_sl = sl.get("brand_color")
+    if isinstance(bc_sl, str) and bc_sl.strip():
+        brand_color = bc_sl.strip()
+    else:
+        brand_color = (row.brand_color or "#2563eb").strip() or "#2563eb"
+    if not brand_color.startswith("#"):
+        brand_color = "#" + brand_color
+
+    background_url = absolute_asset_url(public_base, row.background_url)
+    logo_url = absolute_asset_url(public_base, row.logo_url)
+    video_hook = _prefer_slice_str(sl, "video_hook", row.video_hook)
+
+    return {
+        "headline": headline,
+        "subhead": subhead,
+        "cta": cta,
+        "bullet_points": bullet_points,
+        "brand_color": brand_color,
+        "background_url": background_url,
+        "logo_url": logo_url,
+        "video_hook": video_hook,
+    }
+
+
+def video_payload_for_engine(
+    row: BannerTask, design_type: int, public_base: str, aspect_ratio: str = "1:1"
+) -> dict[str, Any]:
+    """Banner fields + explicit layout flags for the Node /render endpoint."""
+    payload = banner_video_payload(row, design_type, public_base, aspect_ratio)
+    hook = (payload.get("video_hook") or "").strip()
+    payload["video_hook"] = hook
+    payload["videoHook"] = hook
+    dt = 2 if int(design_type) == 2 else 1
+    payload["design_type"] = dt
+    payload["designTemplate"] = dt
+    payload["video_layout"] = "immersive" if dt == 2 else "split"
+    payload["videoLayout"] = payload["video_layout"]
+    payload["aspect_ratio"] = aspect_ratio
+    payload["aspectRatio"] = aspect_ratio
+    payload["isVertical"] = aspect_ratio == "9:16"
+    return payload
+
+
+================================================================================
+FILE: worker_tasks.py
+================================================================================
+
+"""Celery task definitions (imported by the worker process; keep free of FastAPI app imports)."""
+
+from __future__ import annotations
+
+import json
+import os
+import re
+import uuid
+from typing import Any
+
+import requests
+from celery import Task
+
+from celery_app import celery_app
+from database import SessionLocal
+from main import crawl_from_url, run_agency_banner_pipeline
+from models import BannerTask
+from services.banner_service import TASKS_DIR, persist_task, rendered_banner_urls_for_task
+from services.video_service import video_engine_render_url, video_payload_for_engine
+
+_BRAND_HEX = re.compile(r"^#[0-9A-Fa-f]{6}$")
+
+
+class BannerPipelineFatalError(Exception):
+    """Deterministic pipeline failure already written to ``banner_tasks``; Celery must not retry."""
+
+
+class BannerGenerationTask(Task):
+    """Auto-retry transient failures (timeouts, upstream 5xx); fatal errors skip retries."""
+
+    autoretry_for = (Exception,)
+    dont_autoretry_for = (BannerPipelineFatalError,)
+    retry_backoff = True
+    max_retries = 3
+
+    def on_failure(
+        self,
+        exc: Exception,
+        task_id: str,
+        args: tuple[Any, ...],
+        kwargs: dict[str, Any],
+        einfo: Any,
+    ) -> None:
+        if isinstance(exc, BannerPipelineFatalError):
+            return
+        if not args:
+            return
+        try:
+            task_uuid = uuid.UUID(str(args[0]))
+            persist_task(task_uuid, status="failed", error=str(exc))
+        except Exception:
+            pass
+
+
+@celery_app.task(bind=True, base=BannerGenerationTask, name="run_banner_task")
+def run_banner_task(
+    self: BannerGenerationTask,
+    task_id: str,
+    url: str,
+    brief: str | None,
+    custom_video_hook: str | None = None,
+) -> None:
+    task_uuid = uuid.UUID(task_id)
+    work_dir = TASKS_DIR / task_id
+    crawl_from_url(url, work_dir=work_dir, campaign_brief=brief)
+    persist_task(task_uuid, status="scraped")
+
+    if not os.environ.get("OPENAI_API_KEY"):
+        persist_task(task_uuid, status="failed", error="OPENAI_API_KEY is not set")
+        raise BannerPipelineFatalError("OPENAI_API_KEY is not set")
+
+    persist_task(task_uuid, status="generating_image")
+    run_agency_banner_pipeline(work_dir=work_dir, site_url=url)
+
+    campaign_path = work_dir / "creative_campaign.json"
+    background = work_dir / "background.png"
+    logo = work_dir / "logo.png"
+    if not campaign_path.is_file() or not background.is_file() or not logo.is_file():
+        persist_task(
+            task_uuid,
+            status="failed",
+            error="Missing creative_campaign.json, background.png, or logo.png after pipeline.",
+        )
+        raise BannerPipelineFatalError("Missing creative output files after pipeline.")
+
+    with campaign_path.open(encoding="utf-8") as f:
+        data = json.load(f)
+
+    for key in ("headline", "subhead", "cta"):
+        if key not in data or not str(data[key]).strip():
+            persist_task(
+                task_uuid,
+                status="failed",
+                error=f"Invalid creative_campaign.json: missing or empty {key!r}",
+            )
+            raise BannerPipelineFatalError(f"Invalid creative_campaign.json: missing or empty {key!r}")
+
+    raw_hook = data.get("video_hook")
+    ai_hook: str | None = str(raw_hook).strip()[:256] if raw_hook and str(raw_hook).strip() else None
+    video_hook_val: str | None = custom_video_hook or ai_hook
+    bullets = data.get("bullet_points")
+    if not isinstance(bullets, list) or len(bullets) != 3:
+        persist_task(
+            task_uuid,
+            status="failed",
+            error="Invalid creative_campaign.json: bullet_points must be 3 strings.",
+        )
+        raise BannerPipelineFatalError("Invalid creative_campaign.json: bullet_points must be 3 strings.")
+
+    bc_raw = data.get("brand_color")
+    if not isinstance(bc_raw, str) or not bc_raw.strip():
+        persist_task(
+            task_uuid,
+            status="failed",
+            error="Invalid creative_campaign.json: missing or empty brand_color.",
+        )
+        raise BannerPipelineFatalError("Invalid creative_campaign.json: missing or empty brand_color.")
+    bc = bc_raw.strip()
+    if not bc.startswith("#"):
+        bc = "#" + bc
+    if not _BRAND_HEX.match(bc):
+        persist_task(
+            task_uuid,
+            status="failed",
+            error="Invalid creative_campaign.json: brand_color must be #RRGGBB hex.",
+        )
+        raise BannerPipelineFatalError("Invalid creative_campaign.json: brand_color must be #RRGGBB hex.")
+
+    rb1, rb2 = rendered_banner_urls_for_task(task_id)
+    persist_task(
+        task_uuid,
+        status="completed",
+        error=None,
+        headline=str(data["headline"]).strip(),
+        subhead=str(data["subhead"]).strip(),
+        bullet_points=[str(b).strip() for b in bullets],
+        cta=str(data["cta"]).strip(),
+        video_hook=video_hook_val,
+        brand_color=bc.upper(),
+        background_url=f"/task-files/{task_id}/background.png",
+        logo_url=f"/task-files/{task_id}/logo.png",
+        rendered_banner_1_url=rb1,
+        rendered_banner_2_url=rb2,
+    )
+
+
+def persist_video_task_state(task_uuid: uuid.UUID, **kwargs: Any) -> None:
+    """Update banner_tasks row fields (video_status, URLs, errors, etc.)."""
+    with SessionLocal() as db:
+        row = db.get(BannerTask, task_uuid)
+        if row is None:
+            return
+        for key, value in kwargs.items():
+            setattr(row, key, value)
+        db.commit()
+
+
+def execute_video_render_worker(
+    task_id: str,
+    design_type: int,
+    aspect_ratio: str,
+    public_base: str,
+) -> None:
+    """Call the video engine and persist the resulting URL (runs inside Celery worker)."""
+    tid = uuid.UUID(task_id)
+    render_url = video_engine_render_url()
+
+    with SessionLocal() as db:
+        row = db.get(BannerTask, tid)
+        if row is None:
+            return
+        if row.status != "completed":
+            row.video_status = "failed"
+            row.video_render_error = "Task is not completed; cannot render video."
+            db.commit()
+            return
+        payload = video_payload_for_engine(row, design_type, public_base, aspect_ratio)
+        payload["task_id"] = task_id
+        if not payload["headline"]:
+            row.video_status = "failed"
+            row.video_render_error = "headline is required for video render."
+            db.commit()
+            return
+        if not payload["background_url"]:
+            row.video_status = "failed"
+            row.video_render_error = "background_url is missing for this task."
+            db.commit()
+            return
+
+    try:
+        r = requests.post(render_url, json=payload, timeout=600)
+    except requests.RequestException as exc:
+        persist_video_task_state(
+            tid,
+            video_status="failed",
+            video_render_error=f"Video engine unreachable ({render_url}): {exc}",
+        )
+        return
+
+    if r.status_code >= 400:
+        detail = r.text[:500] if r.text else r.reason
+        try:
+            err_json = r.json()
+            if isinstance(err_json, dict):
+                raw_d = err_json.get("details") or err_json.get("error") or detail
+                if isinstance(raw_d, list):
+                    detail = " ".join(str(x) for x in raw_d)
+                else:
+                    detail = str(raw_d)
+        except (json.JSONDecodeError, ValueError):
+            pass
+        persist_video_task_state(
+            tid,
+            video_status="failed",
+            video_render_error=f"Video engine error: {detail}",
+        )
+        return
+
+    try:
+        data = r.json()
+    except json.JSONDecodeError:
+        persist_video_task_state(
+            tid,
+            video_status="failed",
+            video_render_error="Video engine returned invalid JSON.",
+        )
+        return
+
+    if not data.get("success"):
+        fail = data.get("error") or data.get("details") or "Video render failed"
+        if isinstance(fail, list):
+            fail = " ".join(str(x) for x in fail)
+        persist_video_task_state(tid, video_status="failed", video_render_error=str(fail))
+        return
+
+    video_url = data.get("videoUrl") or data.get("video_url")
+    if not video_url or not isinstance(video_url, str):
+        persist_video_task_state(
+            tid,
+            video_status="failed",
+            video_render_error="Video engine response missing videoUrl.",
+        )
+        return
+
+    cleaned = video_url.strip()
+    is_vertical = aspect_ratio == "9:16"
+    with SessionLocal() as db:
+        row = db.get(BannerTask, tid)
+        if row is None:
+            return
+        if design_type == 2:
+            if is_vertical:
+                row.video_url_2_vertical = cleaned
+            else:
+                row.video_url_2 = cleaned
+        else:
+            if is_vertical:
+                row.video_url_1_vertical = cleaned
+            else:
+                row.video_url_1 = cleaned
+        row.video_status = None
+        row.video_render_error = None
+        db.commit()
+
+
+@celery_app.task(name="render_video_task")
+def render_video_task(
+    task_id: str,
+    design_type: int,
+    aspect_ratio: str,
+    public_base: str,
+) -> None:
+    execute_video_render_worker(task_id, design_type, aspect_ratio, public_base)
+
+
+================================================================================
+SECTION: CLIENT SOURCE FILES (22)
 ================================================================================
 
 
@@ -4164,10 +4636,20 @@ FILE: client/src/BannerCanvas.css
   box-shadow: 0 16px 56px rgba(0, 0, 0, 0.18);
 }
 
+/* 1080×1920 preview — match canvas aspect so scaled content is not clipped */
+.banner-viewport.banner-viewport--9-16 {
+  aspect-ratio: 9 / 16;
+  max-width: min(96%, 520px);
+  max-height: min(92vh, 960px);
+}
+
 .banner-viewport-inner {
   position: absolute;
   inset: 0;
   overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
 /* ── Canvas root ────────────────────────────────────────────────────────────── */
@@ -4608,29 +5090,17 @@ FILE: client/src/BannerCanvas.css
 FILE: client/src/BannerCanvas.jsx
 ================================================================================
 
-import { useCallback, useEffect, useId, useRef, useState } from 'react'
-import { useDragControls } from 'framer-motion'
+import { useCallback, useMemo } from 'react'
 import './BannerCanvas.css'
-import BannerLayer from './components/canvas/BannerLayer.jsx'
-import EditableText from './components/canvas/EditableText.jsx'
-import TextControls from './components/canvas/TextControls.jsx'
-import {
-  BANNER_SQUARE_1_1,
-  BANNER_VERTICAL_9_16,
-  captureBannerNodeToPng,
-  contrastingTextColor,
-  extractDomain,
-  hexToRgb,
-  normalizeBrandHex,
-} from './components/canvas/canvasUtils.js'
+import BannerWorkspaceContainer from './components/canvas/BannerWorkspaceContainer.jsx'
 import {
   computeDesign1VerticalMetrics,
   DESIGN1_DEFAULT_BOXES_VERTICAL,
-  useBannerCanvasState,
 } from './components/canvas/useBannerCanvasState.js'
 
 // ─── Design 1 shared horizontal layout constants ──────────────────────────────
-const DF = { headline: 51, subhead: 22, bullets: 18, cta: 26 }
+const DF_SQUARE = { headline: 58, subhead: 26, bullets: 22, cta: 30 }
+const DF_VERTICAL = { headline: 70, subhead: 32, bullets: 26, cta: 36 }
 const DC = { headline: '#0f172a', subhead: '#475569', bullets: '#1e293b' }
 
 const LEFT_W = 475
@@ -4639,16 +5109,158 @@ const RIGHT_X = LEFT_W + DIVIDER_W
 const STRIP_H = 70
 const RPAD = 44
 const CONTENT_X = RIGHT_X + RPAD
-const CONTENT_W = 1080 - CONTENT_X - RPAD  // 511
+const CONTENT_W = 1080 - CONTENT_X - RPAD
 const LOGO_W = 200
 
-// ─── Default layer boxes — two variants ──────────────────────────────────────
 const DESIGN1_SQUARE_BOXES = {
-  logo:     { x: 1080 - RPAD - LOGO_W, y: 44,  width: LOGO_W,    height: 72  },
-  headline: { x: CONTENT_X,            y: 148, width: CONTENT_W, height: 210 },
-  subhead:  { x: CONTENT_X,            y: 372, width: CONTENT_W, height: 110 },
-  bullets:  { x: CONTENT_X,            y: 494, width: CONTENT_W, height: 292 },
-  cta:      { x: CONTENT_X,            y: 802, width: CONTENT_W, height: 86  },
+  logo: { x: 1080 - RPAD - LOGO_W, y: 44, width: LOGO_W, height: 72 },
+  headline: { x: CONTENT_X, y: 148, width: CONTENT_W, height: 210 },
+  subhead: { x: CONTENT_X, y: 372, width: CONTENT_W, height: 110 },
+  bullets: { x: CONTENT_X, y: 494, width: CONTENT_W, height: 292 },
+  cta: { x: CONTENT_X, y: 802, width: CONTENT_W, height: 86 },
+}
+
+const DESIGN1_LAYER_UI = {
+  layerBase: 'banner-layer',
+  layerTextMod: 'banner-layer--text',
+  layerCtaMod: 'banner-layer--cta',
+  logoImgClassName:
+    'banner-layer-logo-img mx-auto block max-h-full max-w-full object-contain',
+  headlineTextShellClass: 'banner-text-shell min-w-[280px]',
+  headlineEditableClass: 'banner-text banner-headline min-w-[260px] whitespace-normal',
+  subheadTextShellClass: 'banner-text-shell min-w-[280px]',
+  subheadEditableClass: 'banner-text banner-subhead min-w-[260px] whitespace-normal',
+  featGridBase: 'banner-feat-grid',
+  featGridVertical: 'banner-feat-grid--vertical',
+  featItemClass: 'banner-feat-card',
+  featIconClass: 'banner-feat-icon',
+  featTextClass: 'banner-feat-text',
+  ctaTextShellClass: 'banner-text-shell min-w-[160px]',
+  ctaDragHandleClass: 'banner-cta-drag-handle',
+  ctaDragGripClass: 'banner-cta-drag-grip',
+  ctaDragLabelClass: 'banner-cta-drag-label',
+  ctaEditableClass: 'banner-text banner-cta inline-block min-w-[120px] max-w-full whitespace-nowrap',
+  getCtaBoxShadow: ({ ctaBgHex }) => `0 10px 36px ${ctaBgHex}66`,
+}
+
+/** Design 1 — split photo / content panel (1:1) or hero + text stack (9:16). */
+function renderDesign1CanvasBackground(ws) {
+  const {
+    BANNER_W,
+    BANNER_H,
+    isVertical,
+    bgSrc,
+    bgImageStyle,
+    ctaBgHex,
+    ctaFgHex,
+    brandR,
+    brandG,
+    brandB,
+    domain,
+  } = ws
+  const CONTENT_H = BANNER_H - STRIP_H
+  const verticalMetrics = isVertical ? computeDesign1VerticalMetrics(BANNER_H) : null
+  const leftOverlay = `linear-gradient(145deg, rgba(10,18,36,0.92) 0%, rgba(${brandR},${brandG},${brandB},0.58) 48%, rgba(10,18,36,0.82) 100%)`
+  const rightPanelBg = `linear-gradient(155deg, #ffffff 0%, #f8fafc 55%, rgba(${brandR},${brandG},${brandB},0.07) 100%)`
+
+  const heroBg = (
+    <>
+      <div
+        className={`absolute inset-0 bg-cover bg-center bg-no-repeat ${bgSrc ? '' : 'bg-slate-700'}`}
+        style={bgImageStyle}
+      />
+      {bgSrc ? (
+        <img
+          src={bgSrc}
+          alt=""
+          crossOrigin="anonymous"
+          referrerPolicy="no-referrer"
+          loading="eager"
+          decoding="async"
+          className="pointer-events-none absolute left-0 top-0 h-px w-px opacity-0"
+          aria-hidden
+        />
+      ) : null}
+      <div className="absolute inset-0" style={{ background: leftOverlay }} />
+    </>
+  )
+
+  return (
+    <>
+      {isVertical && verticalMetrics ? (
+        <>
+          <div
+            className="absolute left-0 top-0 pointer-events-none overflow-hidden"
+            style={{ width: BANNER_W, height: verticalMetrics.imageZoneH }}
+            aria-hidden
+          >
+            {heroBg}
+          </div>
+          <div
+            className="absolute left-0 pointer-events-none"
+            style={{
+              top: verticalMetrics.imageZoneH,
+              width: BANNER_W,
+              height: verticalMetrics.dividerH,
+              backgroundColor: ctaBgHex,
+            }}
+            aria-hidden
+          />
+          <div
+            className="absolute left-0 pointer-events-none"
+            style={{
+              top: verticalMetrics.textZoneTop,
+              width: BANNER_W,
+              height: verticalMetrics.textZoneH,
+              background: rightPanelBg,
+            }}
+            aria-hidden
+          />
+        </>
+      ) : (
+        <>
+          <div
+            className="absolute left-0 top-0 pointer-events-none overflow-hidden"
+            style={{ width: LEFT_W, height: CONTENT_H }}
+            aria-hidden
+          >
+            {heroBg}
+          </div>
+          <div
+            className="absolute top-0 pointer-events-none"
+            style={{ left: LEFT_W, width: DIVIDER_W, height: CONTENT_H, backgroundColor: ctaBgHex }}
+            aria-hidden
+          />
+          <div
+            className="absolute top-0 pointer-events-none"
+            style={{ left: RIGHT_X, right: 0, height: CONTENT_H, background: rightPanelBg }}
+            aria-hidden
+          />
+        </>
+      )}
+
+      <div
+        className="absolute bottom-0 left-0 right-0 pointer-events-none flex items-center justify-center"
+        style={{ height: STRIP_H, backgroundColor: ctaBgHex }}
+        aria-hidden
+      >
+        {domain && (
+          <span
+            style={{
+              color: ctaFgHex,
+              fontFamily: 'system-ui, Arial, sans-serif',
+              fontSize: 24,
+              fontWeight: 700,
+              direction: 'ltr',
+              letterSpacing: '0.3px',
+            }}
+          >
+            {domain}
+          </span>
+        )}
+      </div>
+    </>
+  )
 }
 
 export default function BannerCanvas({
@@ -4666,425 +5278,83 @@ export default function BannerCanvas({
   onPersist,
   onRenderVideo,
   isRenderingVideo = false,
+  videoRenderingHint = 'הווידאו מיוצר ברקע — אפשר להמשיך לערוך את הבאנר.',
   aspectRatio = '1:1',
 }) {
   const isVertical = aspectRatio === '9:16'
-  const designSize = isVertical ? BANNER_VERTICAL_9_16 : BANNER_SQUARE_1_1
-  const BANNER_W = designSize.width   // always 1080
-  const BANNER_H = designSize.height  // 1080 or 1920
-  const CONTENT_H = BANNER_H - STRIP_H
-
   const defaultBoxes = isVertical ? DESIGN1_DEFAULT_BOXES_VERTICAL : DESIGN1_SQUARE_BOXES
   const persistDesignKey = isVertical ? 'design1_vertical' : 'design1'
-  const verticalMetrics = isVertical ? computeDesign1VerticalMetrics(BANNER_H) : null
 
-  const viewportRef = useRef(null)
-  const captureRef = useRef(null)
-  const reactSurfaceSuffix = useId().replace(/:/g, '')
-  const boundsSurfaceId = taskId
-    ? `banner-surface-${taskId}`
-    : `banner-surface-${reactSurfaceSuffix}`
+  const capturePngOptions = useMemo(
+    () => ({
+      backgroundColor: '#ffffff',
+      style: {
+        transform: 'scale(1)',
+        backgroundColor: '#ffffff',
+        colorScheme: 'light',
+      },
+      filter: (el) => {
+        if (el.classList?.contains('banner-resize-handle-root')) return false
+        if (el.closest?.('.banner-resize-handle-root')) return false
+        if (el.classList?.contains('banner-cta-drag-handle')) return false
+        if (el.classList?.contains('banner-text-controls')) return false
+        if (el.closest?.('.banner-text-controls')) return false
+        return true
+      },
+    }),
+    [],
+  )
 
-  const ctaDragControls = useDragControls()
+  const downloadFilenameBase = useCallback(
+    ({ taskId: tid, isVertical: vert }) =>
+      `banner-d1${vert ? '-vertical' : ''}-${(tid || 'export').slice(0, 8)}.png`,
+    [],
+  )
 
-  const [scale, setScale] = useState(1)
-  const [exporting, setExporting] = useState(false)
-  const [downloadError, setDownloadError] = useState(null)
-
-  const canvasState = useBannerCanvasState({
-    taskId,
-    brandColor,
-    headlineInitial,
-    subheadInitial,
-    bulletPoints,
-    ctaInitial,
-    savedCanvasSlice,
-    onPersist,
-    persistDesignKey,
-    defaults: {
-      fontSizes: DF,
+  const stateDefaults = useMemo(
+    () => ({
+      fontSizes: isVertical ? DF_VERTICAL : DF_SQUARE,
       textColors: DC,
       boxes: defaultBoxes,
-    },
-  })
-
-  const {
-    headline, setHeadline,
-    subhead, setSubhead,
-    bullets,
-    cta, setCta,
-    logoBox, setLogoBox,
-    headlineBox, setHeadlineBox,
-    subheadBox, setSubheadBox,
-    bulletsBox, setBulletsBox,
-    ctaBox, setCtaBox,
-    draggingKey, setDraggingKey,
-    headlineFs, setHeadlineFs,
-    headlineAlign, setHeadlineAlign,
-    headlineColor, setHeadlineColor,
-    subheadFs, setSubheadFs,
-    subheadAlign, setSubheadAlign,
-    subheadColor, setSubheadColor,
-    bulletsFs, setBulletsFs,
-    bulletsAlign, setBulletsAlign,
-    bulletsColor, setBulletsColor,
-    ctaFs, setCtaFs,
-    ctaAlign, setCtaAlign,
-    ctaColor, setCtaColor,
-    schedulePersist,
-    setBulletAt,
-  } = canvasState
-
-  const bgSrc   = backgroundUrl ? `${apiBase}${backgroundUrl}` : ''
-  const logoSrc = logoUrl       ? `${apiBase}${logoUrl}`       : ''
-
-  const ctaBgHex = normalizeBrandHex(brandColor)
-  const ctaFgHex = contrastingTextColor(ctaBgHex)
-  const [brandR, brandG, brandB] = hexToRgb(ctaBgHex)
-
-  const leftOverlay = `linear-gradient(145deg, rgba(10,18,36,0.92) 0%, rgba(${brandR},${brandG},${brandB},0.58) 48%, rgba(10,18,36,0.82) 100%)`
-  const rightPanelBg = `linear-gradient(155deg, #ffffff 0%, #f8fafc 55%, rgba(${brandR},${brandG},${brandB},0.07) 100%)`
-  const domain = extractDomain(siteUrl)
-
-  useEffect(() => {
-    const el = viewportRef.current
-    if (!el) return
-    const ro = new ResizeObserver(() => {
-      const w = el.clientWidth
-      if (w > 0) setScale(w / BANNER_W)
-    })
-    ro.observe(el)
-    setScale(el.clientWidth / BANNER_W)
-    return () => ro.disconnect()
-  }, [BANNER_W])
-
-  const handleDownload = useCallback(async () => {
-    const node = captureRef.current
-    if (!node) return
-    setDownloadError(null)
-    setExporting(true)
-    try {
-      const dataUrl = await captureBannerNodeToPng(node, {
-        width: BANNER_W,
-        height: BANNER_H,
-        backgroundColor: '#ffffff',
-        style: {
-          transform: 'scale(1)',
-          backgroundColor: '#ffffff',
-          colorScheme: 'light',
-        },
-        filter: (el) => {
-          if (el.classList?.contains('banner-resize-handle-root')) return false
-          if (el.closest?.('.banner-resize-handle-root')) return false
-          if (el.classList?.contains('banner-cta-drag-handle')) return false
-          if (el.classList?.contains('banner-text-controls')) return false
-          if (el.closest?.('.banner-text-controls')) return false
-          return true
-        },
-      })
-      const a = document.createElement('a')
-      a.href = dataUrl
-      a.download = `banner-d1${isVertical ? '-vertical' : ''}-${(taskId || 'export').slice(0, 8)}.png`
-      a.click()
-    } catch (e) {
-      setDownloadError(e.message || String(e))
-    } finally {
-      setExporting(false)
-    }
-  }, [taskId, BANNER_W, BANNER_H, isVertical])
-
-  const layerClass = (id) =>
-    `banner-layer banner-layer--${id}${draggingKey === id ? ' banner-layer--dragging' : ''}`
-
-  const bgImageStyle = bgSrc !== '' ? { backgroundImage: `url(${JSON.stringify(bgSrc)})` } : undefined
+    }),
+    [defaultBoxes, isVertical],
+  )
 
   return (
-    <div className="banner-canvas-root w-full max-w-full">
-      <div className="banner-viewport" ref={viewportRef} dir="ltr">
-        <div
-          className="banner-viewport-inner"
-          style={{ width: BANNER_W * scale, height: BANNER_H * scale }}
-        >
-          <div
-            ref={captureRef}
-            id={boundsSurfaceId}
-            dir="ltr"
-            className={`absolute left-0 top-0 shrink-0 origin-top-left overflow-hidden banner-canvas${exporting ? ' capture-mode' : ''}`}
-            style={{ width: BANNER_W, height: BANNER_H, transform: `scale(${scale})` }}
-          >
-
-            {isVertical && verticalMetrics ? (
-              <>
-                {/* ── 9:16: top 40% — full-width image hero ───────────── */}
-                <div
-                  className="absolute left-0 top-0 pointer-events-none overflow-hidden"
-                  style={{ width: BANNER_W, height: verticalMetrics.imageZoneH }}
-                  aria-hidden
-                >
-                  <div
-                    className={`absolute inset-0 bg-cover bg-center bg-no-repeat ${bgSrc ? '' : 'bg-slate-700'}`}
-                    style={bgImageStyle}
-                  />
-                  {bgSrc ? (
-                    <img
-                      src={bgSrc}
-                      alt=""
-                      crossOrigin="anonymous"
-                      referrerPolicy="no-referrer"
-                      loading="eager"
-                      decoding="async"
-                      className="pointer-events-none absolute left-0 top-0 h-px w-px opacity-0"
-                      aria-hidden
-                    />
-                  ) : null}
-                  <div className="absolute inset-0" style={{ background: leftOverlay }} />
-                </div>
-                {/* ── Horizontal brand accent between zones ───────────── */}
-                <div
-                  className="absolute left-0 pointer-events-none"
-                  style={{
-                    top: verticalMetrics.imageZoneH,
-                    width: BANNER_W,
-                    height: verticalMetrics.dividerH,
-                    backgroundColor: ctaBgHex,
-                  }}
-                  aria-hidden
-                />
-                {/* ── Bottom ~60% — text content panel ───────────────── */}
-                <div
-                  className="absolute left-0 pointer-events-none"
-                  style={{
-                    top: verticalMetrics.textZoneTop,
-                    width: BANNER_W,
-                    height: verticalMetrics.textZoneH,
-                    background: rightPanelBg,
-                  }}
-                  aria-hidden
-                />
-              </>
-            ) : (
-              <>
-                {/* ── 1:1: left photo panel ──────────────────────────── */}
-                <div
-                  className="absolute left-0 top-0 pointer-events-none overflow-hidden"
-                  style={{ width: LEFT_W, height: CONTENT_H }}
-                  aria-hidden
-                >
-                  <div
-                    className={`absolute inset-0 bg-cover bg-center bg-no-repeat ${bgSrc ? '' : 'bg-slate-700'}`}
-                    style={bgImageStyle}
-                  />
-                  {bgSrc ? (
-                    <img
-                      src={bgSrc}
-                      alt=""
-                      crossOrigin="anonymous"
-                      referrerPolicy="no-referrer"
-                      loading="eager"
-                      decoding="async"
-                      className="pointer-events-none absolute left-0 top-0 h-px w-px opacity-0"
-                      aria-hidden
-                    />
-                  ) : null}
-                  <div className="absolute inset-0" style={{ background: leftOverlay }} />
-                </div>
-                <div
-                  className="absolute top-0 pointer-events-none"
-                  style={{ left: LEFT_W, width: DIVIDER_W, height: CONTENT_H, backgroundColor: ctaBgHex }}
-                  aria-hidden
-                />
-                <div
-                  className="absolute top-0 pointer-events-none"
-                  style={{ left: RIGHT_X, right: 0, height: CONTENT_H, background: rightPanelBg }}
-                  aria-hidden
-                />
-              </>
-            )}
-
-            {/* ── Bottom domain strip ──────────────────────────────── */}
-            <div
-              className="absolute bottom-0 left-0 right-0 pointer-events-none flex items-center justify-center"
-              style={{ height: STRIP_H, backgroundColor: ctaBgHex }}
-              aria-hidden
-            >
-              {domain && (
-                <span
-                  style={{
-                    color: ctaFgHex,
-                    fontFamily: 'system-ui, Arial, sans-serif',
-                    fontSize: 24,
-                    fontWeight: 700,
-                    direction: 'ltr',
-                    letterSpacing: '0.3px',
-                  }}
-                >
-                  {domain}
-                </span>
-              )}
-            </div>
-
-            {/* ── Logo layer ──────────────────────────────────────── */}
-            <BannerLayer
-              canvasRef={captureRef}
-              box={logoBox} setBox={setLogoBox}
-              className={layerClass('logo')}
-              layerKey="logo" setDraggingKey={setDraggingKey}
-              viewportScale={scale} minWidth={80} minHeight={48}
-              lockAspectRatio onUserCommit={schedulePersist}
-              designSize={designSize}
-            >
-              <img
-                src={logoSrc} alt=""
-                crossOrigin="anonymous" referrerPolicy="no-referrer"
-                loading="eager" decoding="async" draggable={false}
-                className="banner-layer-logo-img mx-auto block max-h-full max-w-full object-contain"
-              />
-            </BannerLayer>
-
-            {/* ── Headline layer ──────────────────────────────────── */}
-            <BannerLayer
-              canvasRef={captureRef}
-              box={headlineBox} setBox={setHeadlineBox}
-              className={`${layerClass('headline')} banner-layer--text`}
-              layerKey="headline" setDraggingKey={setDraggingKey}
-              viewportScale={scale} minWidth={280} minHeight={56}
-              onUserCommit={schedulePersist} designSize={designSize}
-            >
-              <TextControls
-                fontSize={headlineFs} onFontSize={(v) => { setHeadlineFs(v); schedulePersist() }}
-                align={headlineAlign} onAlign={(v) => { setHeadlineAlign(v); schedulePersist() }}
-                color={headlineColor} onColor={(v) => { setHeadlineColor(v); schedulePersist() }}
-              />
-              <div className="banner-text-shell min-w-[280px]" dir="rtl">
-                <EditableText
-                  className="banner-text banner-headline min-w-[260px] whitespace-normal"
-                  style={{ fontSize: headlineFs, textAlign: headlineAlign, color: headlineColor }}
-                  text={headline} resetKey={taskId}
-                  onTextChange={(v) => { setHeadline(v); schedulePersist() }}
-                />
-              </div>
-            </BannerLayer>
-
-            {/* ── Subhead layer ───────────────────────────────────── */}
-            <BannerLayer
-              canvasRef={captureRef}
-              box={subheadBox} setBox={setSubheadBox}
-              className={`${layerClass('subhead')} banner-layer--text`}
-              layerKey="subhead" setDraggingKey={setDraggingKey}
-              viewportScale={scale} minWidth={280} minHeight={48}
-              onUserCommit={schedulePersist} designSize={designSize}
-            >
-              <TextControls
-                fontSize={subheadFs} onFontSize={(v) => { setSubheadFs(v); schedulePersist() }}
-                align={subheadAlign} onAlign={(v) => { setSubheadAlign(v); schedulePersist() }}
-                color={subheadColor} onColor={(v) => { setSubheadColor(v); schedulePersist() }}
-              />
-              <div className="banner-text-shell min-w-[280px]" dir="rtl">
-                <EditableText
-                  className="banner-text banner-subhead min-w-[260px] whitespace-normal"
-                  style={{ fontSize: subheadFs, textAlign: subheadAlign, color: subheadColor }}
-                  text={subhead} resetKey={taskId}
-                  onTextChange={(v) => { setSubhead(v); schedulePersist() }}
-                />
-              </div>
-            </BannerLayer>
-
-            {/* ── Feature-cards layer ─────────────────────────────── */}
-            <BannerLayer
-              canvasRef={captureRef}
-              box={bulletsBox} setBox={setBulletsBox}
-              className={`${layerClass('bullets')} banner-layer--text`}
-              layerKey="bullets" setDraggingKey={setDraggingKey}
-              viewportScale={scale} minWidth={280} minHeight={200}
-              onUserCommit={schedulePersist} designSize={designSize}
-            >
-              <TextControls
-                fontSize={bulletsFs} onFontSize={(v) => { setBulletsFs(v); schedulePersist() }}
-                align={bulletsAlign} onAlign={(v) => { setBulletsAlign(v); schedulePersist() }}
-                color={bulletsColor} onColor={(v) => { setBulletsColor(v); schedulePersist() }}
-              />
-              <div
-                className={`banner-feat-grid${isVertical ? ' banner-feat-grid--vertical' : ''}`}
-                dir="rtl"
-              >
-                {bullets.map((b, i) => (
-                  <div
-                    key={`${taskId}-b-${i}`}
-                    className="banner-feat-card"
-                    style={{ borderTopColor: ctaBgHex }}
-                  >
-                    <div className="banner-feat-icon" style={{ backgroundColor: ctaBgHex, color: ctaFgHex }}>✓</div>
-                    <EditableText
-                      as="span"
-                      className="banner-feat-text"
-                      style={{ fontSize: bulletsFs, textAlign: bulletsAlign, color: bulletsColor }}
-                      text={b} resetKey={`${taskId}-${i}`}
-                      onTextChange={(t) => setBulletAt(i, t)}
-                    />
-                  </div>
-                ))}
-              </div>
-            </BannerLayer>
-
-            {/* ── CTA layer ───────────────────────────────────────── */}
-            <BannerLayer
-              canvasRef={captureRef}
-              box={ctaBox} setBox={setCtaBox}
-              className={`${layerClass('cta')} banner-layer--cta`}
-              layerKey="cta" setDraggingKey={setDraggingKey}
-              viewportScale={scale} minWidth={160} minHeight={52}
-              dragHandleOnly dragControls={ctaDragControls}
-              onUserCommit={schedulePersist} designSize={designSize}
-            >
-              <TextControls
-                fontSize={ctaFs} onFontSize={(v) => { setCtaFs(v); schedulePersist() }}
-                align={ctaAlign} onAlign={(v) => { setCtaAlign(v); schedulePersist() }}
-                color={ctaColor} onColor={(v) => { setCtaColor(v); schedulePersist() }}
-              />
-              <div className="banner-text-shell min-w-[160px]">
-                <div
-                  className="banner-cta-drag-handle"
-                  title="גרור להזזה"
-                  onPointerDown={(e) => ctaDragControls.start(e)}
-                >
-                  <span className="banner-cta-drag-grip" aria-hidden />
-                  <span className="banner-cta-drag-label">גרור</span>
-                </div>
-                <div className="mt-1" style={{ textAlign: ctaAlign }} dir="rtl">
-                  <EditableText
-                    className="banner-text banner-cta inline-block min-w-[120px] max-w-full whitespace-nowrap"
-                    text={cta} resetKey={taskId}
-                    onTextChange={(v) => { setCta(v); schedulePersist() }}
-                    style={{
-                      fontSize: ctaFs,
-                      backgroundColor: ctaBgHex,
-                      color: ctaColor,
-                      boxShadow: `0 10px 36px ${ctaBgHex}66`,
-                    }}
-                  />
-                </div>
-              </div>
-            </BannerLayer>
-
-          </div>
-        </div>
-      </div>
-
-      {/* ── Download row ──────────────────────────────────────────── */}
-      <div className="banner-download-row">
-        <button type="button" className="btn-download" onClick={handleDownload} disabled={exporting}>
-          {exporting ? 'מכין PNG…' : '⬇ הורד באנר PNG'}
-        </button>
-        {typeof onRenderVideo === 'function' && (
-          <button type="button" className="btn-download" onClick={onRenderVideo} disabled={isRenderingVideo}>
-            {isRenderingVideo ? 'מייצר וידאו…' : '🎬 ייצר סרטון אנימציה'}
-          </button>
-        )}
-      </div>
-      {downloadError && (
-        <p className="banner-download-error" role="alert">{downloadError}</p>
-      )}
-    </div>
+    <BannerWorkspaceContainer
+      apiBase={apiBase}
+      taskId={taskId}
+      backgroundUrl={backgroundUrl}
+      logoUrl={logoUrl}
+      headline={headlineInitial}
+      subhead={subheadInitial}
+      bulletPoints={bulletPoints}
+      cta={ctaInitial}
+      brandColor={brandColor}
+      siteUrl={siteUrl}
+      savedCanvasSlice={savedCanvasSlice}
+      onPersist={onPersist}
+      onRenderVideo={onRenderVideo}
+      isRenderingVideo={isRenderingVideo}
+      videoRenderingHint={videoRenderingHint}
+      aspectRatio={aspectRatio}
+      persistDesignKey={persistDesignKey}
+      stateDefaults={stateDefaults}
+      surfaceIdPrefix="banner-surface"
+      rootClassName="banner-canvas-root"
+      viewportClassName={`banner-viewport${isVertical ? ' banner-viewport--9-16' : ''}`}
+      viewportInnerClassName="banner-viewport-inner"
+      captureClassName={(exporting) =>
+        `absolute left-0 top-0 shrink-0 origin-top-left overflow-hidden banner-canvas${exporting ? ' capture-mode' : ''}`
+      }
+      downloadRowClassName="banner-download-row"
+      downloadButtonClassName="btn-download"
+      downloadErrorClassName="banner-download-error"
+      capturePngOptions={capturePngOptions}
+      downloadFilenameBase={downloadFilenameBase}
+      layerUi={DESIGN1_LAYER_UI}
+      renderCanvasBackground={renderDesign1CanvasBackground}
+    />
   )
 }
 
@@ -5113,10 +5383,19 @@ FILE: client/src/BannerCanvas2.css
   box-shadow: 0 16px 56px rgba(0, 0, 0, 0.30);
 }
 
+.bc2-viewport.bc2-viewport--9-16 {
+  aspect-ratio: 9 / 16;
+  max-width: min(96%, 520px);
+  max-height: min(92vh, 960px);
+}
+
 .bc2-viewport-inner {
   position: absolute;
   inset: 0;
   overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
 /* ── Canvas root ──────────────────────────────────────────────────────────── */
@@ -5439,40 +5718,127 @@ FILE: client/src/BannerCanvas2.jsx
  * Supports both 1:1 (square feed) and 9:16 (vertical/shorts) via the aspectRatio prop.
  */
 
-import { useCallback, useEffect, useId, useRef, useState } from 'react'
-import { useDragControls } from 'framer-motion'
+import { useCallback, useMemo } from 'react'
 import './BannerCanvas2.css'
-import BannerLayer from './components/canvas/BannerLayer.jsx'
-import EditableText from './components/canvas/EditableText.jsx'
-import TextControls from './components/canvas/TextControls.jsx'
-import {
-  BANNER_SQUARE_1_1,
-  BANNER_VERTICAL_9_16,
-  captureBannerNodeToPng,
-  contrastingTextColor,
-  extractDomain,
-  hexToRgb,
-  normalizeBrandHex,
-} from './components/canvas/canvasUtils.js'
-import { DESIGN2_DEFAULT_BOXES_VERTICAL, useBannerCanvasState } from './components/canvas/useBannerCanvasState.js'
+import BannerWorkspaceContainer from './components/canvas/BannerWorkspaceContainer.jsx'
+import { DESIGN2_DEFAULT_BOXES_VERTICAL } from './components/canvas/useBannerCanvasState.js'
 
-// ─── Design 2 typography defaults ────────────────────────────────────────────
-const DF2 = { headline: 66, subhead: 26, bullets: 18, cta: 31 }
+const DF2_SQUARE = { headline: 76, subhead: 30, bullets: 22, cta: 36 }
+const DF2_VERTICAL = { headline: 86, subhead: 36, bullets: 26, cta: 42 }
 const DC2 = { headline: '#ffffff', subhead: '#e6e6e6', bullets: '#ebebeb' }
 
-// ─── Shared layout constants ─────────────────────────────────────────────────
 const STRIP_H = 64
 const ACCENT_W = 6
 const CONTENT_PAD = 64
-const CONTENT_W = 1080 - CONTENT_PAD * 2   // 952
+const CONTENT_W = 1080 - CONTENT_PAD * 2
 
-// ─── Default layer boxes — square vs vertical ─────────────────────────────────
 const DESIGN2_SQUARE_BOXES = {
-  logo:     { x: 1080 - CONTENT_PAD - 210, y: 50,  width: 210,            height: 78  },
-  headline: { x: CONTENT_PAD,              y: 210, width: CONTENT_W,      height: 230 },
-  subhead:  { x: CONTENT_PAD,              y: 456, width: CONTENT_W,      height: 110 },
-  bullets:  { x: CONTENT_PAD,              y: 580, width: CONTENT_W,      height: 252 },
-  cta:      { x: CONTENT_PAD + 80,         y: 846, width: CONTENT_W - 160, height: 88  },
+  logo: { x: 1080 - CONTENT_PAD - 210, y: 50, width: 210, height: 78 },
+  headline: { x: CONTENT_PAD, y: 210, width: CONTENT_W, height: 230 },
+  subhead: { x: CONTENT_PAD, y: 456, width: CONTENT_W, height: 110 },
+  bullets: { x: CONTENT_PAD, y: 580, width: CONTENT_W, height: 252 },
+  cta: { x: CONTENT_PAD + 80, y: 846, width: CONTENT_W - 160, height: 88 },
+}
+
+const DESIGN2_LAYER_UI = {
+  layerBase: 'bc2-layer',
+  layerTextMod: 'bc2-layer--text',
+  layerCtaMod: 'bc2-layer--cta',
+  handleWrapperClass: 'bc2-resize-handle-root',
+  layerInnerClass: 'bc2-layer-inner',
+  minHeadlineHeight: 60,
+  logoImgClassName: 'bc2-logo-img mx-auto block max-h-full max-w-full object-contain',
+  headlineTextShellClass: 'bc2-text-shell',
+  headlineEditableClass: 'bc2-text bc2-headline whitespace-normal',
+  subheadTextShellClass: 'bc2-text-shell',
+  subheadEditableClass: 'bc2-text bc2-subhead whitespace-normal',
+  featGridBase: 'bc2-feat-grid',
+  featGridVertical: 'bc2-feat-grid--vertical',
+  featItemClass: 'bc2-feat-pill',
+  featIconClass: 'bc2-feat-icon',
+  featTextClass: 'bc2-feat-text',
+  ctaTextShellClass: 'bc2-text-shell',
+  ctaDragHandleClass: 'bc2-cta-drag-handle',
+  ctaDragGripClass: 'bc2-cta-drag-grip',
+  ctaDragLabelClass: 'bc2-cta-drag-label',
+  ctaEditableClass: 'bc2-text bc2-cta inline-block min-w-[120px] max-w-full whitespace-nowrap',
+  getCtaBoxShadow: ({ brandR, brandG, brandB }) =>
+    `0 12px 40px rgba(${brandR},${brandG},${brandB},0.55)`,
+}
+
+const OVERLAY = [
+  'radial-gradient(ellipse at 70% 40%, rgba(0,0,0,0.08) 0%, rgba(0,0,0,0.72) 90%)',
+  'linear-gradient(165deg, rgba(0,0,0,0.28) 0%, rgba(0,0,0,0.55) 100%)',
+].join(', ')
+
+/** Full-bleed background, vignette, brand glow, left accent, domain strip. */
+function renderDesign2CanvasBackground(ws) {
+  const { BANNER_W, BANNER_H, bgSrc, bgImageStyle, ctaBgHex, ctaFgHex, brandR, brandG, brandB, domain } =
+    ws
+
+  return (
+    <>
+      <div
+        className={`absolute inset-0 bg-cover bg-center bg-no-repeat pointer-events-none ${bgSrc ? '' : 'bg-slate-900'}`}
+        style={bgImageStyle}
+        aria-hidden
+      />
+      {bgSrc && (
+        <img
+          src={bgSrc}
+          alt=""
+          crossOrigin="anonymous"
+          referrerPolicy="no-referrer"
+          loading="eager"
+          decoding="async"
+          className="pointer-events-none absolute left-0 top-0 h-px w-px opacity-0"
+          aria-hidden
+        />
+      )}
+
+      <div className="absolute inset-0 pointer-events-none" style={{ background: OVERLAY }} aria-hidden />
+
+      <div
+        className="absolute pointer-events-none"
+        style={{
+          width: 500,
+          height: 500,
+          borderRadius: '50%',
+          top: -150,
+          right: -100,
+          background: `radial-gradient(circle, rgba(${brandR},${brandG},${brandB},0.28) 0%, transparent 70%)`,
+        }}
+        aria-hidden
+      />
+
+      <div
+        className="absolute top-0 left-0 pointer-events-none"
+        style={{ width: ACCENT_W, height: BANNER_H - STRIP_H, backgroundColor: ctaBgHex }}
+        aria-hidden
+      />
+
+      <div
+        className="absolute bottom-0 left-0 right-0 pointer-events-none flex items-center justify-center"
+        style={{ height: STRIP_H, backgroundColor: ctaBgHex }}
+        aria-hidden
+      >
+        {domain && (
+          <span
+            style={{
+              color: ctaFgHex,
+              fontFamily: 'system-ui, Arial, sans-serif',
+              fontSize: 22,
+              fontWeight: 700,
+              direction: 'ltr',
+              letterSpacing: '0.4px',
+            }}
+          >
+            {domain}
+          </span>
+        )}
+      </div>
+    </>
+  )
 }
 
 export default function BannerCanvas2({
@@ -5490,385 +5856,79 @@ export default function BannerCanvas2({
   onPersist,
   onRenderVideo,
   isRenderingVideo = false,
+  videoRenderingHint = 'הווידאו מיוצר ברקע — אפשר להמשיך לערוך את הבאנר.',
   aspectRatio = '1:1',
 }) {
   const isVertical = aspectRatio === '9:16'
-  const designSize = isVertical ? BANNER_VERTICAL_9_16 : BANNER_SQUARE_1_1
-  const BANNER_W = designSize.width   // always 1080
-  const BANNER_H = designSize.height  // 1080 or 1920
-
   const defaultBoxes = isVertical ? DESIGN2_DEFAULT_BOXES_VERTICAL : DESIGN2_SQUARE_BOXES
   const persistDesignKey = isVertical ? 'design2_vertical' : 'design2'
 
-  const viewportRef = useRef(null)
-  const captureRef = useRef(null)
-  const reactSuffix = useId().replace(/:/g, '')
-  const surfaceId = taskId ? `bc2-surface-${taskId}` : `bc2-surface-${reactSuffix}`
+  const capturePngOptions = useMemo(
+    () => ({
+      backgroundColor: '#0f172a',
+      style: { transform: 'scale(1)', colorScheme: 'light' },
+      filter: (el) => {
+        if (el.classList?.contains('bc2-resize-handle-root')) return false
+        if (el.closest?.('.bc2-resize-handle-root')) return false
+        if (el.classList?.contains('bc2-cta-drag-handle')) return false
+        if (el.classList?.contains('banner-text-controls')) return false
+        if (el.closest?.('.banner-text-controls')) return false
+        return true
+      },
+    }),
+    [],
+  )
 
-  const ctaDragControls = useDragControls()
+  const downloadFilenameBase = useCallback(
+    ({ taskId: tid, isVertical: vert }) =>
+      `banner2-d2${vert ? '-vertical' : ''}-${(tid || 'export').slice(0, 8)}.png`,
+    [],
+  )
 
-  const [scale, setScale] = useState(1)
-  const [exporting, setExporting] = useState(false)
-  const [downloadError, setDownloadError] = useState(null)
-
-  const canvasState = useBannerCanvasState({
-    taskId,
-    brandColor,
-    headlineInitial,
-    subheadInitial,
-    bulletPoints,
-    ctaInitial,
-    savedCanvasSlice,
-    onPersist,
-    persistDesignKey,
-    defaults: {
-      fontSizes: DF2,
+  const stateDefaults = useMemo(
+    () => ({
+      fontSizes: isVertical ? DF2_VERTICAL : DF2_SQUARE,
       textColors: DC2,
       boxes: defaultBoxes,
-    },
-  })
-
-  const {
-    headline, setHeadline,
-    subhead, setSubhead,
-    bullets,
-    cta, setCta,
-    logoBox, setLogoBox,
-    headlineBox, setHeadlineBox,
-    subheadBox, setSubheadBox,
-    bulletsBox, setBulletsBox,
-    ctaBox, setCtaBox,
-    draggingKey, setDraggingKey,
-    headlineFs, setHeadlineFs,
-    headlineAlign, setHeadlineAlign,
-    headlineColor, setHeadlineColor,
-    subheadFs, setSubheadFs,
-    subheadAlign, setSubheadAlign,
-    subheadColor, setSubheadColor,
-    bulletsFs, setBulletsFs,
-    bulletsAlign, setBulletsAlign,
-    bulletsColor, setBulletsColor,
-    ctaFs, setCtaFs,
-    ctaAlign, setCtaAlign,
-    ctaColor, setCtaColor,
-    schedulePersist,
-    setBulletAt,
-  } = canvasState
-
-  const bgSrc   = backgroundUrl ? `${apiBase}${backgroundUrl}` : ''
-  const logoSrc = logoUrl       ? `${apiBase}${logoUrl}`       : ''
-  const ctaBgHex = normalizeBrandHex(brandColor)
-  const ctaFgHex = contrastingTextColor(ctaBgHex)
-  const [brandR, brandG, brandB] = hexToRgb(ctaBgHex)
-  const domain = extractDomain(siteUrl)
-
-  const overlay = [
-    'radial-gradient(ellipse at 70% 40%, rgba(0,0,0,0.08) 0%, rgba(0,0,0,0.72) 90%)',
-    'linear-gradient(165deg, rgba(0,0,0,0.28) 0%, rgba(0,0,0,0.55) 100%)',
-  ].join(', ')
-
-  useEffect(() => {
-    const el = viewportRef.current
-    if (!el) return
-    const ro = new ResizeObserver(() => {
-      const w = el.clientWidth
-      if (w > 0) setScale(w / BANNER_W)
-    })
-    ro.observe(el)
-    setScale(el.clientWidth / BANNER_W)
-    return () => ro.disconnect()
-  }, [BANNER_W])
-
-  const handleDownload = useCallback(async () => {
-    const node = captureRef.current
-    if (!node) return
-    setDownloadError(null)
-    setExporting(true)
-    try {
-      const dataUrl = await captureBannerNodeToPng(node, {
-        width: BANNER_W,
-        height: BANNER_H,
-        backgroundColor: '#0f172a',
-        style: { transform: 'scale(1)', colorScheme: 'light' },
-        filter: (el) => {
-          if (el.classList?.contains('bc2-resize-handle-root')) return false
-          if (el.closest?.('.bc2-resize-handle-root')) return false
-          if (el.classList?.contains('bc2-cta-drag-handle')) return false
-          if (el.classList?.contains('banner-text-controls')) return false
-          if (el.closest?.('.banner-text-controls')) return false
-          return true
-        },
-      })
-      const a = document.createElement('a')
-      a.href = dataUrl
-      a.download = `banner2-d2${isVertical ? '-vertical' : ''}-${(taskId || 'export').slice(0, 8)}.png`
-      a.click()
-    } catch (e) {
-      setDownloadError(e.message || String(e))
-    } finally {
-      setExporting(false)
-    }
-  }, [taskId, BANNER_W, BANNER_H, isVertical])
-
-  const layerClass = (id) =>
-    `bc2-layer bc2-layer--${id}${draggingKey === id ? ' bc2-layer--dragging' : ''}`
-
-  const bgImageStyle = bgSrc ? { backgroundImage: `url(${JSON.stringify(bgSrc)})` } : undefined
+    }),
+    [defaultBoxes, isVertical],
+  )
 
   return (
-    <div className="bc2-root w-full max-w-full">
-      <div className="bc2-viewport" ref={viewportRef} dir="ltr">
-        <div
-          className="bc2-viewport-inner"
-          style={{ width: BANNER_W * scale, height: BANNER_H * scale }}
-        >
-          <div
-            ref={captureRef}
-            id={surfaceId}
-            dir="ltr"
-            className={`absolute left-0 top-0 shrink-0 origin-top-left overflow-hidden bc2-canvas${exporting ? ' bc2-capture' : ''}`}
-            style={{ width: BANNER_W, height: BANNER_H, transform: `scale(${scale})` }}
-          >
-
-            {/* ── Full-bleed background ────────────────────────────── */}
-            <div
-              className={`absolute inset-0 bg-cover bg-center bg-no-repeat pointer-events-none ${bgSrc ? '' : 'bg-slate-900'}`}
-              style={bgImageStyle}
-              aria-hidden
-            />
-            {bgSrc && (
-              <img
-                src={bgSrc} alt=""
-                crossOrigin="anonymous" referrerPolicy="no-referrer"
-                loading="eager" decoding="async"
-                className="pointer-events-none absolute left-0 top-0 h-px w-px opacity-0"
-                aria-hidden
-              />
-            )}
-
-            {/* ── Dark vignette overlay ─────────────────────────────── */}
-            <div
-              className="absolute inset-0 pointer-events-none"
-              style={{ background: overlay }}
-              aria-hidden
-            />
-
-            {/* ── Brand-colour glow (top-right accent) ─────────────── */}
-            <div
-              className="absolute pointer-events-none"
-              style={{
-                width: 500, height: 500, borderRadius: '50%',
-                top: -150, right: -100,
-                background: `radial-gradient(circle, rgba(${brandR},${brandG},${brandB},0.28) 0%, transparent 70%)`,
-              }}
-              aria-hidden
-            />
-
-            {/* ── Thin brand accent bar (left edge) ────────────────── */}
-            <div
-              className="absolute top-0 left-0 pointer-events-none"
-              style={{ width: ACCENT_W, height: BANNER_H - STRIP_H, backgroundColor: ctaBgHex }}
-              aria-hidden
-            />
-
-            {/* ── Bottom strip ─────────────────────────────────────── */}
-            <div
-              className="absolute bottom-0 left-0 right-0 pointer-events-none flex items-center justify-center"
-              style={{ height: STRIP_H, backgroundColor: ctaBgHex }}
-              aria-hidden
-            >
-              {domain && (
-                <span
-                  style={{
-                    color: ctaFgHex,
-                    fontFamily: 'system-ui, Arial, sans-serif',
-                    fontSize: 22,
-                    fontWeight: 700,
-                    direction: 'ltr',
-                    letterSpacing: '0.4px',
-                  }}
-                >
-                  {domain}
-                </span>
-              )}
-            </div>
-
-            {/* ── Logo ─────────────────────────────────────────────── */}
-            <BannerLayer
-              canvasRef={captureRef}
-              box={logoBox} setBox={setLogoBox}
-              className={layerClass('logo')} layerKey="logo"
-              setDraggingKey={setDraggingKey} viewportScale={scale}
-              minWidth={80} minHeight={48} lockAspectRatio
-              onUserCommit={schedulePersist}
-              handleWrapperClass="bc2-resize-handle-root"
-              layerInnerClass="bc2-layer-inner"
-              designSize={designSize}
-            >
-              <img
-                src={logoSrc} alt=""
-                crossOrigin="anonymous" referrerPolicy="no-referrer"
-                loading="eager" decoding="async" draggable={false}
-                className="bc2-logo-img mx-auto block max-h-full max-w-full object-contain"
-              />
-            </BannerLayer>
-
-            {/* ── Headline ─────────────────────────────────────────── */}
-            <BannerLayer
-              canvasRef={captureRef}
-              box={headlineBox} setBox={setHeadlineBox}
-              className={`${layerClass('headline')} bc2-layer--text`} layerKey="headline"
-              setDraggingKey={setDraggingKey} viewportScale={scale}
-              minWidth={280} minHeight={60}
-              onUserCommit={schedulePersist}
-              handleWrapperClass="bc2-resize-handle-root"
-              layerInnerClass="bc2-layer-inner"
-              designSize={designSize}
-            >
-              <TextControls
-                fontSize={headlineFs} onFontSize={(v) => { setHeadlineFs(v); schedulePersist() }}
-                align={headlineAlign} onAlign={(v) => { setHeadlineAlign(v); schedulePersist() }}
-                color={headlineColor} onColor={(v) => { setHeadlineColor(v); schedulePersist() }}
-              />
-              <div className="bc2-text-shell" dir="rtl">
-                <EditableText
-                  className="bc2-text bc2-headline whitespace-normal"
-                  style={{ fontSize: headlineFs, textAlign: headlineAlign, color: headlineColor }}
-                  text={headline} resetKey={taskId}
-                  onTextChange={(v) => { setHeadline(v); schedulePersist() }}
-                />
-              </div>
-            </BannerLayer>
-
-            {/* ── Subhead ──────────────────────────────────────────── */}
-            <BannerLayer
-              canvasRef={captureRef}
-              box={subheadBox} setBox={setSubheadBox}
-              className={`${layerClass('subhead')} bc2-layer--text`} layerKey="subhead"
-              setDraggingKey={setDraggingKey} viewportScale={scale}
-              minWidth={280} minHeight={48}
-              onUserCommit={schedulePersist}
-              handleWrapperClass="bc2-resize-handle-root"
-              layerInnerClass="bc2-layer-inner"
-              designSize={designSize}
-            >
-              <TextControls
-                fontSize={subheadFs} onFontSize={(v) => { setSubheadFs(v); schedulePersist() }}
-                align={subheadAlign} onAlign={(v) => { setSubheadAlign(v); schedulePersist() }}
-                color={subheadColor} onColor={(v) => { setSubheadColor(v); schedulePersist() }}
-              />
-              <div className="bc2-text-shell" dir="rtl">
-                <EditableText
-                  className="bc2-text bc2-subhead whitespace-normal"
-                  style={{ fontSize: subheadFs, textAlign: subheadAlign, color: subheadColor }}
-                  text={subhead} resetKey={taskId}
-                  onTextChange={(v) => { setSubhead(v); schedulePersist() }}
-                />
-              </div>
-            </BannerLayer>
-
-            {/* ── Feature glass-pills ───────────────────────────────── */}
-            <BannerLayer
-              canvasRef={captureRef}
-              box={bulletsBox} setBox={setBulletsBox}
-              className={`${layerClass('bullets')} bc2-layer--text`} layerKey="bullets"
-              setDraggingKey={setDraggingKey} viewportScale={scale}
-              minWidth={280} minHeight={200}
-              onUserCommit={schedulePersist}
-              handleWrapperClass="bc2-resize-handle-root"
-              layerInnerClass="bc2-layer-inner"
-              designSize={designSize}
-            >
-              <TextControls
-                fontSize={bulletsFs} onFontSize={(v) => { setBulletsFs(v); schedulePersist() }}
-                align={bulletsAlign} onAlign={(v) => { setBulletsAlign(v); schedulePersist() }}
-                color={bulletsColor} onColor={(v) => { setBulletsColor(v); schedulePersist() }}
-              />
-              <div
-                className={`bc2-feat-grid${isVertical ? ' bc2-feat-grid--vertical' : ''}`}
-                dir="rtl"
-              >
-                {bullets.map((b, i) => (
-                  <div
-                    key={`${taskId}-b-${i}`}
-                    className="bc2-feat-pill"
-                    style={{ borderTopColor: ctaBgHex }}
-                  >
-                    <div className="bc2-feat-icon" style={{ backgroundColor: ctaBgHex, color: ctaFgHex }}>✓</div>
-                    <EditableText
-                      as="span"
-                      className="bc2-feat-text"
-                      style={{ fontSize: bulletsFs, textAlign: bulletsAlign, color: bulletsColor }}
-                      text={b} resetKey={`${taskId}-${i}`}
-                      onTextChange={(t) => setBulletAt(i, t)}
-                    />
-                  </div>
-                ))}
-              </div>
-            </BannerLayer>
-
-            {/* ── CTA ──────────────────────────────────────────────── */}
-            <BannerLayer
-              canvasRef={captureRef}
-              box={ctaBox} setBox={setCtaBox}
-              className={`${layerClass('cta')} bc2-layer--cta`} layerKey="cta"
-              setDraggingKey={setDraggingKey} viewportScale={scale}
-              minWidth={160} minHeight={52}
-              dragHandleOnly dragControls={ctaDragControls}
-              onUserCommit={schedulePersist}
-              handleWrapperClass="bc2-resize-handle-root"
-              layerInnerClass="bc2-layer-inner"
-              designSize={designSize}
-            >
-              <TextControls
-                fontSize={ctaFs} onFontSize={(v) => { setCtaFs(v); schedulePersist() }}
-                align={ctaAlign} onAlign={(v) => { setCtaAlign(v); schedulePersist() }}
-                color={ctaColor} onColor={(v) => { setCtaColor(v); schedulePersist() }}
-              />
-              <div className="bc2-text-shell">
-                <div
-                  className="bc2-cta-drag-handle"
-                  title="גרור להזזה"
-                  onPointerDown={(e) => ctaDragControls.start(e)}
-                >
-                  <span className="bc2-cta-drag-grip" aria-hidden />
-                  <span className="bc2-cta-drag-label">גרור</span>
-                </div>
-                <div className="mt-1" style={{ textAlign: ctaAlign }} dir="rtl">
-                  <EditableText
-                    className="bc2-text bc2-cta inline-block min-w-[120px] max-w-full whitespace-nowrap"
-                    text={cta} resetKey={taskId}
-                    onTextChange={(v) => { setCta(v); schedulePersist() }}
-                    style={{
-                      fontSize: ctaFs,
-                      backgroundColor: ctaBgHex,
-                      color: ctaColor,
-                      boxShadow: `0 12px 40px rgba(${brandR},${brandG},${brandB},0.55)`,
-                    }}
-                  />
-                </div>
-              </div>
-            </BannerLayer>
-
-          </div>
-        </div>
-      </div>
-
-      {/* ── Download row ─────────────────────────────────────────── */}
-      <div className="bc2-download-row">
-        <button type="button" className="bc2-btn-download" onClick={handleDownload} disabled={exporting}>
-          {exporting ? 'מכין PNG…' : '⬇ הורד באנר PNG'}
-        </button>
-        {typeof onRenderVideo === 'function' && (
-          <button type="button" className="bc2-btn-download" onClick={onRenderVideo} disabled={isRenderingVideo}>
-            {isRenderingVideo ? 'מייצר וידאו…' : '🎬 ייצר סרטון אנימציה'}
-          </button>
-        )}
-      </div>
-      {downloadError && (
-        <p className="bc2-download-error" role="alert">{downloadError}</p>
-      )}
-    </div>
+    <BannerWorkspaceContainer
+      apiBase={apiBase}
+      taskId={taskId}
+      backgroundUrl={backgroundUrl}
+      logoUrl={logoUrl}
+      headline={headlineInitial}
+      subhead={subheadInitial}
+      bulletPoints={bulletPoints}
+      cta={ctaInitial}
+      brandColor={brandColor}
+      siteUrl={siteUrl}
+      savedCanvasSlice={savedCanvasSlice}
+      onPersist={onPersist}
+      onRenderVideo={onRenderVideo}
+      isRenderingVideo={isRenderingVideo}
+      videoRenderingHint={videoRenderingHint}
+      aspectRatio={aspectRatio}
+      persistDesignKey={persistDesignKey}
+      stateDefaults={stateDefaults}
+      surfaceIdPrefix="bc2-surface"
+      rootClassName="bc2-root"
+      viewportClassName={`bc2-viewport${isVertical ? ' bc2-viewport--9-16' : ''}`}
+      viewportInnerClassName="bc2-viewport-inner"
+      captureClassName={(exporting) =>
+        `absolute left-0 top-0 shrink-0 origin-top-left overflow-hidden bc2-canvas${exporting ? ' bc2-capture' : ''}`
+      }
+      downloadRowClassName="bc2-download-row"
+      downloadButtonClassName="bc2-btn-download"
+      downloadErrorClassName="bc2-download-error"
+      capturePngOptions={capturePngOptions}
+      downloadFilenameBase={downloadFilenameBase}
+      layerUi={DESIGN2_LAYER_UI}
+      renderCanvasBackground={renderDesign2CanvasBackground}
+    />
   )
 }
 
@@ -5886,8 +5946,9 @@ import BannerCanvas2 from './BannerCanvas2.jsx'
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
 
-function formatStatus(status) {
+function formatStatus(status, { videoRendering = false } = {}) {
   if (!status) return 'מתחיל…'
+  if (status === 'completed' && videoRendering) return 'באנר הושלם · מייצר וידאו ברקע…'
   const map = {
     pending: 'ממתין…',
     scraped: 'סורק את האתר…',
@@ -5924,6 +5985,9 @@ function StatusSkeleton() {
 /** Must match api.SUPERUSER_EMAIL (primary admin only). */
 const PRIMARY_ADMIN_EMAIL = 'gal0673@gmail.com'
 
+const VIDEO_RENDERING_HINT =
+  'הווידאו מיוצר ברקע — אפשר להמשיך לערוך את הבאנר. · Video is rendering in the background; you can keep editing.'
+
 function Spinner({ className = '' }) {
   return (
     <span
@@ -5951,8 +6015,8 @@ export default function BannerWorkspace() {
   const [aiContextErr,  setAiContextErr]  = useState(null)
   const [activeDesign,  setActiveDesign]  = useState(1)
   const [aspectRatio,   setAspectRatio]   = useState('1:1')
-  const [isRenderingVideo, setIsRenderingVideo] = useState(false)
   const [videoRenderError, setVideoRenderError] = useState(null)
+  const [sseBump, setSseBump] = useState(0)
   const [videoHook,        setVideoHook]        = useState('')
   // Tracks the taskId for which we've already initialised videoHook from the
   // server, so that subsequent statusPayload updates don't overwrite user edits.
@@ -5967,6 +6031,7 @@ export default function BannerWorkspace() {
 
   const terminal  = statusPayload?.status === 'completed' || statusPayload?.status === 'failed'
   const isPolling = Boolean(taskId && !terminal)
+  const videoRendering = statusPayload?.video_status === 'processing'
   const completed =
     statusPayload?.status === 'completed' &&
     statusPayload?.background_url &&
@@ -6010,11 +6075,10 @@ export default function BannerWorkspace() {
     return () => { cancelled = true }
   }, [ready, user])
 
-  // While a task is non-terminal, poll status so we still pick up DB updates if SSE drops.
+  // Poll on an interval whenever a task is loaded (covers banner pipeline, async video render, and SSE gaps).
   useEffect(() => {
     if (!taskId) return undefined
     const tick = async () => {
-      if (terminalRef.current) return
       try {
         const { data } = await api.get(`/status/${taskId}`)
         setStatusPayload(data)
@@ -6044,7 +6108,7 @@ export default function BannerWorkspace() {
       try {
         const data = JSON.parse(event.data)
         setStatusPayload(data)
-        if (data.status === 'completed' || data.status === 'failed') {
+        if (data.status === 'failed') {
           sseTerminalRef.current = true
           sse.close()
         }
@@ -6059,7 +6123,7 @@ export default function BannerWorkspace() {
     }
 
     return () => { sse.close() }
-  }, [taskId])
+  }, [taskId, sseBump])
 
   // Initialise videoHook from the server value exactly once per task (when the
   // task first arrives in a completed state).  After that we leave local state
@@ -6108,28 +6172,43 @@ export default function BannerWorkspace() {
   const handleRenderVideo = useCallback(async () => {
     if (!taskId) return
     setVideoRenderError(null)
-    setIsRenderingVideo(true)
     try {
       const { data } = await api.post(`/tasks/${taskId}/render-video`, {
         design_type: activeDesign,
         aspect_ratio: aspectRatio,
       })
-      setStatusPayload((p) => {
-        if (!p) return p
-        return {
-          ...p,
-          video_url_1: typeof data?.video_url_1 === 'string' ? data.video_url_1 : p.video_url_1,
-          video_url_2: typeof data?.video_url_2 === 'string' ? data.video_url_2 : p.video_url_2,
-          video_url_1_vertical: typeof data?.video_url_1_vertical === 'string' ? data.video_url_1_vertical : p.video_url_1_vertical,
-          video_url_2_vertical: typeof data?.video_url_2_vertical === 'string' ? data.video_url_2_vertical : p.video_url_2_vertical,
-        }
-      })
+      if (data?.status === 'processing') {
+        setStatusPayload((p) =>
+          p
+            ? {
+                ...p,
+                video_status: 'processing',
+                video_render_error: null,
+              }
+            : p,
+        )
+        setSseBump((n) => n + 1)
+      }
     } catch (err) {
       setVideoRenderError(axiosErrorMessage(err))
-    } finally {
-      setIsRenderingVideo(false)
     }
   }, [taskId, activeDesign, aspectRatio])
+
+  useEffect(() => {
+    if (statusPayload?.video_status === 'failed' && statusPayload?.video_render_error) {
+      setVideoRenderError(statusPayload.video_render_error)
+    }
+  }, [statusPayload?.video_status, statusPayload?.video_render_error])
+
+  const prevVideoStatusRef = useRef(null)
+  useEffect(() => {
+    const v = statusPayload?.video_status
+    const prev = prevVideoStatusRef.current
+    if (prev === 'processing' && v !== 'processing' && v !== 'failed') {
+      setVideoRenderError(null)
+    }
+    prevVideoStatusRef.current = v
+  }, [statusPayload?.video_status])
 
   const handleDownloadAiContext = useCallback(async () => {
     setAiContextErr(null)
@@ -6191,14 +6270,28 @@ export default function BannerWorkspace() {
       s === 'failed'      ? 'bg-red-500/15 text-red-700 dark:text-red-300 ring-red-500/25'
       : s === 'completed' ? 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 ring-emerald-500/25'
       : 'bg-indigo-500/15 text-indigo-700 dark:text-indigo-200 ring-indigo-500/25'
+    const showSpinner = isPolling || videoRendering
+    const codeHint =
+      s === 'completed' && videoRendering ? `${s} · video:processing` : (s ?? '…')
     return (
       <span className={`inline-flex items-center gap-2 rounded-full px-3 py-1 text-xs font-medium ring-1 ${tone}`}>
-        {isPolling && <Spinner className="!size-3.5 border-indigo-400/40 border-t-indigo-300" />}
-        <span className="opacity-90">{formatStatus(s)}</span>
-        <span className="font-mono uppercase tracking-wide opacity-70" dir="ltr">({s ?? '…'})</span>
+        {showSpinner && <Spinner className="!size-3.5 border-indigo-400/40 border-t-indigo-300" />}
+        <span className="opacity-90">{formatStatus(s, { videoRendering })}</span>
+        <span className="font-mono uppercase tracking-wide opacity-70" dir="ltr">({codeHint})</span>
       </span>
     )
-  }, [taskId, statusPayload?.status, isPolling])
+  }, [taskId, statusPayload?.status, isPolling, videoRendering])
+
+  const handleResetVideoRender = useCallback(async () => {
+    if (!taskId) return
+    try {
+      const { data } = await api.post(`/tasks/${taskId}/video-render/reset`)
+      setStatusPayload(data)
+      setVideoRenderError(null)
+    } catch (err) {
+      setVideoRenderError(axiosErrorMessage(err))
+    }
+  }, [taskId])
 
   return (
     <div
@@ -6379,11 +6472,27 @@ export default function BannerWorkspace() {
                 {statusChip}
               </div>
               <p className="text-sm text-slate-600 dark:text-slate-300">
-                {formatStatus(statusPayload?.status)}
+                {formatStatus(statusPayload?.status, { videoRendering })}
               </p>
               <p className="text-xs text-slate-500 font-mono break-all" dir="ltr">
                 מזהה משימה: {taskId}
               </p>
+
+              {videoRendering && (
+                <div className="rounded-xl border border-amber-200/90 dark:border-amber-800/60 bg-amber-50/90 dark:bg-amber-950/30 px-4 py-3 text-sm text-amber-950 dark:text-amber-100 space-y-2">
+                  <p className="leading-relaxed">
+                    אם עצרת את ה-worker של Celery או שהייצור נתקע, השרת עדיין מסמן &quot;מייצר וידאו&quot;.
+                    לחץ לאיפוס המצב בבסיס הנתונים ואז הפעל מחדש את ה-worker ונסה שוב לייצר וידאו.
+                  </p>
+                  <button
+                    type="button"
+                    onClick={handleResetVideoRender}
+                    className="rounded-lg border border-amber-400/80 dark:border-amber-600 bg-white dark:bg-slate-900 px-3 py-2 text-xs font-semibold text-amber-900 dark:text-amber-200 hover:bg-amber-100/80 dark:hover:bg-amber-900/40 transition"
+                  >
+                    אפס מצב ייצור וידאו
+                  </button>
+                </div>
+              )}
 
               {isPolling && <StatusSkeleton />}
 
@@ -6547,7 +6656,8 @@ export default function BannerWorkspace() {
                           }
                           onPersist={handleTaskPersist}
                           onRenderVideo={handleRenderVideo}
-                          isRenderingVideo={isRenderingVideo}
+                          isRenderingVideo={videoRendering}
+                          videoRenderingHint={VIDEO_RENDERING_HINT}
                           aspectRatio={aspectRatio}
                         />
                       </div>
@@ -6575,7 +6685,8 @@ export default function BannerWorkspace() {
                           }
                           onPersist={handleTaskPersist}
                           onRenderVideo={handleRenderVideo}
-                          isRenderingVideo={isRenderingVideo}
+                          isRenderingVideo={videoRendering}
+                          videoRenderingHint={VIDEO_RENDERING_HINT}
                           aspectRatio={aspectRatio}
                         />
                       </div>
@@ -6770,6 +6881,541 @@ export default function BannerLayer({
         </div>
       </Resizable>
     </Motion.div>
+  )
+}
+
+
+================================================================================
+FILE: client/src/components/canvas/BannerWorkspaceContainer.jsx
+================================================================================
+
+import { useCallback, useEffect, useId, useRef, useState } from 'react'
+import { useDragControls } from 'framer-motion'
+import BannerLayer from './BannerLayer.jsx'
+import EditableText from './EditableText.jsx'
+import TextControls from './TextControls.jsx'
+import {
+  BANNER_SQUARE_1_1,
+  BANNER_VERTICAL_9_16,
+  captureBannerNodeToPng,
+  contrastingTextColor,
+  extractDomain,
+  hexToRgb,
+  normalizeBrandHex,
+} from './canvasUtils.js'
+import { useBannerCanvasState } from './useBannerCanvasState.js'
+
+/**
+ * @typedef {object} BannerLayerUiConfig
+ * @property {string} layerBase — e.g. 'banner-layer' | 'bc2-layer'
+ * @property {string} [handleWrapperClass]
+ * @property {string} [layerInnerClass]
+ * @property {string} layerTextMod — e.g. 'banner-layer--text'
+ * @property {string} layerCtaMod — e.g. 'banner-layer--cta'
+ * @property {string} logoImgClassName
+ * @property {number} [minHeadlineHeight]
+ * @property {string} headlineTextShellClass
+ * @property {string} headlineEditableClass
+ * @property {string} subheadTextShellClass
+ * @property {string} subheadEditableClass
+ * @property {string} featGridBase
+ * @property {string} featGridVertical
+ * @property {string} featItemClass
+ * @property {string} featIconClass
+ * @property {string} featTextClass
+ * @property {string} ctaTextShellClass
+ * @property {string} ctaDragHandleClass
+ * @property {string} ctaDragGripClass
+ * @property {string} ctaDragLabelClass
+ * @property {string} ctaEditableClass
+ * @property {(ctx: { ctaBgHex: string, brandR: number, brandG: number, brandB: number }) => string} getCtaBoxShadow
+ */
+
+/**
+ * Shared shell: viewport scaling, capture ref, useBannerCanvasState, draggable layers, download / video row.
+ * Pass design-specific background via `renderCanvasBackground` and styling via `layerUi`.
+ *
+ * @param {object} props
+ * @param {(workspace: BannerWorkspaceContext) => React.ReactNode} props.renderCanvasBackground
+ * @param {BannerLayerUiConfig} props.layerUi
+ */
+export default function BannerWorkspaceContainer({
+  apiBase,
+  taskId,
+  backgroundUrl,
+  logoUrl,
+  headline: headlineInitial,
+  subhead: subheadInitial,
+  bulletPoints,
+  cta: ctaInitial,
+  brandColor,
+  siteUrl,
+  savedCanvasSlice,
+  onPersist,
+  onRenderVideo,
+  isRenderingVideo = false,
+  /** Shown under the action row while async video render runs (non-blocking). */
+  videoRenderingHint = '',
+  aspectRatio = '1:1',
+  persistDesignKey,
+  stateDefaults,
+  surfaceIdPrefix,
+  rootClassName,
+  viewportClassName,
+  viewportInnerClassName,
+  captureClassName,
+  downloadRowClassName,
+  downloadButtonClassName,
+  downloadErrorClassName,
+  capturePngOptions,
+  downloadFilenameBase,
+  renderCanvasBackground,
+  layerUi,
+}) {
+  const isVertical = aspectRatio === '9:16'
+  const designSize = isVertical ? BANNER_VERTICAL_9_16 : BANNER_SQUARE_1_1
+  const BANNER_W = designSize.width
+  const BANNER_H = designSize.height
+
+  const viewportRef = useRef(null)
+  const captureRef = useRef(null)
+  const reactSurfaceSuffix = useId().replace(/:/g, '')
+  const boundsSurfaceId = taskId
+    ? `${surfaceIdPrefix}-${taskId}`
+    : `${surfaceIdPrefix}-${reactSurfaceSuffix}`
+
+  const ctaDragControls = useDragControls()
+
+  const [scale, setScale] = useState(1)
+  const [exporting, setExporting] = useState(false)
+  const [downloadError, setDownloadError] = useState(null)
+
+  const canvasState = useBannerCanvasState({
+    taskId,
+    brandColor,
+    headlineInitial,
+    subheadInitial,
+    bulletPoints,
+    ctaInitial,
+    savedCanvasSlice,
+    onPersist,
+    persistDesignKey,
+    defaults: stateDefaults,
+  })
+
+  const {
+    headline,
+    setHeadline,
+    subhead,
+    setSubhead,
+    bullets,
+    cta,
+    setCta,
+    logoBox,
+    setLogoBox,
+    headlineBox,
+    setHeadlineBox,
+    subheadBox,
+    setSubheadBox,
+    bulletsBox,
+    setBulletsBox,
+    ctaBox,
+    setCtaBox,
+    draggingKey,
+    setDraggingKey,
+    headlineFs,
+    setHeadlineFs,
+    headlineAlign,
+    setHeadlineAlign,
+    headlineColor,
+    setHeadlineColor,
+    subheadFs,
+    setSubheadFs,
+    subheadAlign,
+    setSubheadAlign,
+    subheadColor,
+    setSubheadColor,
+    bulletsFs,
+    setBulletsFs,
+    bulletsAlign,
+    setBulletsAlign,
+    bulletsColor,
+    setBulletsColor,
+    ctaFs,
+    setCtaFs,
+    ctaAlign,
+    setCtaAlign,
+    ctaColor,
+    setCtaColor,
+    schedulePersist,
+    setBulletAt,
+  } = canvasState
+
+  const bgSrc = backgroundUrl ? `${apiBase}${backgroundUrl}` : ''
+  const logoSrc = logoUrl ? `${apiBase}${logoUrl}` : ''
+  const ctaBgHex = normalizeBrandHex(brandColor)
+  const ctaFgHex = contrastingTextColor(ctaBgHex)
+  const [brandR, brandG, brandB] = hexToRgb(ctaBgHex)
+  const domain = extractDomain(siteUrl)
+
+  const bgImageStyle = bgSrc !== '' ? { backgroundImage: `url(${JSON.stringify(bgSrc)})` } : undefined
+
+  useEffect(() => {
+    const el = viewportRef.current
+    if (!el) return
+    const update = () => {
+      const w = el.clientWidth
+      const h = el.clientHeight
+      if (w <= 0 || h <= 0) return
+      const sx = w / BANNER_W
+      const sy = h / BANNER_H
+      setScale(Math.min(sx, sy))
+    }
+    const ro = new ResizeObserver(update)
+    ro.observe(el)
+    update()
+    return () => ro.disconnect()
+  }, [BANNER_W, BANNER_H])
+
+  const handleDownload = useCallback(async () => {
+    const node = captureRef.current
+    if (!node) return
+    setDownloadError(null)
+    setExporting(true)
+    try {
+      const dataUrl = await captureBannerNodeToPng(node, {
+        width: BANNER_W,
+        height: BANNER_H,
+        ...capturePngOptions,
+      })
+      const a = document.createElement('a')
+      a.href = dataUrl
+      a.download = downloadFilenameBase({ taskId, isVertical })
+      a.click()
+    } catch (e) {
+      setDownloadError(e.message || String(e))
+    } finally {
+      setExporting(false)
+    }
+  }, [taskId, BANNER_W, BANNER_H, isVertical, capturePngOptions, downloadFilenameBase])
+
+  const layerClass = (id) =>
+    `${layerUi.layerBase} ${layerUi.layerBase}--${id}${
+      draggingKey === id ? ` ${layerUi.layerBase}--dragging` : ''
+    }`
+
+  const minHeadlineH = layerUi.minHeadlineHeight ?? 56
+
+  const workspace = {
+    BANNER_W,
+    BANNER_H,
+    designSize,
+    isVertical,
+    scale,
+    exporting,
+    bgSrc,
+    logoSrc,
+    bgImageStyle,
+    ctaBgHex,
+    ctaFgHex,
+    brandR,
+    brandG,
+    brandB,
+    domain,
+  }
+
+  const handleProps = {}
+  if (layerUi.handleWrapperClass != null) handleProps.handleWrapperClass = layerUi.handleWrapperClass
+  if (layerUi.layerInnerClass != null) handleProps.layerInnerClass = layerUi.layerInnerClass
+
+  return (
+    <div className={`${rootClassName} w-full max-w-full`}>
+      <div className={viewportClassName} ref={viewportRef} dir="ltr">
+        <div
+          className={viewportInnerClassName}
+          style={{ width: BANNER_W * scale, height: BANNER_H * scale }}
+        >
+          <div
+            ref={captureRef}
+            id={boundsSurfaceId}
+            dir="ltr"
+            className={captureClassName(exporting)}
+            style={{ width: BANNER_W, height: BANNER_H, transform: `scale(${scale})` }}
+          >
+            {renderCanvasBackground(workspace)}
+
+            <BannerLayer
+              canvasRef={captureRef}
+              box={logoBox}
+              setBox={setLogoBox}
+              className={layerClass('logo')}
+              layerKey="logo"
+              setDraggingKey={setDraggingKey}
+              viewportScale={scale}
+              minWidth={80}
+              minHeight={48}
+              lockAspectRatio
+              onUserCommit={schedulePersist}
+              designSize={designSize}
+              {...handleProps}
+            >
+              <img
+                src={logoSrc}
+                alt=""
+                crossOrigin="anonymous"
+                referrerPolicy="no-referrer"
+                loading="eager"
+                decoding="async"
+                draggable={false}
+                className={layerUi.logoImgClassName}
+              />
+            </BannerLayer>
+
+            <BannerLayer
+              canvasRef={captureRef}
+              box={headlineBox}
+              setBox={setHeadlineBox}
+              className={`${layerClass('headline')} ${layerUi.layerTextMod}`}
+              layerKey="headline"
+              setDraggingKey={setDraggingKey}
+              viewportScale={scale}
+              minWidth={280}
+              minHeight={minHeadlineH}
+              onUserCommit={schedulePersist}
+              designSize={designSize}
+              {...handleProps}
+            >
+              <TextControls
+                fontSize={headlineFs}
+                onFontSize={(v) => {
+                  setHeadlineFs(v)
+                  schedulePersist()
+                }}
+                align={headlineAlign}
+                onAlign={(v) => {
+                  setHeadlineAlign(v)
+                  schedulePersist()
+                }}
+                color={headlineColor}
+                onColor={(v) => {
+                  setHeadlineColor(v)
+                  schedulePersist()
+                }}
+              />
+              <div className={layerUi.headlineTextShellClass} dir="rtl">
+                <EditableText
+                  className={layerUi.headlineEditableClass}
+                  style={{ fontSize: headlineFs, textAlign: headlineAlign, color: headlineColor }}
+                  text={headline}
+                  resetKey={taskId}
+                  onTextChange={(v) => {
+                    setHeadline(v)
+                    schedulePersist()
+                  }}
+                />
+              </div>
+            </BannerLayer>
+
+            <BannerLayer
+              canvasRef={captureRef}
+              box={subheadBox}
+              setBox={setSubheadBox}
+              className={`${layerClass('subhead')} ${layerUi.layerTextMod}`}
+              layerKey="subhead"
+              setDraggingKey={setDraggingKey}
+              viewportScale={scale}
+              minWidth={280}
+              minHeight={48}
+              onUserCommit={schedulePersist}
+              designSize={designSize}
+              {...handleProps}
+            >
+              <TextControls
+                fontSize={subheadFs}
+                onFontSize={(v) => {
+                  setSubheadFs(v)
+                  schedulePersist()
+                }}
+                align={subheadAlign}
+                onAlign={(v) => {
+                  setSubheadAlign(v)
+                  schedulePersist()
+                }}
+                color={subheadColor}
+                onColor={(v) => {
+                  setSubheadColor(v)
+                  schedulePersist()
+                }}
+              />
+              <div className={layerUi.subheadTextShellClass} dir="rtl">
+                <EditableText
+                  className={layerUi.subheadEditableClass}
+                  style={{ fontSize: subheadFs, textAlign: subheadAlign, color: subheadColor }}
+                  text={subhead}
+                  resetKey={taskId}
+                  onTextChange={(v) => {
+                    setSubhead(v)
+                    schedulePersist()
+                  }}
+                />
+              </div>
+            </BannerLayer>
+
+            <BannerLayer
+              canvasRef={captureRef}
+              box={bulletsBox}
+              setBox={setBulletsBox}
+              className={`${layerClass('bullets')} ${layerUi.layerTextMod}`}
+              layerKey="bullets"
+              setDraggingKey={setDraggingKey}
+              viewportScale={scale}
+              minWidth={280}
+              minHeight={200}
+              onUserCommit={schedulePersist}
+              designSize={designSize}
+              {...handleProps}
+            >
+              <TextControls
+                fontSize={bulletsFs}
+                onFontSize={(v) => {
+                  setBulletsFs(v)
+                  schedulePersist()
+                }}
+                align={bulletsAlign}
+                onAlign={(v) => {
+                  setBulletsAlign(v)
+                  schedulePersist()
+                }}
+                color={bulletsColor}
+                onColor={(v) => {
+                  setBulletsColor(v)
+                  schedulePersist()
+                }}
+              />
+              <div
+                className={`${layerUi.featGridBase}${isVertical ? ` ${layerUi.featGridVertical}` : ''}`}
+                dir="rtl"
+              >
+                {bullets.map((b, i) => (
+                  <div
+                    key={`${taskId}-b-${i}`}
+                    className={layerUi.featItemClass}
+                    style={{ borderTopColor: ctaBgHex }}
+                  >
+                    <div
+                      className={layerUi.featIconClass}
+                      style={{ backgroundColor: ctaBgHex, color: ctaFgHex }}
+                    >
+                      ✓
+                    </div>
+                    <EditableText
+                      as="span"
+                      className={layerUi.featTextClass}
+                      style={{ fontSize: bulletsFs, textAlign: bulletsAlign, color: bulletsColor }}
+                      text={b}
+                      resetKey={`${taskId}-${i}`}
+                      onTextChange={(t) => setBulletAt(i, t)}
+                    />
+                  </div>
+                ))}
+              </div>
+            </BannerLayer>
+
+            <BannerLayer
+              canvasRef={captureRef}
+              box={ctaBox}
+              setBox={setCtaBox}
+              className={`${layerClass('cta')} ${layerUi.layerCtaMod}`}
+              layerKey="cta"
+              setDraggingKey={setDraggingKey}
+              viewportScale={scale}
+              minWidth={160}
+              minHeight={52}
+              dragHandleOnly
+              dragControls={ctaDragControls}
+              onUserCommit={schedulePersist}
+              designSize={designSize}
+              {...handleProps}
+            >
+              <TextControls
+                fontSize={ctaFs}
+                onFontSize={(v) => {
+                  setCtaFs(v)
+                  schedulePersist()
+                }}
+                align={ctaAlign}
+                onAlign={(v) => {
+                  setCtaAlign(v)
+                  schedulePersist()
+                }}
+                color={ctaColor}
+                onColor={(v) => {
+                  setCtaColor(v)
+                  schedulePersist()
+                }}
+              />
+              <div className={layerUi.ctaTextShellClass}>
+                <div
+                  className={layerUi.ctaDragHandleClass}
+                  title="גרור להזזה"
+                  onPointerDown={(e) => ctaDragControls.start(e)}
+                >
+                  <span className={layerUi.ctaDragGripClass} aria-hidden />
+                  <span className={layerUi.ctaDragLabelClass}>גרור</span>
+                </div>
+                <div className="mt-1" style={{ textAlign: ctaAlign }} dir="rtl">
+                  <EditableText
+                    className={layerUi.ctaEditableClass}
+                    text={cta}
+                    resetKey={taskId}
+                    onTextChange={(v) => {
+                      setCta(v)
+                      schedulePersist()
+                    }}
+                    style={{
+                      fontSize: ctaFs,
+                      backgroundColor: ctaBgHex,
+                      color: ctaColor,
+                      boxShadow: layerUi.getCtaBoxShadow({ ctaBgHex, brandR, brandG, brandB }),
+                    }}
+                  />
+                </div>
+              </div>
+            </BannerLayer>
+          </div>
+        </div>
+      </div>
+
+      <div className={downloadRowClassName}>
+        <button type="button" className={downloadButtonClassName} onClick={handleDownload} disabled={exporting}>
+          {exporting ? 'מכין PNG…' : '⬇ הורד באנר PNG'}
+        </button>
+        {typeof onRenderVideo === 'function' && (
+          <button
+            type="button"
+            className={downloadButtonClassName}
+            onClick={onRenderVideo}
+            disabled={isRenderingVideo}
+          >
+            {isRenderingVideo ? 'מייצר וידאו ברקע…' : '🎬 ייצר סרטון אנימציה'}
+          </button>
+        )}
+      </div>
+      {isRenderingVideo && videoRenderingHint ? (
+        <p
+          className="mt-2 text-center text-sm text-slate-600 dark:text-slate-400 px-2"
+          role="status"
+          aria-live="polite"
+        >
+          {videoRenderingHint}
+        </p>
+      ) : null}
+      {downloadError && (
+        <p className={downloadErrorClassName} role="alert">
+          {downloadError}
+        </p>
+      )}
+    </div>
   )
 }
 
@@ -7344,6 +7990,8 @@ export function useBannerCanvasState({
     ctaInitial,
     brandColor,
     savedCanvasSlice,
+    persistDesignKey,
+    defaults,
   ])
 
   const setBulletAt = useCallback(
@@ -7939,7 +8587,7 @@ export const Design1Composition = ({
           as="h1"
           style={{
             margin: 0,
-            fontSize: Math.min(52, containerH * 0.1),
+            fontSize: Math.min(68, containerH * 0.125),
             fontWeight: 800,
             lineHeight: 1.15,
             color: "#0f172a",
@@ -7955,7 +8603,7 @@ export const Design1Composition = ({
             as="p"
             style={{
               margin: `${containerH * 0.018}px 0 0`,
-              fontSize: Math.min(24, containerH * 0.05),
+              fontSize: Math.min(32, containerH * 0.068),
               fontWeight: 500,
               lineHeight: 1.5,
               color: "#475569",
@@ -8003,7 +8651,7 @@ export const Design1Composition = ({
                       display: "flex",
                       alignItems: "center",
                       justifyContent: "center",
-                      fontSize: 14,
+                      fontSize: 17,
                       fontWeight: 700,
                       marginTop: 3,
                       boxShadow: `0 4px 12px rgba(${br},${bg},${bb},0.35)`,
@@ -8015,7 +8663,7 @@ export const Design1Composition = ({
                   <RtlText
                     style={{
                       flex: 1,
-                      fontSize: Math.min(20, containerH * 0.04),
+                      fontSize: Math.min(27, containerH * 0.053),
                       fontWeight: 500,
                       lineHeight: 1.45,
                       color: "#1e293b",
@@ -8046,7 +8694,7 @@ export const Design1Composition = ({
                 backgroundColor: brandHex,
                 color: "#ffffff",
                 fontWeight: 800,
-                fontSize: Math.min(26, containerH * 0.055),
+                fontSize: Math.min(34, containerH * 0.072),
                 textAlign: "center",
                 boxShadow: `0 10px 32px rgba(${br},${bg},${bb},0.4)`,
               }}
@@ -8109,7 +8757,7 @@ export const Design1Composition = ({
           <div
             dir="rtl"
             style={{
-              fontSize: Math.min(120, height * 0.11),
+              fontSize: Math.min(168, height * 0.15),
               fontWeight: 800,
               color: "#ffffff",
               textAlign: "center",
@@ -8430,7 +9078,7 @@ export const Design2Composition = ({
               as="h1"
               style={{
                 margin: 0,
-                fontSize: Math.min(64, height * 0.072),
+                fontSize: Math.min(78, height * 0.088),
                 fontWeight: 800,
                 lineHeight: 1.12,
                 letterSpacing: "-0.02em",
@@ -8447,7 +9095,7 @@ export const Design2Composition = ({
               as="p"
               style={{
                 margin: 0,
-                fontSize: Math.min(30, height * 0.034),
+                fontSize: Math.min(38, height * 0.043),
                 fontWeight: 500,
                 lineHeight: 1.45,
                 color: "rgba(255,255,255,0.9)",
@@ -8519,7 +9167,7 @@ export const Design2Composition = ({
                           display: "flex",
                           alignItems: "center",
                           justifyContent: "center",
-                          fontSize: 18,
+                          fontSize: 22,
                           fontWeight: 700,
                           boxShadow: `0 6px 18px rgba(${br},${bg},${bb},0.45)`,
                         }}
@@ -8530,7 +9178,7 @@ export const Design2Composition = ({
                       <RtlText
                         style={{
                           flex: 1,
-                          fontSize: Math.min(22, height * 0.026),
+                          fontSize: Math.min(30, height * 0.035),
                           fontWeight: 500,
                           lineHeight: 1.45,
                           color: "rgba(248,250,252,0.96)",
@@ -8563,7 +9211,7 @@ export const Design2Composition = ({
                   backgroundColor: brandHex,
                   color: "#ffffff",
                   fontWeight: 800,
-                  fontSize: Math.min(30, height * 0.034),
+                  fontSize: Math.min(38, height * 0.043),
                   textAlign: "center",
                   boxShadow: `0 16px 48px rgba(${br},${bg},${bb},0.55), 0 4px 12px rgba(0,0,0,0.35)`,
                   letterSpacing: "0.02em",
@@ -8608,7 +9256,7 @@ export const Design2Composition = ({
           <div
             dir="rtl"
             style={{
-              fontSize: Math.min(120, height * 0.11),
+              fontSize: Math.min(168, height * 0.15),
               fontWeight: 800,
               color: "#ffffff",
               textAlign: "center",
@@ -9113,10 +9761,12 @@ uvicorn[standard]
 python-dotenv
 openai
 requests
+tenacity
 selenium
 pillow
 celery
 redis
+tenacity
 
 # API: SQLAlchemy + auth (install one DB driver: pymysql for MySQL, psycopg[binary] for PostgreSQL)
 sqlalchemy>=2.0

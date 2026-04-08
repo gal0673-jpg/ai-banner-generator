@@ -11,10 +11,20 @@
   box-shadow: 0 16px 56px rgba(0, 0, 0, 0.18);
 }
 
+/* 1080×1920 preview — match canvas aspect so scaled content is not clipped */
+.banner-viewport.banner-viewport--9-16 {
+  aspect-ratio: 9 / 16;
+  max-width: min(96%, 520px);
+  max-height: min(92vh, 960px);
+}
+
 .banner-viewport-inner {
   position: absolute;
   inset: 0;
   overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
 /* ── Canvas root ────────────────────────────────────────────────────────────── */

@@ -9,7 +9,7 @@ import BannerCanvas2 from './BannerCanvas2.jsx'
 
 function formatStatus(status, { videoRendering = false } = {}) {
   if (!status) return 'מתחיל…'
-  if (status === 'completed' && videoRendering) return 'מייצר וידאו ברקע…'
+  if (status === 'completed' && videoRendering) return 'באנר הושלם · מייצר וידאו ברקע…'
   const map = {
     pending: 'ממתין…',
     scraped: 'סורק את האתר…',
@@ -332,14 +332,27 @@ export default function BannerWorkspace() {
       : s === 'completed' ? 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 ring-emerald-500/25'
       : 'bg-indigo-500/15 text-indigo-700 dark:text-indigo-200 ring-indigo-500/25'
     const showSpinner = isPolling || videoRendering
+    const codeHint =
+      s === 'completed' && videoRendering ? `${s} · video:processing` : (s ?? '…')
     return (
       <span className={`inline-flex items-center gap-2 rounded-full px-3 py-1 text-xs font-medium ring-1 ${tone}`}>
         {showSpinner && <Spinner className="!size-3.5 border-indigo-400/40 border-t-indigo-300" />}
         <span className="opacity-90">{formatStatus(s, { videoRendering })}</span>
-        <span className="font-mono uppercase tracking-wide opacity-70" dir="ltr">({s ?? '…'})</span>
+        <span className="font-mono uppercase tracking-wide opacity-70" dir="ltr">({codeHint})</span>
       </span>
     )
   }, [taskId, statusPayload?.status, isPolling, videoRendering])
+
+  const handleResetVideoRender = useCallback(async () => {
+    if (!taskId) return
+    try {
+      const { data } = await api.post(`/tasks/${taskId}/video-render/reset`)
+      setStatusPayload(data)
+      setVideoRenderError(null)
+    } catch (err) {
+      setVideoRenderError(axiosErrorMessage(err))
+    }
+  }, [taskId])
 
   return (
     <div
@@ -520,11 +533,27 @@ export default function BannerWorkspace() {
                 {statusChip}
               </div>
               <p className="text-sm text-slate-600 dark:text-slate-300">
-                {formatStatus(statusPayload?.status)}
+                {formatStatus(statusPayload?.status, { videoRendering })}
               </p>
               <p className="text-xs text-slate-500 font-mono break-all" dir="ltr">
                 מזהה משימה: {taskId}
               </p>
+
+              {videoRendering && (
+                <div className="rounded-xl border border-amber-200/90 dark:border-amber-800/60 bg-amber-50/90 dark:bg-amber-950/30 px-4 py-3 text-sm text-amber-950 dark:text-amber-100 space-y-2">
+                  <p className="leading-relaxed">
+                    אם עצרת את ה-worker של Celery או שהייצור נתקע, השרת עדיין מסמן &quot;מייצר וידאו&quot;.
+                    לחץ לאיפוס המצב בבסיס הנתונים ואז הפעל מחדש את ה-worker ונסה שוב לייצר וידאו.
+                  </p>
+                  <button
+                    type="button"
+                    onClick={handleResetVideoRender}
+                    className="rounded-lg border border-amber-400/80 dark:border-amber-600 bg-white dark:bg-slate-900 px-3 py-2 text-xs font-semibold text-amber-900 dark:text-amber-200 hover:bg-amber-100/80 dark:hover:bg-amber-900/40 transition"
+                  >
+                    אפס מצב ייצור וידאו
+                  </button>
+                </div>
+              )}
 
               {isPolling && <StatusSkeleton />}
 

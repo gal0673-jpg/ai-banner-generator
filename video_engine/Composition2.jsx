@@ -295,7 +295,7 @@ export const Design2Composition = ({
               as="h1"
               style={{
                 margin: 0,
-                fontSize: Math.min(64, height * 0.072),
+                fontSize: Math.min(78, height * 0.088),
                 fontWeight: 800,
                 lineHeight: 1.12,
                 letterSpacing: "-0.02em",
@@ -312,7 +312,7 @@ export const Design2Composition = ({
               as="p"
               style={{
                 margin: 0,
-                fontSize: Math.min(30, height * 0.034),
+                fontSize: Math.min(38, height * 0.043),
                 fontWeight: 500,
                 lineHeight: 1.45,
                 color: "rgba(255,255,255,0.9)",
@@ -384,7 +384,7 @@ export const Design2Composition = ({
                           display: "flex",
                           alignItems: "center",
                           justifyContent: "center",
-                          fontSize: 18,
+                          fontSize: 22,
                           fontWeight: 700,
                           boxShadow: `0 6px 18px rgba(${br},${bg},${bb},0.45)`,
                         }}
@@ -395,7 +395,7 @@ export const Design2Composition = ({
                       <RtlText
                         style={{
                           flex: 1,
-                          fontSize: Math.min(22, height * 0.026),
+                          fontSize: Math.min(30, height * 0.035),
                           fontWeight: 500,
                           lineHeight: 1.45,
                           color: "rgba(248,250,252,0.96)",
@@ -428,7 +428,7 @@ export const Design2Composition = ({
                   backgroundColor: brandHex,
                   color: "#ffffff",
                   fontWeight: 800,
-                  fontSize: Math.min(30, height * 0.034),
+                  fontSize: Math.min(38, height * 0.043),
                   textAlign: "center",
                   boxShadow: `0 16px 48px rgba(${br},${bg},${bb},0.55), 0 4px 12px rgba(0,0,0,0.35)`,
                   letterSpacing: "0.02em",
@@ -473,7 +473,7 @@ export const Design2Composition = ({
           <div
             dir="rtl"
             style={{
-              fontSize: Math.min(120, height * 0.11),
+              fontSize: Math.min(168, height * 0.15),
               fontWeight: 800,
               color: "#ffffff",
               textAlign: "center",

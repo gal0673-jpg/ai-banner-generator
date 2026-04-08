@@ -1,7 +1,7 @@
 """Add video_status and video_render_error to banner_tasks
 
 Revision ID: d7e3c1a0b2f4
-Revises: b09ba5e8cf40
+Revises: c4f1a2b8d9e0
 Create Date: 2026-04-08
 
 """
@@ -11,7 +11,7 @@ from alembic import op
 import sqlalchemy as sa
 
 revision: str = "d7e3c1a0b2f4"
-down_revision: Union[str, Sequence[str], None] = "b09ba5e8cf40"
+down_revision: Union[str, Sequence[str], None] = "c4f1a2b8d9e0"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
