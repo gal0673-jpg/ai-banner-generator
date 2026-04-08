@@ -1,5 +1,5 @@
 AI BANNER CONTEXT EXPORT
-Generated (UTC): 2026-04-08 12:45:55 UTC
+Generated (UTC): 2026-04-08 14:24:56 UTC
 Project root: C:\laragon\www\python
 Output filename: ai-banner-context.txt
 
@@ -113,7 +113,7 @@ python/
 │   ├── banner_service.py
 │   └── video_service.py
 ├── tasks
-│   └── [40 task UUID folders — runtime outputs omitted]
+│   └── [43 task UUID folders — runtime outputs omitted]
 ├── video_engine
 │   ├── public
 │   │   ├── ding.mp3
@@ -3320,7 +3320,7 @@ def generate(
     db.commit()
     tid = str(task_id)
     try:
-        run_banner_task.delay(tid, url, brief)
+        run_banner_task.delay(tid, url, brief, body.video_hook)
     except Exception as exc:
         persist_task(task_id, status="failed", error=str(exc))
         raise HTTPException(
@@ -3933,8 +3933,11 @@ def run_banner_task(
 ) -> None:
     task_uuid = uuid.UUID(task_id)
     work_dir = TASKS_DIR / task_id
-    crawl_from_url(url, work_dir=work_dir, campaign_brief=brief)
+    work_dir.mkdir(parents=True, exist_ok=True)
+    # Move off "pending" as soon as the worker picks up the job — crawl (Selenium) can take minutes.
     persist_task(task_uuid, status="scraped")
+    print(f"[run_banner_task] task_id={task_id} status=scraped (crawl starting)", flush=True)
+    crawl_from_url(url, work_dir=work_dir, campaign_brief=brief)
 
     if not os.environ.get("OPENAI_API_KEY"):
         persist_task(task_uuid, status="failed", error="OPENAI_API_KEY is not set")
@@ -4262,10 +4265,13 @@ export const API_BASE_URL =
       ? configured.trim().replace(/\/$/, '')
       : 'http://127.0.0.1:8888'
 
-/** Shown in the UI footer; when using dev proxy, baseURL is '' but traffic still reaches :8888. */
+/** Shown in the UI footer: direct URL, or browser origin when axios uses same-origin + Vite proxy → :8888. */
+function devProxyLabel() {
+  if (typeof window === 'undefined') return 'http://127.0.0.1:8888 (proxy דרך Vite)'
+  return `${window.location.origin} → proxy ל־http://127.0.0.1:8888`
+}
 export const API_BASE_URL_DISPLAY =
-  API_BASE_URL ||
-  (import.meta.env.DEV ? 'http://127.0.0.1:8888 (proxy דרך Vite)' : 'http://127.0.0.1:8888')
+  API_BASE_URL || (import.meta.env.DEV ? devProxyLabel() : 'http://127.0.0.1:8888')
 
 export const api = axios.create({
   baseURL: API_BASE_URL,
@@ -4625,6 +4631,7 @@ FILE: client/src/BannerCanvas.css
 
 /* ── Viewport (responsive wrapper) ─────────────────────────────────────────── */
 .banner-viewport {
+  box-sizing: border-box;
   width: 100%;
   max-width: min(96%, 860px);
   margin: 0 auto;
@@ -4636,11 +4643,18 @@ FILE: client/src/BannerCanvas.css
   box-shadow: 0 16px 56px rgba(0, 0, 0, 0.18);
 }
 
-/* 1080×1920 preview — match canvas aspect so scaled content is not clipped */
+/*
+ * 1080×1920 preview: drive width so height = width×16/9 never exceeds the viewport cap.
+ * (max-width + max-height + aspect-ratio alone can yield a used height slightly larger than
+ * the flex-allocated slot, so clientHeight undervalues the true box and scale overflows.)
+ */
 .banner-viewport.banner-viewport--9-16 {
+  box-sizing: border-box;
   aspect-ratio: 9 / 16;
-  max-width: min(96%, 520px);
+  width: min(96%, 520px, calc(92vh * 9 / 16));
+  max-width: min(96%, 520px, calc(92vh * 9 / 16));
   max-height: min(92vh, 960px);
+  height: auto;
 }
 
 .banner-viewport-inner {
@@ -4650,6 +4664,9 @@ FILE: client/src/BannerCanvas.css
   display: flex;
   align-items: center;
   justify-content: center;
+  /* Let this flex item shrink when an ancestor is a column flex; avoids phantom overflow */
+  min-width: 0;
+  min-height: 0;
 }
 
 /* ── Canvas root ────────────────────────────────────────────────────────────── */
@@ -4807,13 +4824,15 @@ FILE: client/src/BannerCanvas.css
   flex: 0 0 auto;
   width: 100%;
   min-width: 0;
-  min-height: 100px;
+  min-height: 0;
+  height: auto;
 }
 
 .banner-feat-card {
-  flex: 1;
+  flex: 1 1 auto;
   min-width: 0;
-  min-height: 132px;
+  min-height: 0;
+  height: auto;
   background: #ffffff;
   border-radius: 14px;
   padding: 24px 14px 26px;
@@ -4847,7 +4866,8 @@ FILE: client/src/BannerCanvas.css
   color: #1e293b;
   line-height: 1.52;
   flex: 1 1 auto;
-  min-height: 2.8em;
+  min-height: 0;
+  overflow: visible;
   direction: rtl;
   text-align: right;
   outline: none;
@@ -4932,11 +4952,11 @@ FILE: client/src/BannerCanvas.css
   left: auto;
   display: flex;
   align-items: center;
-  gap: 4px;
-  padding: 3px 6px;
+  gap: 6px;
+  padding: 6px 10px;
   background: rgba(15, 23, 42, 0.72);
   backdrop-filter: blur(4px);
-  border-radius: 6px;
+  border-radius: 10px;
   width: max-content;
   max-width: calc(100% - 8px);
   flex-shrink: 0;
@@ -4966,11 +4986,11 @@ FILE: client/src/BannerCanvas.css
   background: rgba(255, 255, 255, 0.12);
   border: 1px solid rgba(255, 255, 255, 0.18);
   color: #e2e8f0;
-  border-radius: 4px;
-  padding: 1px 6px;
-  font-size: 11px;
+  border-radius: 6px;
+  padding: 4px 10px;
+  font-size: 13px;
   font-weight: 600;
-  line-height: 18px;
+  line-height: 20px;
   cursor: pointer;
   font-family: inherit;
   transition: background 0.12s;
@@ -4989,19 +5009,19 @@ FILE: client/src/BannerCanvas.css
 
 .btc-val {
   color: #e2e8f0;
-  font-size: 11px;
+  font-size: 13px;
   font-weight: 600;
-  min-width: 30px;
+  min-width: 44px;
   text-align: center;
-  padding: 0 3px;
+  padding: 0 6px;
 }
 
 .btc-sep {
   display: inline-block;
   width: 1px;
-  height: 14px;
+  height: 18px;
   background: rgba(255, 255, 255, 0.22);
-  margin: 0 2px;
+  margin: 0 4px;
   flex-shrink: 0;
 }
 
@@ -5010,11 +5030,11 @@ FILE: client/src/BannerCanvas.css
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 22px;
-  height: 20px;
+  width: 28px;
+  height: 26px;
   flex-shrink: 0;
   cursor: pointer;
-  border-radius: 4px;
+  border-radius: 6px;
   overflow: hidden;
   border: 1px solid rgba(255, 255, 255, 0.35);
 }
@@ -5099,25 +5119,22 @@ import {
 } from './components/canvas/useBannerCanvasState.js'
 
 // ─── Design 1 shared horizontal layout constants ──────────────────────────────
-const DF_SQUARE = { headline: 58, subhead: 26, bullets: 22, cta: 30 }
-const DF_VERTICAL = { headline: 70, subhead: 32, bullets: 26, cta: 36 }
 const DC = { headline: '#0f172a', subhead: '#475569', bullets: '#1e293b' }
 
 const LEFT_W = 475
 const DIVIDER_W = 6
 const RIGHT_X = LEFT_W + DIVIDER_W
 const STRIP_H = 70
-const RPAD = 44
-const CONTENT_X = RIGHT_X + RPAD
-const CONTENT_W = 1080 - CONTENT_X - RPAD
-const LOGO_W = 200
+
+const DF_SQUARE = { headline: 54, subhead: 26, bullets: 20, cta: 30 }
+const DF_VERTICAL = { headline: 70, subhead: 32, bullets: 26, cta: 38 }
 
 const DESIGN1_SQUARE_BOXES = {
-  logo: { x: 1080 - RPAD - LOGO_W, y: 44, width: LOGO_W, height: 72 },
-  headline: { x: CONTENT_X, y: 148, width: CONTENT_W, height: 210 },
-  subhead: { x: CONTENT_X, y: 372, width: CONTENT_W, height: 110 },
-  bullets: { x: CONTENT_X, y: 494, width: CONTENT_W, height: 292 },
-  cta: { x: CONTENT_X, y: 802, width: CONTENT_W, height: 86 },
+  logo: { x: 836, y: 30, width: 200, height: 72 },
+  headline: { x: 515, y: 120, width: 520, height: 260 },
+  subhead: { x: 515, y: 390, width: 520, height: 120 },
+  bullets: { x: 515, y: 530, width: 520, height: 260 },
+  cta: { x: 515, y: 820, width: 520, height: 100 },
 }
 
 const DESIGN1_LAYER_UI = {
@@ -5372,6 +5389,7 @@ FILE: client/src/BannerCanvas2.css
 .bc2-root {}
 
 .bc2-viewport {
+  box-sizing: border-box;
   width: 100%;
   max-width: min(96%, 860px);
   margin: 0 auto;
@@ -5384,9 +5402,12 @@ FILE: client/src/BannerCanvas2.css
 }
 
 .bc2-viewport.bc2-viewport--9-16 {
+  box-sizing: border-box;
   aspect-ratio: 9 / 16;
-  max-width: min(96%, 520px);
+  width: min(96%, 520px, calc(92vh * 9 / 16));
+  max-width: min(96%, 520px, calc(92vh * 9 / 16));
   max-height: min(92vh, 960px);
+  height: auto;
 }
 
 .bc2-viewport-inner {
@@ -5396,6 +5417,8 @@ FILE: client/src/BannerCanvas2.css
   display: flex;
   align-items: center;
   justify-content: center;
+  min-width: 0;
+  min-height: 0;
 }
 
 /* ── Canvas root ──────────────────────────────────────────────────────────── */
@@ -5543,13 +5566,15 @@ FILE: client/src/BannerCanvas2.css
   flex: 0 0 auto;
   width: 100%;
   min-width: 0;
-  min-height: 100px;
+  min-height: 0;
+  height: auto;
 }
 
 .bc2-feat-pill {
-  flex: 1;
+  flex: 1 1 auto;
   min-width: 0;
-  min-height: 128px;
+  min-height: 0;
+  height: auto;
   /* Dark glass — no backdrop-filter (html-to-image compatible) */
   background: rgba(10, 15, 30, 0.65);
   border: 1px solid rgba(255, 255, 255, 0.18);
@@ -5581,7 +5606,8 @@ FILE: client/src/BannerCanvas2.css
   color: rgba(255, 255, 255, 0.90);
   line-height: 1.52;
   flex: 1 1 auto;
-  min-height: 2.8em;
+  min-height: 0;
+  overflow: visible;
   direction: rtl;
   text-align: right;
   outline: none;
@@ -5648,6 +5674,114 @@ FILE: client/src/BannerCanvas2.css
 .bc2-canvas:not(.bc2-capture) .bc2-layer--cta:hover .banner-text-controls {
   opacity: 1;
   pointer-events: all;
+}
+
+/* ── Text controls toolbar (shared markup, design2 stylesheet) ─────────────── */
+.banner-text-controls {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  left: auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  background: rgba(15, 23, 42, 0.72);
+  backdrop-filter: blur(4px);
+  border-radius: 10px;
+  width: max-content;
+  max-width: calc(100% - 8px);
+  flex-shrink: 0;
+  flex-wrap: wrap;
+  direction: rtl;
+  justify-content: flex-start;
+  z-index: 30;
+  user-select: none;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.15s ease;
+}
+
+.btc-group {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.btc-btn {
+  background: rgba(255, 255, 255, 0.12);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  color: #e2e8f0;
+  border-radius: 6px;
+  padding: 4px 10px;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 20px;
+  cursor: pointer;
+  font-family: inherit;
+  transition: background 0.12s;
+  white-space: nowrap;
+}
+
+.btc-btn:hover {
+  background: rgba(255, 255, 255, 0.22);
+}
+
+.btc-btn--on {
+  background: rgba(99, 102, 241, 0.72) !important;
+  border-color: rgba(99, 102, 241, 0.9) !important;
+  color: #fff !important;
+}
+
+.btc-val {
+  color: #e2e8f0;
+  font-size: 13px;
+  font-weight: 600;
+  min-width: 44px;
+  text-align: center;
+  padding: 0 6px;
+}
+
+.btc-sep {
+  display: inline-block;
+  width: 1px;
+  height: 18px;
+  background: rgba(255, 255, 255, 0.22);
+  margin: 0 4px;
+  flex-shrink: 0;
+}
+
+.btc-color-wrap {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 26px;
+  flex-shrink: 0;
+  cursor: pointer;
+  border-radius: 6px;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.35);
+}
+
+.btc-color-swatch {
+  position: absolute;
+  inset: 0;
+  border-radius: 5px;
+  pointer-events: none;
+}
+
+.btc-color-input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  padding: 0;
+  margin: 0;
+  border: none;
+  cursor: pointer;
+  opacity: 0;
 }
 
 /* ── CTA button ──────────────────────────────────────────────────────────── */
@@ -5723,8 +5857,8 @@ import './BannerCanvas2.css'
 import BannerWorkspaceContainer from './components/canvas/BannerWorkspaceContainer.jsx'
 import { DESIGN2_DEFAULT_BOXES_VERTICAL } from './components/canvas/useBannerCanvasState.js'
 
-const DF2_SQUARE = { headline: 76, subhead: 30, bullets: 22, cta: 36 }
-const DF2_VERTICAL = { headline: 86, subhead: 36, bullets: 26, cta: 42 }
+const DF2_SQUARE = { headline: 92, subhead: 36, bullets: 28, cta: 44 }
+const DF2_VERTICAL = { headline: 118, subhead: 48, bullets: 34, cta: 52 }
 const DC2 = { headline: '#ffffff', subhead: '#e6e6e6', bullets: '#ebebeb' }
 
 const STRIP_H = 64
@@ -5734,10 +5868,10 @@ const CONTENT_W = 1080 - CONTENT_PAD * 2
 
 const DESIGN2_SQUARE_BOXES = {
   logo: { x: 1080 - CONTENT_PAD - 210, y: 50, width: 210, height: 78 },
-  headline: { x: CONTENT_PAD, y: 210, width: CONTENT_W, height: 230 },
-  subhead: { x: CONTENT_PAD, y: 456, width: CONTENT_W, height: 110 },
-  bullets: { x: CONTENT_PAD, y: 580, width: CONTENT_W, height: 252 },
-  cta: { x: CONTENT_PAD + 80, y: 846, width: CONTENT_W - 160, height: 88 },
+  headline: { x: CONTENT_PAD, y: 198, width: CONTENT_W, height: 252 },
+  subhead: { x: CONTENT_PAD, y: 462, width: CONTENT_W, height: 128 },
+  bullets: { x: CONTENT_PAD, y: 602, width: CONTENT_W, height: 278 },
+  cta: { x: CONTENT_PAD + 80, y: 898, width: CONTENT_W - 160, height: 98 },
 }
 
 const DESIGN2_LAYER_UI = {
@@ -5988,6 +6122,9 @@ const PRIMARY_ADMIN_EMAIL = 'gal0673@gmail.com'
 const VIDEO_RENDERING_HINT =
   'הווידאו מיוצר ברקע — אפשר להמשיך לערוך את הבאנר. · Video is rendering in the background; you can keep editing.'
 
+/** After "נתק מהמשימה", do not auto-load /banners/latest on refresh (stuck pending would return forever). */
+const SKIP_LATEST_RESTORE_KEY = 'banner_workspace_skip_latest_restore'
+
 function Spinner({ className = '' }) {
   return (
     <span
@@ -5995,6 +6132,14 @@ function Spinner({ className = '' }) {
       aria-hidden
     />
   )
+}
+
+function readSkipLatestRestoreFlag() {
+  try {
+    return typeof sessionStorage !== 'undefined' && sessionStorage.getItem(SKIP_LATEST_RESTORE_KEY) === '1'
+  } catch {
+    return false
+  }
 }
 
 
@@ -6018,6 +6163,8 @@ export default function BannerWorkspace() {
   const [videoRenderError, setVideoRenderError] = useState(null)
   const [sseBump, setSseBump] = useState(0)
   const [videoHook,        setVideoHook]        = useState('')
+  const [latestRestoreNonce, setLatestRestoreNonce] = useState(0)
+  const [skipLatestRestore, setSkipLatestRestore] = useState(readSkipLatestRestoreFlag)
   // Tracks the taskId for which we've already initialised videoHook from the
   // server, so that subsequent statusPayload updates don't overwrite user edits.
   const hookSyncedForTask = useRef(null)
@@ -6055,6 +6202,9 @@ export default function BannerWorkspace() {
   // Restore latest banner task after refresh (same user session / cookie).
   useEffect(() => {
     if (!ready || !user) return undefined
+    if (typeof sessionStorage !== 'undefined' && sessionStorage.getItem(SKIP_LATEST_RESTORE_KEY) === '1') {
+      return undefined
+    }
     let cancelled = false
     ;(async () => {
       try {
@@ -6073,7 +6223,35 @@ export default function BannerWorkspace() {
       }
     })()
     return () => { cancelled = true }
-  }, [ready, user])
+  }, [ready, user, latestRestoreNonce])
+
+  const disconnectFromLatestTask = useCallback(() => {
+    try {
+      sessionStorage.setItem(SKIP_LATEST_RESTORE_KEY, '1')
+    } catch {
+      /* private mode */
+    }
+    setSkipLatestRestore(true)
+    setTaskId(null)
+    setStatusPayload(null)
+    setSubmitError(null)
+    setVideoRenderError(null)
+    hookSyncedForTask.current = null
+    setSseBump((n) => n + 1)
+  }, [])
+
+  const reconnectLatestTask = useCallback(() => {
+    try {
+      sessionStorage.removeItem(SKIP_LATEST_RESTORE_KEY)
+    } catch {
+      /* ignore */
+    }
+    setSkipLatestRestore(false)
+    setTaskId(null)
+    setStatusPayload(null)
+    hookSyncedForTask.current = null
+    setLatestRestoreNonce((n) => n + 1)
+  }, [])
 
   // Poll on an interval whenever a task is loaded (covers banner pipeline, async video render, and SSE gaps).
   useEffect(() => {
@@ -6099,10 +6277,9 @@ export default function BannerWorkspace() {
     }
 
     sseTerminalRef.current = false
-    const sse = new EventSource(
-      `${API_BASE_URL}/status/${taskId}/stream`,
-      { withCredentials: true },
-    )
+    // EventSource only accepts a URL; credentials follow same-origin rules (Vite proxy → cookies OK).
+    const ssePath = `${API_BASE_URL}/status/${taskId}/stream`
+    const sse = new EventSource(ssePath)
 
     sse.onmessage = (event) => {
       try {
@@ -6253,6 +6430,12 @@ export default function BannerWorkspace() {
       })
       const id = data?.task_id
       if (!id) throw new Error('לא התקבל מזהה משימה מהשרת')
+      try {
+        sessionStorage.removeItem(SKIP_LATEST_RESTORE_KEY)
+      } catch {
+        /* ignore */
+      }
+      setSkipLatestRestore(false)
       setTaskId(id)
     } catch (err) {
       setSubmitError(axiosErrorMessage(err))
@@ -6358,6 +6541,21 @@ export default function BannerWorkspace() {
             <p className="mt-1 text-xs text-slate-500 dark:text-slate-400 leading-relaxed">
               הזן כתובת אתר והמערכת תייצר עבורך באנר מותאם אישית.
             </p>
+
+            {skipLatestRestore && !taskId && (
+              <div className="mt-4 rounded-xl border border-amber-200/90 dark:border-amber-800/50 bg-amber-50/90 dark:bg-amber-950/25 px-3 py-3 text-xs text-amber-950 dark:text-amber-100 space-y-2">
+                <p className="leading-relaxed">
+                  המשימה האחרונה לא תיטען אוטומטית אחרי רענון (כדי שלא תיתקעו שוב על אותו מסך). אפשר ליצור באנר חדש, או לטעון שוב את המשימה מהשרת.
+                </p>
+                <button
+                  type="button"
+                  onClick={reconnectLatestTask}
+                  className="w-full rounded-lg border border-amber-400/80 dark:border-amber-600 bg-white dark:bg-slate-900 px-3 py-2 text-xs font-semibold text-amber-900 dark:text-amber-200 hover:bg-amber-100/80 dark:hover:bg-amber-900/40 transition"
+                >
+                  טען משימה אחרונה מהשרת
+                </button>
+              </div>
+            )}
 
             <form className="mt-5 space-y-4" onSubmit={handleGenerate}>
               <div>
@@ -6469,7 +6667,16 @@ export default function BannerWorkspace() {
                 <h2 className="text-sm font-semibold text-slate-800 dark:text-slate-100">
                   סטטוס משימה
                 </h2>
-                {statusChip}
+                <div className="flex flex-wrap items-center gap-2">
+                  {statusChip}
+                  <button
+                    type="button"
+                    onClick={disconnectFromLatestTask}
+                    className="rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 px-3 py-1.5 text-xs font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800 transition"
+                  >
+                    נתק מהמשימה (רענון לא יחזיר אותה)
+                  </button>
+                </div>
               </div>
               <p className="text-sm text-slate-600 dark:text-slate-300">
                 {formatStatus(statusPayload?.status, { videoRendering })}
@@ -7071,9 +7278,11 @@ export default function BannerWorkspaceContainer({
       const sy = h / BANNER_H
       setScale(Math.min(sx, sy))
     }
-    const ro = new ResizeObserver(update)
+    const ro = new ResizeObserver(() => {
+      requestAnimationFrame(update)
+    })
     ro.observe(el)
-    update()
+    requestAnimationFrame(update)
     return () => ro.disconnect()
   }, [BANNER_W, BANNER_H])
 
@@ -7133,14 +7342,30 @@ export default function BannerWorkspaceContainer({
       <div className={viewportClassName} ref={viewportRef} dir="ltr">
         <div
           className={viewportInnerClassName}
-          style={{ width: BANNER_W * scale, height: BANNER_H * scale }}
+          style={{
+            // Exact scaled box; min 0 stops flex min-height:auto from using the canvas
+            // intrinsic height and blowing past the viewport (clips bottom strip / CTA).
+            width: BANNER_W * scale,
+            height: BANNER_H * scale,
+            minWidth: 0,
+            minHeight: 0,
+            overflow: 'hidden',
+            flexShrink: 0,
+            boxSizing: 'border-box',
+            position: 'relative',
+          }}
         >
           <div
             ref={captureRef}
             id={boundsSurfaceId}
             dir="ltr"
             className={captureClassName(exporting)}
-            style={{ width: BANNER_W, height: BANNER_H, transform: `scale(${scale})` }}
+            style={{
+              width: BANNER_W,
+              height: BANNER_H,
+              transform: `scale(${scale})`,
+              overflow: 'hidden',
+            }}
           >
             {renderCanvasBackground(workspace)}
 
@@ -7602,7 +7827,7 @@ export async function captureBannerNodeToPng(node, options) {
     backgroundColor,
     style = { transform: 'scale(1)', colorScheme: 'light' },
     filter,
-    pixelRatio = 1,
+    pixelRatio = 2,
   } = options
   await new Promise((r) => requestAnimationFrame(r))
   await new Promise((r) => requestAnimationFrame(r))
@@ -7752,14 +7977,14 @@ export function computeDesign1VerticalMetrics(bannerHeight = BANNER_VERTICAL_9_1
 
 /**
  * Default layer boxes for Design 1 @ 9:16 (1080×1920).
- * Logo in top 40% hero; headline → CTA spaced in the text band below the divider (TikTok/Reels style).
- * Coordinates assume textZoneTop = 774, strip starts at y = 1850.
+ * Stack sits higher with ~180px breathing room above the domain strip so Reels/TikTok player chrome
+ * does not cover bullets/CTA (strip starts ≈ y 1850).
  */
 export const DESIGN1_DEFAULT_LOGO_VERTICAL = { x: 836, y: 40, width: 200, height: 72 }
-export const DESIGN1_DEFAULT_HEADLINE_VERTICAL = { x: 44, y: 800, width: 992, height: 228 }
-export const DESIGN1_DEFAULT_SUBHEAD_VERTICAL = { x: 44, y: 1062, width: 992, height: 132 }
-export const DESIGN1_DEFAULT_BULLETS_VERTICAL = { x: 44, y: 1228, width: 992, height: 468 }
-export const DESIGN1_DEFAULT_CTA_VERTICAL = { x: 120, y: 1730, width: 840, height: 96 }
+export const DESIGN1_DEFAULT_HEADLINE_VERTICAL = { x: 44, y: 760, width: 992, height: 260 }
+export const DESIGN1_DEFAULT_SUBHEAD_VERTICAL = { x: 44, y: 1040, width: 992, height: 160 }
+export const DESIGN1_DEFAULT_BULLETS_VERTICAL = { x: 44, y: 1220, width: 992, height: 420 }
+export const DESIGN1_DEFAULT_CTA_VERTICAL = { x: 120, y: 1660, width: 840, height: 110 }
 
 export const DESIGN1_DEFAULT_BOXES_VERTICAL = {
   logo: { ...DESIGN1_DEFAULT_LOGO_VERTICAL },
@@ -7773,10 +7998,10 @@ export const DESIGN1_DEFAULT_BOXES_VERTICAL = {
 // Strip H = 64 → content ends at y = 1856. textZoneTop = 774.
 
 export const DESIGN2_DEFAULT_LOGO_VERTICAL = { x: 806, y: 52, width: 210, height: 78 }
-export const DESIGN2_DEFAULT_HEADLINE_VERTICAL = { x: 64, y: 802, width: 952, height: 272 }
-export const DESIGN2_DEFAULT_SUBHEAD_VERTICAL = { x: 64, y: 1098, width: 952, height: 140 }
-export const DESIGN2_DEFAULT_BULLETS_VERTICAL = { x: 64, y: 1266, width: 952, height: 456 }
-export const DESIGN2_DEFAULT_CTA_VERTICAL = { x: 144, y: 1746, width: 792, height: 96 }
+export const DESIGN2_DEFAULT_HEADLINE_VERTICAL = { x: 64, y: 690, width: 952, height: 320 }
+export const DESIGN2_DEFAULT_SUBHEAD_VERTICAL = { x: 64, y: 1040, width: 952, height: 180 }
+export const DESIGN2_DEFAULT_BULLETS_VERTICAL = { x: 64, y: 1240, width: 952, height: 420 }
+export const DESIGN2_DEFAULT_CTA_VERTICAL = { x: 144, y: 1680, width: 792, height: 110 }
 
 export const DESIGN2_DEFAULT_BOXES_VERTICAL = {
   logo: { ...DESIGN2_DEFAULT_LOGO_VERTICAL },
@@ -8342,6 +8567,8 @@ const heebo = loadFont("normal", {
 });
 
 const LEFT_RATIO = 0.44;
+/** Bottom text band height at 1080×1920 (60% of frame) — scales headline/subhead with canvas defaults */
+const D1_VERTICAL_TEXT_PANEL_H = 1152;
 const HOOK_FRAMES = 60;
 const BASE_BULLET_START = [18, 26, 34];
 const BASE_CTA_START = 52;
@@ -8531,6 +8758,26 @@ export const Design1Composition = ({
   const containerH = isVertical ? bottomH : height;
   const px = Math.round(containerW * 0.08);
   const py = Math.round(containerH * 0.06);
+  /** Extra bottom inset in vertical shorts so OS/player controls do not cover CTA/bullets */
+  const verticalBottomSafe = isVertical ? Math.round(containerH * 0.12) : 0;
+
+  // Match BannerCanvas DF_VERTICAL / DF_SQUARE (caps only guard extreme aspect ratios)
+  const headlineFs = Math.min(
+    280,
+    containerH * (isVertical ? 112 / D1_VERTICAL_TEXT_PANEL_H : 72 / 1080),
+  );
+  const subheadFs = Math.min(
+    220,
+    containerH * (isVertical ? 46 / D1_VERTICAL_TEXT_PANEL_H : 34 / 1080),
+  );
+  const bulletFs = Math.min(
+    180,
+    containerH * (isVertical ? 34 / D1_VERTICAL_TEXT_PANEL_H : 28 / 1080),
+  );
+  const ctaFs = Math.min(
+    220,
+    containerH * (isVertical ? 48 / D1_VERTICAL_TEXT_PANEL_H : 38 / 1080),
+  );
 
   const renderTextPanel = () => (
     <div
@@ -8545,8 +8792,10 @@ export const Design1Composition = ({
           : "-12px 0 40px rgba(15,23,42,0.12)",
         display: "flex",
         flexDirection: "column",
-        justifyContent: "center",
-        padding: `${py}px ${px}px`,
+        justifyContent: isVertical ? "flex-start" : "center",
+        padding: isVertical
+          ? `${py}px ${px}px ${py + verticalBottomSafe}px ${px}px`
+          : `${py}px ${px}px`,
         position: "relative",
       }}
     >
@@ -8587,7 +8836,7 @@ export const Design1Composition = ({
           as="h1"
           style={{
             margin: 0,
-            fontSize: Math.min(68, containerH * 0.125),
+            fontSize: headlineFs,
             fontWeight: 800,
             lineHeight: 1.15,
             color: "#0f172a",
@@ -8603,7 +8852,7 @@ export const Design1Composition = ({
             as="p"
             style={{
               margin: `${containerH * 0.018}px 0 0`,
-              fontSize: Math.min(32, containerH * 0.068),
+              fontSize: subheadFs,
               fontWeight: 500,
               lineHeight: 1.5,
               color: "#475569",
@@ -8663,7 +8912,7 @@ export const Design1Composition = ({
                   <RtlText
                     style={{
                       flex: 1,
-                      fontSize: Math.min(27, containerH * 0.053),
+                      fontSize: bulletFs,
                       fontWeight: 500,
                       lineHeight: 1.45,
                       color: "#1e293b",
@@ -8694,7 +8943,7 @@ export const Design1Composition = ({
                 backgroundColor: brandHex,
                 color: "#ffffff",
                 fontWeight: 800,
-                fontSize: Math.min(34, containerH * 0.072),
+                fontSize: ctaFs,
                 textAlign: "center",
                 boxShadow: `0 10px 32px rgba(${br},${bg},${bb},0.4)`,
               }}
@@ -8757,7 +9006,7 @@ export const Design1Composition = ({
           <div
             dir="rtl"
             style={{
-              fontSize: Math.min(168, height * 0.15),
+              fontSize: Math.min(300, height * 0.15),
               fontWeight: 800,
               color: "#ffffff",
               textAlign: "center",
@@ -8798,6 +9047,9 @@ const heebo = loadFont("normal", {
   weights: ["400", "500", "600", "700", "800"],
   subsets: ["hebrew", "latin", "latin-ext"],
 });
+
+/** Content column width in BannerCanvas2 — scales type to match DF2_SQUARE / DF2_VERTICAL */
+const D2_CONTENT_W_REF = 952;
 
 const SNAP_FRAMES = 30;
 const BASE_BULLET_START_FRAMES = [20, 30, 40];
@@ -8953,8 +9205,26 @@ export const Design2Composition = ({
   const pad = Math.round(width * 0.06);
   const contentMaxW = width - pad * 2;
 
-  // For vertical: push content into the bottom 60% of the frame
+  const headlineFs = Math.min(
+    280,
+    (contentMaxW * (isVertical ? 118 : 92)) / D2_CONTENT_W_REF,
+  );
+  const subheadFs = Math.min(
+    220,
+    (contentMaxW * (isVertical ? 48 : 36)) / D2_CONTENT_W_REF,
+  );
+  const bulletFs = Math.min(
+    180,
+    (contentMaxW * (isVertical ? 34 : 28)) / D2_CONTENT_W_REF,
+  );
+  const ctaFs = Math.min(
+    220,
+    (contentMaxW * (isVertical ? 52 : 44)) / D2_CONTENT_W_REF,
+  );
+
+  // For vertical: push content into the bottom 60% of the frame; reserve bottom for player chrome
   const verticalTopPad = isVertical ? Math.round(height * 0.4) : 0;
+  const verticalBottomSafe = isVertical ? Math.round(height * 0.11) : 0;
 
   return (
     <AbsoluteFill
@@ -9034,7 +9304,7 @@ export const Design2Composition = ({
       <AbsoluteFill
         style={{
           paddingTop: verticalTopPad + pad,
-          paddingBottom: pad,
+          paddingBottom: pad + verticalBottomSafe,
           paddingLeft: pad,
           paddingRight: pad,
           display: "flex",
@@ -9078,7 +9348,7 @@ export const Design2Composition = ({
               as="h1"
               style={{
                 margin: 0,
-                fontSize: Math.min(78, height * 0.088),
+                fontSize: headlineFs,
                 fontWeight: 800,
                 lineHeight: 1.12,
                 letterSpacing: "-0.02em",
@@ -9095,7 +9365,7 @@ export const Design2Composition = ({
               as="p"
               style={{
                 margin: 0,
-                fontSize: Math.min(38, height * 0.043),
+                fontSize: subheadFs,
                 fontWeight: 500,
                 lineHeight: 1.45,
                 color: "rgba(255,255,255,0.9)",
@@ -9178,7 +9448,7 @@ export const Design2Composition = ({
                       <RtlText
                         style={{
                           flex: 1,
-                          fontSize: Math.min(30, height * 0.035),
+                          fontSize: bulletFs,
                           fontWeight: 500,
                           lineHeight: 1.45,
                           color: "rgba(248,250,252,0.96)",
@@ -9211,7 +9481,7 @@ export const Design2Composition = ({
                   backgroundColor: brandHex,
                   color: "#ffffff",
                   fontWeight: 800,
-                  fontSize: Math.min(38, height * 0.043),
+                  fontSize: ctaFs,
                   textAlign: "center",
                   boxShadow: `0 16px 48px rgba(${br},${bg},${bb},0.55), 0 4px 12px rgba(0,0,0,0.35)`,
                   letterSpacing: "0.02em",
@@ -9256,7 +9526,7 @@ export const Design2Composition = ({
           <div
             dir="rtl"
             style={{
-              fontSize: Math.min(168, height * 0.15),
+              fontSize: Math.min(300, height * 0.15),
               fontWeight: 800,
               color: "#ffffff",
               textAlign: "center",

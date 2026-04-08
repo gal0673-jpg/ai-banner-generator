@@ -13,10 +13,13 @@ export const API_BASE_URL =
       ? configured.trim().replace(/\/$/, '')
       : 'http://127.0.0.1:8888'
 
-/** Shown in the UI footer; when using dev proxy, baseURL is '' but traffic still reaches :8888. */
+/** Shown in the UI footer: direct URL, or browser origin when axios uses same-origin + Vite proxy → :8888. */
+function devProxyLabel() {
+  if (typeof window === 'undefined') return 'http://127.0.0.1:8888 (proxy דרך Vite)'
+  return `${window.location.origin} → proxy ל־http://127.0.0.1:8888`
+}
 export const API_BASE_URL_DISPLAY =
-  API_BASE_URL ||
-  (import.meta.env.DEV ? 'http://127.0.0.1:8888 (proxy דרך Vite)' : 'http://127.0.0.1:8888')
+  API_BASE_URL || (import.meta.env.DEV ? devProxyLabel() : 'http://127.0.0.1:8888')
 
 export const api = axios.create({
   baseURL: API_BASE_URL,

@@ -24,13 +24,14 @@ export function computeDesign1VerticalMetrics(bannerHeight = BANNER_VERTICAL_9_1
 
 /**
  * Default layer boxes for Design 1 @ 9:16 (1080×1920).
- * Headline band starts after 40% top image (768px) + divider; CTA above strip (strip ≈ y 1850).
+ * Stack sits higher with ~180px breathing room above the domain strip so Reels/TikTok player chrome
+ * does not cover bullets/CTA (strip starts ≈ y 1850).
  */
 export const DESIGN1_DEFAULT_LOGO_VERTICAL = { x: 836, y: 40, width: 200, height: 72 }
-export const DESIGN1_DEFAULT_HEADLINE_VERTICAL = { x: 44, y: 810, width: 992, height: 280 }
-export const DESIGN1_DEFAULT_SUBHEAD_VERTICAL = { x: 44, y: 1100, width: 992, height: 160 }
-export const DESIGN1_DEFAULT_BULLETS_VERTICAL = { x: 44, y: 1280, width: 992, height: 420 }
-export const DESIGN1_DEFAULT_CTA_VERTICAL = { x: 120, y: 1720, width: 840, height: 110 }
+export const DESIGN1_DEFAULT_HEADLINE_VERTICAL = { x: 44, y: 760, width: 992, height: 260 }
+export const DESIGN1_DEFAULT_SUBHEAD_VERTICAL = { x: 44, y: 1040, width: 992, height: 160 }
+export const DESIGN1_DEFAULT_BULLETS_VERTICAL = { x: 44, y: 1220, width: 992, height: 420 }
+export const DESIGN1_DEFAULT_CTA_VERTICAL = { x: 120, y: 1660, width: 840, height: 110 }
 
 export const DESIGN1_DEFAULT_BOXES_VERTICAL = {
   logo: { ...DESIGN1_DEFAULT_LOGO_VERTICAL },
@@ -44,10 +45,10 @@ export const DESIGN1_DEFAULT_BOXES_VERTICAL = {
 // Strip H = 64 → content ends at y = 1856. textZoneTop = 774.
 
 export const DESIGN2_DEFAULT_LOGO_VERTICAL = { x: 806, y: 52, width: 210, height: 78 }
-export const DESIGN2_DEFAULT_HEADLINE_VERTICAL = { x: 64, y: 778, width: 952, height: 320 }
-export const DESIGN2_DEFAULT_SUBHEAD_VERTICAL = { x: 64, y: 1114, width: 952, height: 185 }
-export const DESIGN2_DEFAULT_BULLETS_VERTICAL = { x: 64, y: 1315, width: 952, height: 400 }
-export const DESIGN2_DEFAULT_CTA_VERTICAL = { x: 144, y: 1740, width: 792, height: 104 }
+export const DESIGN2_DEFAULT_HEADLINE_VERTICAL = { x: 64, y: 690, width: 952, height: 320 }
+export const DESIGN2_DEFAULT_SUBHEAD_VERTICAL = { x: 64, y: 1040, width: 952, height: 180 }
+export const DESIGN2_DEFAULT_BULLETS_VERTICAL = { x: 64, y: 1240, width: 952, height: 420 }
+export const DESIGN2_DEFAULT_CTA_VERTICAL = { x: 144, y: 1680, width: 792, height: 110 }
 
 export const DESIGN2_DEFAULT_BOXES_VERTICAL = {
   logo: { ...DESIGN2_DEFAULT_LOGO_VERTICAL },

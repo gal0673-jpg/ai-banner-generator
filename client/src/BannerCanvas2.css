@@ -294,6 +294,114 @@
   pointer-events: all;
 }
 
+/* ── Text controls toolbar (shared markup, design2 stylesheet) ─────────────── */
+.banner-text-controls {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  left: auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  background: rgba(15, 23, 42, 0.72);
+  backdrop-filter: blur(4px);
+  border-radius: 10px;
+  width: max-content;
+  max-width: calc(100% - 8px);
+  flex-shrink: 0;
+  flex-wrap: wrap;
+  direction: rtl;
+  justify-content: flex-start;
+  z-index: 30;
+  user-select: none;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.15s ease;
+}
+
+.btc-group {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.btc-btn {
+  background: rgba(255, 255, 255, 0.12);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  color: #e2e8f0;
+  border-radius: 6px;
+  padding: 4px 10px;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 20px;
+  cursor: pointer;
+  font-family: inherit;
+  transition: background 0.12s;
+  white-space: nowrap;
+}
+
+.btc-btn:hover {
+  background: rgba(255, 255, 255, 0.22);
+}
+
+.btc-btn--on {
+  background: rgba(99, 102, 241, 0.72) !important;
+  border-color: rgba(99, 102, 241, 0.9) !important;
+  color: #fff !important;
+}
+
+.btc-val {
+  color: #e2e8f0;
+  font-size: 13px;
+  font-weight: 600;
+  min-width: 44px;
+  text-align: center;
+  padding: 0 6px;
+}
+
+.btc-sep {
+  display: inline-block;
+  width: 1px;
+  height: 18px;
+  background: rgba(255, 255, 255, 0.22);
+  margin: 0 4px;
+  flex-shrink: 0;
+}
+
+.btc-color-wrap {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 26px;
+  flex-shrink: 0;
+  cursor: pointer;
+  border-radius: 6px;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.35);
+}
+
+.btc-color-swatch {
+  position: absolute;
+  inset: 0;
+  border-radius: 5px;
+  pointer-events: none;
+}
+
+.btc-color-input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  padding: 0;
+  margin: 0;
+  border: none;
+  cursor: pointer;
+  opacity: 0;
+}
+
 /* ── CTA button ──────────────────────────────────────────────────────────── */
 .bc2-cta {
   display: inline-flex;

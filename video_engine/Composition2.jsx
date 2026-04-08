@@ -190,8 +190,9 @@ export const Design2Composition = ({
     (contentMaxW * (isVertical ? 52 : 44)) / D2_CONTENT_W_REF,
   );
 
-  // For vertical: push content into the bottom 60% of the frame
+  // For vertical: push content into the bottom 60% of the frame; reserve bottom for player chrome
   const verticalTopPad = isVertical ? Math.round(height * 0.4) : 0;
+  const verticalBottomSafe = isVertical ? Math.round(height * 0.11) : 0;
 
   return (
     <AbsoluteFill
@@ -271,7 +272,7 @@ export const Design2Composition = ({
       <AbsoluteFill
         style={{
           paddingTop: verticalTopPad + pad,
-          paddingBottom: pad,
+          paddingBottom: pad + verticalBottomSafe,
           paddingLeft: pad,
           paddingRight: pad,
           display: "flex",

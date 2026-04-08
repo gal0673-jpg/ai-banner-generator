@@ -208,6 +208,8 @@ export const Design1Composition = ({
   const containerH = isVertical ? bottomH : height;
   const px = Math.round(containerW * 0.08);
   const py = Math.round(containerH * 0.06);
+  /** Extra bottom inset in vertical shorts so OS/player controls do not cover CTA/bullets */
+  const verticalBottomSafe = isVertical ? Math.round(containerH * 0.12) : 0;
 
   // Match BannerCanvas DF_VERTICAL / DF_SQUARE (caps only guard extreme aspect ratios)
   const headlineFs = Math.min(
@@ -240,8 +242,10 @@ export const Design1Composition = ({
           : "-12px 0 40px rgba(15,23,42,0.12)",
         display: "flex",
         flexDirection: "column",
-        justifyContent: "center",
-        padding: `${py}px ${px}px`,
+        justifyContent: isVertical ? "flex-start" : "center",
+        padding: isVertical
+          ? `${py}px ${px}px ${py + verticalBottomSafe}px ${px}px`
+          : `${py}px ${px}px`,
         position: "relative",
       }}
     >

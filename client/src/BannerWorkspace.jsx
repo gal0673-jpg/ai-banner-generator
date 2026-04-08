@@ -49,6 +49,9 @@ const PRIMARY_ADMIN_EMAIL = 'gal0673@gmail.com'
 const VIDEO_RENDERING_HINT =
   'הווידאו מיוצר ברקע — אפשר להמשיך לערוך את הבאנר. · Video is rendering in the background; you can keep editing.'
 
+/** After "נתק מהמשימה", do not auto-load /banners/latest on refresh (stuck pending would return forever). */
+const SKIP_LATEST_RESTORE_KEY = 'banner_workspace_skip_latest_restore'
+
 function Spinner({ className = '' }) {
   return (
     <span
@@ -56,6 +59,14 @@ function Spinner({ className = '' }) {
       aria-hidden
     />
   )
+}
+
+function readSkipLatestRestoreFlag() {
+  try {
+    return typeof sessionStorage !== 'undefined' && sessionStorage.getItem(SKIP_LATEST_RESTORE_KEY) === '1'
+  } catch {
+    return false
+  }
 }
 
 
@@ -79,6 +90,8 @@ export default function BannerWorkspace() {
   const [videoRenderError, setVideoRenderError] = useState(null)
   const [sseBump, setSseBump] = useState(0)
   const [videoHook,        setVideoHook]        = useState('')
+  const [latestRestoreNonce, setLatestRestoreNonce] = useState(0)
+  const [skipLatestRestore, setSkipLatestRestore] = useState(readSkipLatestRestoreFlag)
   // Tracks the taskId for which we've already initialised videoHook from the
   // server, so that subsequent statusPayload updates don't overwrite user edits.
   const hookSyncedForTask = useRef(null)
@@ -116,6 +129,9 @@ export default function BannerWorkspace() {
   // Restore latest banner task after refresh (same user session / cookie).
   useEffect(() => {
     if (!ready || !user) return undefined
+    if (typeof sessionStorage !== 'undefined' && sessionStorage.getItem(SKIP_LATEST_RESTORE_KEY) === '1') {
+      return undefined
+    }
     let cancelled = false
     ;(async () => {
       try {
@@ -134,7 +150,35 @@ export default function BannerWorkspace() {
       }
     })()
     return () => { cancelled = true }
-  }, [ready, user])
+  }, [ready, user, latestRestoreNonce])
+
+  const disconnectFromLatestTask = useCallback(() => {
+    try {
+      sessionStorage.setItem(SKIP_LATEST_RESTORE_KEY, '1')
+    } catch {
+      /* private mode */
+    }
+    setSkipLatestRestore(true)
+    setTaskId(null)
+    setStatusPayload(null)
+    setSubmitError(null)
+    setVideoRenderError(null)
+    hookSyncedForTask.current = null
+    setSseBump((n) => n + 1)
+  }, [])
+
+  const reconnectLatestTask = useCallback(() => {
+    try {
+      sessionStorage.removeItem(SKIP_LATEST_RESTORE_KEY)
+    } catch {
+      /* ignore */
+    }
+    setSkipLatestRestore(false)
+    setTaskId(null)
+    setStatusPayload(null)
+    hookSyncedForTask.current = null
+    setLatestRestoreNonce((n) => n + 1)
+  }, [])
 
   // Poll on an interval whenever a task is loaded (covers banner pipeline, async video render, and SSE gaps).
   useEffect(() => {
@@ -160,10 +204,9 @@ export default function BannerWorkspace() {
     }
 
     sseTerminalRef.current = false
-    const sse = new EventSource(
-      `${API_BASE_URL}/status/${taskId}/stream`,
-      { withCredentials: true },
-    )
+    // EventSource only accepts a URL; credentials follow same-origin rules (Vite proxy → cookies OK).
+    const ssePath = `${API_BASE_URL}/status/${taskId}/stream`
+    const sse = new EventSource(ssePath)
 
     sse.onmessage = (event) => {
       try {
@@ -314,6 +357,12 @@ export default function BannerWorkspace() {
       })
       const id = data?.task_id
       if (!id) throw new Error('לא התקבל מזהה משימה מהשרת')
+      try {
+        sessionStorage.removeItem(SKIP_LATEST_RESTORE_KEY)
+      } catch {
+        /* ignore */
+      }
+      setSkipLatestRestore(false)
       setTaskId(id)
     } catch (err) {
       setSubmitError(axiosErrorMessage(err))
@@ -419,6 +468,21 @@ export default function BannerWorkspace() {
             <p className="mt-1 text-xs text-slate-500 dark:text-slate-400 leading-relaxed">
               הזן כתובת אתר והמערכת תייצר עבורך באנר מותאם אישית.
             </p>
+
+            {skipLatestRestore && !taskId && (
+              <div className="mt-4 rounded-xl border border-amber-200/90 dark:border-amber-800/50 bg-amber-50/90 dark:bg-amber-950/25 px-3 py-3 text-xs text-amber-950 dark:text-amber-100 space-y-2">
+                <p className="leading-relaxed">
+                  המשימה האחרונה לא תיטען אוטומטית אחרי רענון (כדי שלא תיתקעו שוב על אותו מסך). אפשר ליצור באנר חדש, או לטעון שוב את המשימה מהשרת.
+                </p>
+                <button
+                  type="button"
+                  onClick={reconnectLatestTask}
+                  className="w-full rounded-lg border border-amber-400/80 dark:border-amber-600 bg-white dark:bg-slate-900 px-3 py-2 text-xs font-semibold text-amber-900 dark:text-amber-200 hover:bg-amber-100/80 dark:hover:bg-amber-900/40 transition"
+                >
+                  טען משימה אחרונה מהשרת
+                </button>
+              </div>
+            )}
 
             <form className="mt-5 space-y-4" onSubmit={handleGenerate}>
               <div>
@@ -530,7 +594,16 @@ export default function BannerWorkspace() {
                 <h2 className="text-sm font-semibold text-slate-800 dark:text-slate-100">
                   סטטוס משימה
                 </h2>
-                {statusChip}
+                <div className="flex flex-wrap items-center gap-2">
+                  {statusChip}
+                  <button
+                    type="button"
+                    onClick={disconnectFromLatestTask}
+                    className="rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 px-3 py-1.5 text-xs font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800 transition"
+                  >
+                    נתק מהמשימה (רענון לא יחזיר אותה)
+                  </button>
+                </div>
               </div>
               <p className="text-sm text-slate-600 dark:text-slate-300">
                 {formatStatus(statusPayload?.status, { videoRendering })}

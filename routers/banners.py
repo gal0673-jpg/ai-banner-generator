@@ -70,7 +70,7 @@ def generate(
     db.commit()
     tid = str(task_id)
     try:
-        run_banner_task.delay(tid, url, brief)
+        run_banner_task.delay(tid, url, brief, body.video_hook)
     except Exception as exc:
         persist_task(task_id, status="failed", error=str(exc))
         raise HTTPException(

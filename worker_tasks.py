@@ -62,8 +62,11 @@ def run_banner_task(
 ) -> None:
     task_uuid = uuid.UUID(task_id)
     work_dir = TASKS_DIR / task_id
-    crawl_from_url(url, work_dir=work_dir, campaign_brief=brief)
+    work_dir.mkdir(parents=True, exist_ok=True)
+    # Move off "pending" as soon as the worker picks up the job — crawl (Selenium) can take minutes.
     persist_task(task_uuid, status="scraped")
+    print(f"[run_banner_task] task_id={task_id} status=scraped (crawl starting)", flush=True)
+    crawl_from_url(url, work_dir=work_dir, campaign_brief=brief)
 
     if not os.environ.get("OPENAI_API_KEY"):
         persist_task(task_uuid, status="failed", error="OPENAI_API_KEY is not set")
