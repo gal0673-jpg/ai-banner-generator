@@ -5,10 +5,12 @@ uvicorn[standard]
 python-dotenv
 openai
 requests
+tenacity
 selenium
 pillow
 celery
 redis
+tenacity
 
 # API: SQLAlchemy + auth (install one DB driver: pymysql for MySQL, psycopg[binary] for PostgreSQL)
 sqlalchemy>=2.0

@@ -2,6 +2,12 @@
 
 Start a worker locally (Windows requires gevent or solo pool):
     celery -A celery_app worker --loglevel=info -P gevent
+
+Banner pipeline task (`run_banner_task` in api.py) uses bind=True with
+``autoretry_for=(Exception,)``, ``retry_backoff=True``, and ``max_retries=3`` so
+transient failures (OpenAI, crawl, disk) can recover; deterministic failures use
+``BannerPipelineFatalError`` (no Celery retry). OpenAI calls in ``creative_agent``
+use tenacity (3 attempts per call site) before surfacing an error to the task.
 """
 
 from __future__ import annotations

@@ -2,7 +2,7 @@
 Elite marketing-agency banner: GPT-4o copy (any industry), DALL-E 3 background.
 
 Requires:
-  pip install openai requests
+  pip install openai requests tenacity
   Env: OPENAI_API_KEY
 
 Inputs:  scraped_content.txt (UTF-8)
@@ -21,7 +21,15 @@ from pathlib import Path
 
 import requests
 from dotenv import load_dotenv
-from openai import OpenAI
+from openai import (
+    APIConnectionError,
+    APIStatusError,
+    APITimeoutError,
+    InternalServerError,
+    OpenAI,
+    RateLimitError,
+)
+from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
 
 BASE = Path(__file__).resolve().parent
 load_dotenv(BASE / ".env")
@@ -76,6 +84,81 @@ Output ONLY valid JSON (no markdown, no commentary, no extra keys) with exactly 
 You MUST bake the above into image_prompt: the scene is NEVER allowed to include people, faces, silhouettes, crowds, workers, customers, hands, or any living figures—only empty spaces, props, food/drink/plants/objects without holders, or fully abstract backdrops. Prefer compositions where pseudo-text cannot appear — abstract textures, nature, architecture without signs, heavily blurred backgrounds, macro details, empty/minimal surfaces, or depth-of-field that keeps screens/devices out of focus. Avoid prompts that invite laptops, phones, monitors, whiteboards, posters, books with visible pages, or wall art with glyphs. Reiterate in your own words: NO text, NO numbers, NO UI gibberish, NO logos, watermarks, or readable signage anywhere."""
 
 
+_TRANSIENT_HTTP_STATUS = frozenset({408, 429, 500, 502, 503, 504})
+
+
+def _is_transient_openai_error(exc: BaseException) -> bool:
+    if isinstance(exc, (APIConnectionError, APITimeoutError, RateLimitError, InternalServerError)):
+        return True
+    if isinstance(exc, APIStatusError):
+        return exc.status_code in _TRANSIENT_HTTP_STATUS
+    return False
+
+
+def _is_transient_requests_error(exc: BaseException) -> bool:
+    if isinstance(
+        exc,
+        (
+            requests.exceptions.ConnectionError,
+            requests.exceptions.Timeout,
+            requests.exceptions.ChunkedEncodingError,
+        ),
+    ):
+        return True
+    if isinstance(exc, requests.exceptions.HTTPError):
+        resp = exc.response
+        return resp is not None and resp.status_code in _TRANSIENT_HTTP_STATUS
+    return False
+
+
+def _is_transient_dalle_step(exc: BaseException) -> bool:
+    return _is_transient_openai_error(exc) or _is_transient_requests_error(exc)
+
+
+_OPENAI_CHAT_RETRY = retry(
+    reraise=True,
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=2, max=60),
+    retry=retry_if_exception(_is_transient_openai_error),
+)
+
+
+_OPENAI_DALLE_RETRY = retry(
+    reraise=True,
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=2, max=60),
+    retry=retry_if_exception(_is_transient_dalle_step),
+)
+
+
+@_OPENAI_CHAT_RETRY
+def _chat_completions_create_banner(client: OpenAI, user_content: str):
+    return client.chat.completions.create(
+        model="gpt-4o",
+        messages=[
+            {"role": "system", "content": ELITE_AGENCY_SYSTEM},
+            {"role": "user", "content": user_content[:16000]},
+        ],
+        response_format={"type": "json_object"},
+    )
+
+
+@_OPENAI_DALLE_RETRY
+def _images_generate_and_store(client: OpenAI, combined_prompt: str, dest: Path) -> None:
+    img_response = client.images.generate(
+        model="dall-e-3",
+        prompt=combined_prompt,
+        size="1024x1024",
+    )
+    image_url = img_response.data[0].url
+    if not image_url:
+        raise RuntimeError("[creative_agent] ERROR: DALL-E returned no image URL.")
+    print("[creative_agent] Step 2/3: Downloading image from OpenAI URL…")
+    img_req = requests.get(image_url, timeout=120)
+    img_req.raise_for_status()
+    dest.write_bytes(img_req.content)
+
+
 def _require_api_key() -> None:
     if not os.environ.get("OPENAI_API_KEY"):
         print(
@@ -97,14 +180,7 @@ def _read_scraped() -> str:
 
 def fetch_banner_payload(client: OpenAI, user_content: str) -> dict:
     print("[creative_agent] Step 1/3: Requesting copy + image brief from GPT-4o (Elite Marketing Agency)…")
-    response = client.chat.completions.create(
-        model="gpt-4o",
-        messages=[
-            {"role": "system", "content": ELITE_AGENCY_SYSTEM},
-            {"role": "user", "content": user_content[:16000]},
-        ],
-        response_format={"type": "json_object"},
-    )
+    response = _chat_completions_create_banner(client, user_content)
     text = response.choices[0].message.content
     if not text:
         raise RuntimeError("[creative_agent] ERROR: Empty response from GPT-4o.")
@@ -165,18 +241,7 @@ def generate_background_dalle3(
     dest.parent.mkdir(parents=True, exist_ok=True)
     print("[creative_agent] Step 2/3: Generating background with DALL-E 3 (1024×1024)…")
     combined_prompt = f"{image_prompt.strip()}\n\n{DALLE_IMAGE_API_ENFORCEMENT}"
-    img_response = client.images.generate(
-        model="dall-e-3",
-        prompt=combined_prompt,
-        size="1024x1024",
-    )
-    image_url = img_response.data[0].url
-    if not image_url:
-        raise RuntimeError("[creative_agent] ERROR: DALL-E returned no image URL.")
-    print("[creative_agent] Step 2/3: Downloading image from OpenAI URL…")
-    img_req = requests.get(image_url, timeout=120)
-    img_req.raise_for_status()
-    dest.write_bytes(img_req.content)
+    _images_generate_and_store(client, combined_prompt, dest)
     print(f"[creative_agent] Step 2/3: Wrote {dest}.")
     return dest
 

@@ -32,6 +32,8 @@ from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import select
 from sqlalchemy.orm import Session, joinedload
 
+from celery import Task
+
 from auth import create_access_token, get_current_superuser, get_current_user, get_password_hash, verify_password
 from ai_banner_context import OUTPUT_FILENAME, build_document
 from celery_app import celery_app
@@ -352,95 +354,129 @@ def _merge_canvas_state(prev: Any, patch: dict[str, Any] | None) -> dict[str, An
     return base or None
 
 
-@celery_app.task(name="run_banner_task")
-def run_banner_task(task_id: str, url: str, brief: str | None, custom_video_hook: str | None = None) -> None:
+class BannerPipelineFatalError(Exception):
+    """Deterministic pipeline failure already written to ``banner_tasks``; Celery must not retry."""
+
+
+class BannerGenerationTask(Task):
+    """Auto-retry transient failures (timeouts, upstream 5xx); fatal errors skip retries."""
+
+    autoretry_for = (Exception,)
+    dont_autoretry_for = (BannerPipelineFatalError,)
+    retry_backoff = True
+    max_retries = 3
+
+    def on_failure(
+        self,
+        exc: Exception,
+        task_id: str,
+        args: tuple[Any, ...],
+        kwargs: dict[str, Any],
+        einfo: Any,
+    ) -> None:
+        if isinstance(exc, BannerPipelineFatalError):
+            return
+        if not args:
+            return
+        try:
+            task_uuid = uuid.UUID(str(args[0]))
+            _persist_task(task_uuid, status="failed", error=str(exc))
+        except Exception:
+            pass
+
+
+@celery_app.task(bind=True, base=BannerGenerationTask, name="run_banner_task")
+def run_banner_task(
+    self: BannerGenerationTask,
+    task_id: str,
+    url: str,
+    brief: str | None,
+    custom_video_hook: str | None = None,
+) -> None:
     task_uuid = uuid.UUID(task_id)
     work_dir = TASKS_DIR / task_id
-    try:
-        crawl_from_url(url, work_dir=work_dir, campaign_brief=brief)
-        _persist_task(task_uuid, status="scraped")
+    crawl_from_url(url, work_dir=work_dir, campaign_brief=brief)
+    _persist_task(task_uuid, status="scraped")
 
-        if not os.environ.get("OPENAI_API_KEY"):
-            _persist_task(task_uuid, status="failed", error="OPENAI_API_KEY is not set")
-            return
+    if not os.environ.get("OPENAI_API_KEY"):
+        _persist_task(task_uuid, status="failed", error="OPENAI_API_KEY is not set")
+        raise BannerPipelineFatalError("OPENAI_API_KEY is not set")
 
-        _persist_task(task_uuid, status="generating_image")
-        run_agency_banner_pipeline(work_dir=work_dir, site_url=url)
+    _persist_task(task_uuid, status="generating_image")
+    run_agency_banner_pipeline(work_dir=work_dir, site_url=url)
 
-        campaign_path = work_dir / "creative_campaign.json"
-        background = work_dir / "background.png"
-        logo = work_dir / "logo.png"
-        if not campaign_path.is_file() or not background.is_file() or not logo.is_file():
-            _persist_task(
-                task_uuid,
-                status="failed",
-                error="Missing creative_campaign.json, background.png, or logo.png after pipeline.",
-            )
-            return
-
-        with campaign_path.open(encoding="utf-8") as f:
-            data = json.load(f)
-
-        for key in ("headline", "subhead", "cta"):
-            if key not in data or not str(data[key]).strip():
-                _persist_task(
-                    task_uuid,
-                    status="failed",
-                    error=f"Invalid creative_campaign.json: missing or empty {key!r}",
-                )
-                return
-
-        # video_hook: custom hook from the user overrides the AI-generated one;
-        # fall back to creative_campaign.json; tolerate absence for legacy JSON.
-        raw_hook = data.get("video_hook")
-        ai_hook: str | None = str(raw_hook).strip()[:256] if raw_hook and str(raw_hook).strip() else None
-        video_hook_val: str | None = custom_video_hook or ai_hook
-        bullets = data.get("bullet_points")
-        if not isinstance(bullets, list) or len(bullets) != 3:
-            _persist_task(
-                task_uuid,
-                status="failed",
-                error="Invalid creative_campaign.json: bullet_points must be 3 strings.",
-            )
-            return
-
-        bc_raw = data.get("brand_color")
-        if not isinstance(bc_raw, str) or not bc_raw.strip():
-            _persist_task(
-                task_uuid,
-                status="failed",
-                error="Invalid creative_campaign.json: missing or empty brand_color.",
-            )
-            return
-        bc = bc_raw.strip()
-        if not bc.startswith("#"):
-            bc = "#" + bc
-        if not _BRAND_HEX.match(bc):
-            _persist_task(
-                task_uuid,
-                status="failed",
-                error="Invalid creative_campaign.json: brand_color must be #RRGGBB hex.",
-            )
-            return
-
-        rb1, rb2 = _rendered_banner_urls_for_task(task_id)
+    campaign_path = work_dir / "creative_campaign.json"
+    background = work_dir / "background.png"
+    logo = work_dir / "logo.png"
+    if not campaign_path.is_file() or not background.is_file() or not logo.is_file():
         _persist_task(
             task_uuid,
-            status="completed",
-            error=None,
-            headline=str(data["headline"]).strip(),
-            subhead=str(data["subhead"]).strip(),
-            bullet_points=[str(b).strip() for b in bullets],
-            cta=str(data["cta"]).strip(),
-            video_hook=video_hook_val,
-            brand_color=bc.upper(),
-            background_url=f"/task-files/{task_id}/background.png",
-            logo_url=f"/task-files/{task_id}/logo.png",
-            rendered_banner_1_url=rb1,
-            rendered_banner_2_url=rb2,
+            status="failed",
+            error="Missing creative_campaign.json, background.png, or logo.png after pipeline.",
         )
-    except Exception as exc:  # noqa: BLE001 — surface any pipeline failure to the client
-        _persist_task(task_uuid, status="failed", error=str(exc))
+        raise BannerPipelineFatalError("Missing creative output files after pipeline.")
+
+    with campaign_path.open(encoding="utf-8") as f:
+        data = json.load(f)
+
+    for key in ("headline", "subhead", "cta"):
+        if key not in data or not str(data[key]).strip():
+            _persist_task(
+                task_uuid,
+                status="failed",
+                error=f"Invalid creative_campaign.json: missing or empty {key!r}",
+            )
+            raise BannerPipelineFatalError(f"Invalid creative_campaign.json: missing or empty {key!r}")
+
+    # video_hook: custom hook from the user overrides the AI-generated one;
+    # fall back to creative_campaign.json; tolerate absence for legacy JSON.
+    raw_hook = data.get("video_hook")
+    ai_hook: str | None = str(raw_hook).strip()[:256] if raw_hook and str(raw_hook).strip() else None
+    video_hook_val: str | None = custom_video_hook or ai_hook
+    bullets = data.get("bullet_points")
+    if not isinstance(bullets, list) or len(bullets) != 3:
+        _persist_task(
+            task_uuid,
+            status="failed",
+            error="Invalid creative_campaign.json: bullet_points must be 3 strings.",
+        )
+        raise BannerPipelineFatalError("Invalid creative_campaign.json: bullet_points must be 3 strings.")
+
+    bc_raw = data.get("brand_color")
+    if not isinstance(bc_raw, str) or not bc_raw.strip():
+        _persist_task(
+            task_uuid,
+            status="failed",
+            error="Invalid creative_campaign.json: missing or empty brand_color.",
+        )
+        raise BannerPipelineFatalError("Invalid creative_campaign.json: missing or empty brand_color.")
+    bc = bc_raw.strip()
+    if not bc.startswith("#"):
+        bc = "#" + bc
+    if not _BRAND_HEX.match(bc):
+        _persist_task(
+            task_uuid,
+            status="failed",
+            error="Invalid creative_campaign.json: brand_color must be #RRGGBB hex.",
+        )
+        raise BannerPipelineFatalError("Invalid creative_campaign.json: brand_color must be #RRGGBB hex.")
+
+    rb1, rb2 = _rendered_banner_urls_for_task(task_id)
+    _persist_task(
+        task_uuid,
+        status="completed",
+        error=None,
+        headline=str(data["headline"]).strip(),
+        subhead=str(data["subhead"]).strip(),
+        bullet_points=[str(b).strip() for b in bullets],
+        cta=str(data["cta"]).strip(),
+        video_hook=video_hook_val,
+        brand_color=bc.upper(),
+        background_url=f"/task-files/{task_id}/background.png",
+        logo_url=f"/task-files/{task_id}/logo.png",
+        rendered_banner_1_url=rb1,
+        rendered_banner_2_url=rb2,
+    )
 
 
 @app.post("/auth/register", status_code=201)
