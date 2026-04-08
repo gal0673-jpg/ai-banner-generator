@@ -52,7 +52,12 @@ class BannerGenerationTask(Task):
             pass
 
 
-@celery_app.task(bind=True, base=BannerGenerationTask, name="run_banner_task")
+@celery_app.task(
+    bind=True,
+    base=BannerGenerationTask,
+    name="run_banner_task",
+    queue="banner_queue",
+)
 def run_banner_task(
     self: BannerGenerationTask,
     task_id: str,
@@ -266,7 +271,7 @@ def execute_video_render_worker(
         db.commit()
 
 
-@celery_app.task(name="render_video_task")
+@celery_app.task(name="render_video_task", queue="video_queue")
 def render_video_task(
     task_id: str,
     design_type: int,

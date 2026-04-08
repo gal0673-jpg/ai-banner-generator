@@ -21,6 +21,7 @@ from dotenv import load_dotenv
 load_dotenv(Path(__file__).resolve().parent / ".env")
 
 from celery import Celery
+from kombu import Queue
 
 celery_app = Celery(
     "banner_generator",
@@ -29,6 +30,10 @@ celery_app = Celery(
     include=["worker_tasks"],
 )
 
+# Explicit resource-isolated queues.
+banner_queue = "banner_queue"
+video_queue = "video_queue"
+
 celery_app.conf.update(
     broker_connection_retry_on_startup=True,
     task_serializer="json",
@@ -36,6 +41,14 @@ celery_app.conf.update(
     accept_content=["json"],
     timezone="UTC",
     enable_utc=True,
+    task_queues=(
+        Queue(banner_queue),
+        Queue(video_queue),
+    ),
+    task_routes={
+        "run_banner_task": {"queue": banner_queue},
+        "render_video_task": {"queue": video_queue},
+    },
 )
 
 # ``include=`` alone does not import task modules when this file is loaded; the worker

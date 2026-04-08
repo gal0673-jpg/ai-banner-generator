@@ -21,10 +21,18 @@ from urllib.parse import unquote, urljoin, urlparse, urlunparse
 
 import requests
 from PIL import Image, UnidentifiedImageError
-from selenium import webdriver
-from selenium.common.exceptions import WebDriverException
-from selenium.webdriver.chrome.options import Options
+import undetected_chromedriver as uc
+from selenium.common.exceptions import (  # type: ignore[import-untyped]
+    ElementClickInterceptedException,
+    NoAlertPresentException,
+    NoSuchWindowException,
+    TimeoutException,
+    UnexpectedAlertPresentException,
+    WebDriverException,
+)
 from selenium.webdriver.common.by import By
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.webdriver.support.ui import WebDriverWait
 
 BASE_DIR = Path(__file__).resolve().parent
 MAX_PAGES = 10
@@ -32,6 +40,11 @@ OUTPUT_FILE = BASE_DIR / "scraped_content.txt"
 LOGO_FILE = BASE_DIR / "logo.png"
 SEPARATOR = "=" * 80
 RENDER_WAIT_SECONDS = 10
+
+# Hard timeouts so a single problematic page can't hang Celery indefinitely.
+PAGE_LOAD_TIMEOUT_SECONDS = 35
+SCRIPT_TIMEOUT_SECONDS = 25
+DOM_READY_TIMEOUT_SECONDS = 20
 
 # Case-insensitive for ASCII; Hebrew phrases matched as literal substrings.
 JUNK_KEYWORDS = (
@@ -127,18 +140,141 @@ def format_page_block(page_url: str, title: str, paragraphs: list[str]) -> str:
     return "\n".join(lines)
 
 
-def build_headless_chrome() -> webdriver.Chrome:
-    options = Options()
+def build_headless_chrome() -> uc.Chrome:
+    """
+    Undetected Chrome driver (stealthier than stock Selenium) with hard timeouts.
+    Keep this function signature stable: other modules import it indirectly.
+    """
+    options = uc.ChromeOptions()
     options.add_argument("--headless=new")
     options.add_argument("--disable-gpu")
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
     options.add_argument("--window-size=1920,1080")
+    options.add_argument("--lang=en-US,en")
     options.add_argument(
         "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/131.0.0.0 Safari/537.36"
     )
-    return webdriver.Chrome(options=options)
+    options.add_argument("--disable-blink-features=AutomationControlled")
+
+    driver = uc.Chrome(options=options, use_subprocess=True)
+    driver.set_page_load_timeout(PAGE_LOAD_TIMEOUT_SECONDS)
+    driver.set_script_timeout(SCRIPT_TIMEOUT_SECONDS)
+    return driver
+
+
+def _safe_dismiss_alerts(driver: uc.Chrome) -> None:
+    """Best-effort close of unexpected JS alerts that can block navigation/extraction."""
+    try:
+        alert = driver.switch_to.alert
+    except (WebDriverException, NoSuchWindowException, NoAlertPresentException):
+        return
+    try:
+        alert.dismiss()
+    except WebDriverException:
+        try:
+            alert.accept()
+        except WebDriverException:
+            return
+
+
+def _wait_dom_ready(driver: uc.Chrome, timeout_s: int) -> None:
+    """Wait for DOM to be ready; does not require full network idle."""
+    WebDriverWait(driver, timeout_s).until(
+        lambda d: (d.execute_script("return document.readyState") or "") in ("interactive", "complete")
+    )
+
+
+def _auto_dismiss_cookie_banners(driver: uc.Chrome) -> None:
+    """
+    Heuristic cookie/consent dismissal to reduce boilerplate in extracted <p> text.
+    Safe: best-effort only; never hard-fails the crawl.
+    """
+    try:
+        # Some banners are injected after initial load.
+        time.sleep(0.5)
+    except Exception:
+        pass
+
+    # Common CMP/framework selectors (OneTrust, Cookiebot, etc.) plus generic "accept" buttons.
+    selector_candidates = [
+        "#onetrust-accept-btn-handler",
+        "button#onetrust-accept-btn-handler",
+        "button[aria-label*='accept' i]",
+        "button[aria-label*='agree' i]",
+        "button[id*='accept' i]",
+        "button[class*='accept' i]",
+        "button[class*='consent' i]",
+        "button[id*='consent' i]",
+        "button",
+        "input[type='button']",
+        "input[type='submit']",
+        "a[role='button']",
+    ]
+
+    acceptish = (
+        "accept",
+        "agree",
+        "allow",
+        "allow all",
+        "ok",
+        "got it",
+        "i understand",
+        "continue",
+        "yes",
+        # Hebrew (common variants)
+        "אישור",
+        "מאשר",
+        "מסכים",
+        "מסכימ",
+        "הסכמ",
+        "אפשר",
+        "קבל",
+        "המשך",
+    )
+
+    def _looks_like_accept(el) -> bool:
+        try:
+            txt = ((el.text or "") + " " + (el.get_attribute("aria-label") or "")).strip()
+            if not txt:
+                txt = (el.get_attribute("value") or "").strip()
+            blob = txt.lower()
+            return any(k in blob for k in acceptish) or any(k in txt for k in acceptish if not k.isascii())
+        except WebDriverException:
+            return False
+
+    clicked = 0
+    seen_ids: set[str] = set()
+    for sel in selector_candidates:
+        if clicked >= 3:
+            break
+        try:
+            els = driver.find_elements(By.CSS_SELECTOR, sel)
+        except WebDriverException:
+            continue
+        for el in els[:25]:
+            if clicked >= 3:
+                break
+            try:
+                if el.id in seen_ids:
+                    continue
+                seen_ids.add(el.id)
+                if not el.is_displayed() or not el.is_enabled():
+                    continue
+                if not _looks_like_accept(el):
+                    continue
+                try:
+                    el.click()
+                except (ElementClickInterceptedException, WebDriverException):
+                    # JS click is often more reliable for overlayed dialogs.
+                    driver.execute_script("arguments[0].click();", el)
+                clicked += 1
+                # Give the DOM a moment to remove the overlay.
+                time.sleep(0.25)
+            except WebDriverException:
+                continue
 
 
 def run_agency_banner_pipeline(
@@ -236,7 +372,7 @@ def run_agency_banner_pipeline(
         )
 
 
-def extract_title_and_paragraphs(driver: webdriver.Chrome) -> tuple[str, list[str]]:
+def extract_title_and_paragraphs(driver: uc.Chrome) -> tuple[str, list[str]]:
     """Return document title and non-empty stripped text from all <p> elements in the live DOM."""
     title_text = (driver.title or "").strip()
     if not title_text:
@@ -260,7 +396,7 @@ def _anchor_label(el) -> str:
     return " ".join(p for p in parts if p)
 
 
-def discover_internal_links(driver: webdriver.Chrome, base_host: str) -> list[str]:
+def discover_internal_links(driver: uc.Chrome, base_host: str) -> list[str]:
     """Same-site http(s) hrefs only; skip junk URLs and junk anchor text (blocklist)."""
     current = driver.current_url
     found: list[str] = []
@@ -278,7 +414,7 @@ def discover_internal_links(driver: webdriver.Chrome, base_host: str) -> list[st
     return found
 
 
-def _resolve_img_url(driver: webdriver.Chrome, img) -> str | None:
+def _resolve_img_url(driver: uc.Chrome, img) -> str | None:
     """Best-effort absolute image URL from src, lazy attrs, or srcset."""
     base = driver.current_url
     src = (img.get_attribute("src") or "").strip()
@@ -334,7 +470,7 @@ def _img_element_priority(img) -> int:
     return score
 
 
-def extract_and_save_homepage_logo(driver: webdriver.Chrome, logo_file: Path) -> bool:
+def extract_and_save_homepage_logo(driver: uc.Chrome, logo_file: Path) -> bool:
     """
     Heuristic logo detection (header/nav, logo in attributes, custom-logo / site-logo).
     Download with requests; save as RGBA PNG for correct transparency.
@@ -442,7 +578,7 @@ def crawl_from_url(
     file_chunks: list[str] = []
     logo_saved = False
 
-    print("Starting headless Chrome (Selenium Manager)...")
+    print("Starting headless Chrome (undetected-chromedriver)...")
     driver = build_headless_chrome()
     try:
         while queue and pages_fetched < MAX_PAGES:
@@ -455,12 +591,37 @@ def crawl_from_url(
                 time.sleep(random.uniform(1, 3))
 
             try:
-                driver.get(url)
-            except WebDriverException as e:
+                try:
+                    driver.get(url)
+                except TimeoutException:
+                    # Stop further resource loading; we'll still attempt extraction from what rendered.
+                    try:
+                        driver.execute_script("window.stop();")
+                    except WebDriverException:
+                        pass
+            except (UnexpectedAlertPresentException, WebDriverException) as e:
+                _safe_dismiss_alerts(driver)
                 print(f"Skip (navigation failed): {url} — {e}")
                 continue
 
-            time.sleep(RENDER_WAIT_SECONDS)
+            try:
+                _wait_dom_ready(driver, DOM_READY_TIMEOUT_SECONDS)
+            except (TimeoutException, WebDriverException):
+                # Proceed anyway; some heavy sites never reach a stable readyState.
+                pass
+
+            try:
+                _auto_dismiss_cookie_banners(driver)
+            except Exception:
+                pass
+
+            # Short, bounded render wait (replaces unbounded "hang" scenarios).
+            try:
+                WebDriverWait(driver, RENDER_WAIT_SECONDS).until(
+                    EC.presence_of_element_located((By.TAG_NAME, "body"))
+                )
+            except (TimeoutException, WebDriverException):
+                pass
 
             final_url = strip_fragment(driver.current_url)
 

@@ -70,7 +70,10 @@ def generate(
     db.commit()
     tid = str(task_id)
     try:
-        run_banner_task.delay(tid, url, brief, body.video_hook)
+        run_banner_task.apply_async(
+            args=[tid, url, brief, body.video_hook],
+            queue="banner_queue",
+        )
     except Exception as exc:
         persist_task(task_id, status="failed", error=str(exc))
         raise HTTPException(
@@ -264,7 +267,10 @@ def render_task_video(
     db.commit()
 
     try:
-        render_video_task.delay(task_id, int(body.design_type), str(body.aspect_ratio), public_base)
+        render_video_task.apply_async(
+            args=[task_id, int(body.design_type), str(body.aspect_ratio), public_base],
+            queue="video_queue",
+        )
     except Exception as exc:
         persist_video_task_state(
             tid,
