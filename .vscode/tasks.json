@@ -2,32 +2,55 @@
   "version": "2.0.0",
   "tasks": [
     {
+      "label": "Redis: ping",
+      "type": "shell",
+      "command": "redis-cli ping",
+      "presentation": {
+        "panel": "dedicated"
+      },
+      "problemMatcher": []
+    },
+    {
       "label": "Run FastAPI",
       "type": "shell",
       "command": "python -m uvicorn api:app --reload --host 127.0.0.1 --port 8888",
       "options": {
         "cwd": "${workspaceFolder}"
       },
+      "isBackground": true,
       "presentation": {
-        "reveal": "always",
-        "panel": "dedicated",
-        "focus": false
+        "panel": "dedicated"
       },
-      "problemMatcher": []
+      "problemMatcher": {
+        "owner": "custom",
+        "pattern": [{ "regexp": "^(.*)$", "message": 1 }],
+        "background": {
+          "activeOnStart": true,
+          "beginsPattern": "Started server process|Uvicorn running on|Waiting for application startup",
+          "endsPattern": "Application startup complete\\.|Uvicorn running on http://"
+        }
+      }
     },
     {
-      "label": "Run Celery",
+      "label": "Run React",
       "type": "shell",
-      "command": "python -m celery -A celery_app worker --loglevel=info -P gevent",
+      "command": "npm run dev",
       "options": {
-        "cwd": "${workspaceFolder}"
+        "cwd": "${workspaceFolder}/client"
       },
+      "isBackground": true,
       "presentation": {
-        "reveal": "always",
-        "panel": "dedicated",
-        "focus": false
+        "panel": "dedicated"
       },
-      "problemMatcher": []
+      "problemMatcher": {
+        "owner": "custom",
+        "pattern": [{ "regexp": "^(.*)$", "message": 1 }],
+        "background": {
+          "activeOnStart": true,
+          "beginsPattern": "vite v|VITE v|> .*dev|npm run dev",
+          "endsPattern": "ready in \\d+ ms|ready in \\d+\\.\\d+ s|Local:\\s+http"
+        }
+      }
     },
     {
       "label": "Run Video Engine",
@@ -36,36 +59,82 @@
       "options": {
         "cwd": "${workspaceFolder}/video_engine"
       },
+      "isBackground": true,
       "presentation": {
-        "reveal": "always",
-        "panel": "dedicated",
-        "focus": false
+        "panel": "dedicated"
       },
-      "problemMatcher": []
+      "problemMatcher": {
+        "owner": "custom",
+        "pattern": [{ "regexp": "^(.*)$", "message": 1 }],
+        "background": {
+          "activeOnStart": true,
+          "beginsPattern": "node index\\.js|video_engine|express",
+          "endsPattern": "video_engine listening on http://"
+        }
+      }
     },
     {
-      "label": "Run React",
+      "label": "Run Celery (Banner)",
       "type": "shell",
-      "command": "npm run dev -- --host 127.0.0.1",
+      "command": "python -m celery -A celery_app worker -Q banner_queue --loglevel=info -P gevent -n banner_worker@%h",
       "options": {
-        "cwd": "${workspaceFolder}/client"
+        "cwd": "${workspaceFolder}"
       },
+      "isBackground": true,
       "presentation": {
-        "reveal": "always",
-        "panel": "dedicated",
-        "focus": false
+        "group": "celery-workers",
+        "panel": "dedicated"
       },
-      "problemMatcher": []
+      "problemMatcher": {
+        "owner": "custom",
+        "pattern": [{ "regexp": "^(.*)$", "message": 1 }],
+        "background": {
+          "activeOnStart": true,
+          "beginsPattern": "celery@|Connected to redis|\\[tasks\\]",
+          "endsPattern": "ready\\."
+        }
+      }
+    },
+    {
+      "label": "Run Celery (Video)",
+      "type": "shell",
+      "command": "python -m celery -A celery_app worker -Q video_queue --loglevel=info -P gevent -n video_worker@%h",
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "isBackground": true,
+      "presentation": {
+        "group": "celery-workers",
+        "panel": "dedicated"
+      },
+      "problemMatcher": {
+        "owner": "custom",
+        "pattern": [{ "regexp": "^(.*)$", "message": 1 }],
+        "background": {
+          "activeOnStart": true,
+          "beginsPattern": "celery@|Connected to redis|\\[tasks\\]",
+          "endsPattern": "ready\\."
+        }
+      }
     },
     {
       "label": "🚀 START ALL SERVICES",
       "dependsOn": [
+        "Redis: ping",
         "Run FastAPI",
-        "Run Celery",
+        "Run React",
         "Run Video Engine",
-        "Run React"
+        "Run Celery (Banner)",
+        "Run Celery (Video)"
       ],
       "dependsOrder": "parallel",
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      },
+      "presentation": {
+        "panel": "new"
+      },
       "problemMatcher": []
     }
   ]
