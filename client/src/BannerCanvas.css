@@ -1,5 +1,6 @@
 /* ── Viewport (responsive wrapper) ─────────────────────────────────────────── */
 .banner-viewport {
+  box-sizing: border-box;
   width: 100%;
   max-width: min(96%, 860px);
   margin: 0 auto;
@@ -11,11 +12,18 @@
   box-shadow: 0 16px 56px rgba(0, 0, 0, 0.18);
 }
 
-/* 1080×1920 preview — match canvas aspect so scaled content is not clipped */
+/*
+ * 1080×1920 preview: drive width so height = width×16/9 never exceeds the viewport cap.
+ * (max-width + max-height + aspect-ratio alone can yield a used height slightly larger than
+ * the flex-allocated slot, so clientHeight undervalues the true box and scale overflows.)
+ */
 .banner-viewport.banner-viewport--9-16 {
+  box-sizing: border-box;
   aspect-ratio: 9 / 16;
-  max-width: min(96%, 520px);
+  width: min(96%, 520px, calc(92vh * 9 / 16));
+  max-width: min(96%, 520px, calc(92vh * 9 / 16));
   max-height: min(92vh, 960px);
+  height: auto;
 }
 
 .banner-viewport-inner {
@@ -25,6 +33,9 @@
   display: flex;
   align-items: center;
   justify-content: center;
+  /* Let this flex item shrink when an ancestor is a column flex; avoids phantom overflow */
+  min-width: 0;
+  min-height: 0;
 }
 
 /* ── Canvas root ────────────────────────────────────────────────────────────── */
@@ -182,13 +193,15 @@
   flex: 0 0 auto;
   width: 100%;
   min-width: 0;
-  min-height: 100px;
+  min-height: 0;
+  height: auto;
 }
 
 .banner-feat-card {
-  flex: 1;
+  flex: 1 1 auto;
   min-width: 0;
-  min-height: 132px;
+  min-height: 0;
+  height: auto;
   background: #ffffff;
   border-radius: 14px;
   padding: 24px 14px 26px;
@@ -222,7 +235,8 @@
   color: #1e293b;
   line-height: 1.52;
   flex: 1 1 auto;
-  min-height: 2.8em;
+  min-height: 0;
+  overflow: visible;
   direction: rtl;
   text-align: right;
   outline: none;

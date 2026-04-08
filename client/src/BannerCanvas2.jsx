@@ -8,8 +8,8 @@ import './BannerCanvas2.css'
 import BannerWorkspaceContainer from './components/canvas/BannerWorkspaceContainer.jsx'
 import { DESIGN2_DEFAULT_BOXES_VERTICAL } from './components/canvas/useBannerCanvasState.js'
 
-const DF2_SQUARE = { headline: 76, subhead: 30, bullets: 22, cta: 36 }
-const DF2_VERTICAL = { headline: 86, subhead: 36, bullets: 26, cta: 42 }
+const DF2_SQUARE = { headline: 92, subhead: 36, bullets: 28, cta: 44 }
+const DF2_VERTICAL = { headline: 118, subhead: 48, bullets: 34, cta: 52 }
 const DC2 = { headline: '#ffffff', subhead: '#e6e6e6', bullets: '#ebebeb' }
 
 const STRIP_H = 64
@@ -19,10 +19,10 @@ const CONTENT_W = 1080 - CONTENT_PAD * 2
 
 const DESIGN2_SQUARE_BOXES = {
   logo: { x: 1080 - CONTENT_PAD - 210, y: 50, width: 210, height: 78 },
-  headline: { x: CONTENT_PAD, y: 210, width: CONTENT_W, height: 230 },
-  subhead: { x: CONTENT_PAD, y: 456, width: CONTENT_W, height: 110 },
-  bullets: { x: CONTENT_PAD, y: 580, width: CONTENT_W, height: 252 },
-  cta: { x: CONTENT_PAD + 80, y: 846, width: CONTENT_W - 160, height: 88 },
+  headline: { x: CONTENT_PAD, y: 198, width: CONTENT_W, height: 252 },
+  subhead: { x: CONTENT_PAD, y: 462, width: CONTENT_W, height: 128 },
+  bullets: { x: CONTENT_PAD, y: 602, width: CONTENT_W, height: 278 },
+  cta: { x: CONTENT_PAD + 80, y: 898, width: CONTENT_W - 160, height: 98 },
 }
 
 const DESIGN2_LAYER_UI = {

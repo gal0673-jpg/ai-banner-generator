@@ -16,6 +16,9 @@ const heebo = loadFont("normal", {
   subsets: ["hebrew", "latin", "latin-ext"],
 });
 
+/** Content column width in BannerCanvas2 — scales type to match DF2_SQUARE / DF2_VERTICAL */
+const D2_CONTENT_W_REF = 952;
+
 const SNAP_FRAMES = 30;
 const BASE_BULLET_START_FRAMES = [20, 30, 40];
 const BASE_CTA_START_FRAME = 60;
@@ -170,6 +173,23 @@ export const Design2Composition = ({
   const pad = Math.round(width * 0.06);
   const contentMaxW = width - pad * 2;
 
+  const headlineFs = Math.min(
+    280,
+    (contentMaxW * (isVertical ? 118 : 92)) / D2_CONTENT_W_REF,
+  );
+  const subheadFs = Math.min(
+    220,
+    (contentMaxW * (isVertical ? 48 : 36)) / D2_CONTENT_W_REF,
+  );
+  const bulletFs = Math.min(
+    180,
+    (contentMaxW * (isVertical ? 34 : 28)) / D2_CONTENT_W_REF,
+  );
+  const ctaFs = Math.min(
+    220,
+    (contentMaxW * (isVertical ? 52 : 44)) / D2_CONTENT_W_REF,
+  );
+
   // For vertical: push content into the bottom 60% of the frame
   const verticalTopPad = isVertical ? Math.round(height * 0.4) : 0;
 
@@ -295,7 +315,7 @@ export const Design2Composition = ({
               as="h1"
               style={{
                 margin: 0,
-                fontSize: Math.min(78, height * 0.088),
+                fontSize: headlineFs,
                 fontWeight: 800,
                 lineHeight: 1.12,
                 letterSpacing: "-0.02em",
@@ -312,7 +332,7 @@ export const Design2Composition = ({
               as="p"
               style={{
                 margin: 0,
-                fontSize: Math.min(38, height * 0.043),
+                fontSize: subheadFs,
                 fontWeight: 500,
                 lineHeight: 1.45,
                 color: "rgba(255,255,255,0.9)",
@@ -395,7 +415,7 @@ export const Design2Composition = ({
                       <RtlText
                         style={{
                           flex: 1,
-                          fontSize: Math.min(30, height * 0.035),
+                          fontSize: bulletFs,
                           fontWeight: 500,
                           lineHeight: 1.45,
                           color: "rgba(248,250,252,0.96)",
@@ -428,7 +448,7 @@ export const Design2Composition = ({
                   backgroundColor: brandHex,
                   color: "#ffffff",
                   fontWeight: 800,
-                  fontSize: Math.min(38, height * 0.043),
+                  fontSize: ctaFs,
                   textAlign: "center",
                   boxShadow: `0 16px 48px rgba(${br},${bg},${bb},0.55), 0 4px 12px rgba(0,0,0,0.35)`,
                   letterSpacing: "0.02em",
@@ -473,7 +493,7 @@ export const Design2Composition = ({
           <div
             dir="rtl"
             style={{
-              fontSize: Math.min(168, height * 0.15),
+              fontSize: Math.min(300, height * 0.15),
               fontWeight: 800,
               color: "#ffffff",
               textAlign: "center",

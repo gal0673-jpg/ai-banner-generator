@@ -176,7 +176,7 @@ export async function captureBannerNodeToPng(node, options) {
     backgroundColor,
     style = { transform: 'scale(1)', colorScheme: 'light' },
     filter,
-    pixelRatio = 1,
+    pixelRatio = 2,
   } = options
   await new Promise((r) => requestAnimationFrame(r))
   await new Promise((r) => requestAnimationFrame(r))

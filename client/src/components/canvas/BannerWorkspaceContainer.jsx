@@ -180,9 +180,11 @@ export default function BannerWorkspaceContainer({
       const sy = h / BANNER_H
       setScale(Math.min(sx, sy))
     }
-    const ro = new ResizeObserver(update)
+    const ro = new ResizeObserver(() => {
+      requestAnimationFrame(update)
+    })
     ro.observe(el)
-    update()
+    requestAnimationFrame(update)
     return () => ro.disconnect()
   }, [BANNER_W, BANNER_H])
 
@@ -242,14 +244,30 @@ export default function BannerWorkspaceContainer({
       <div className={viewportClassName} ref={viewportRef} dir="ltr">
         <div
           className={viewportInnerClassName}
-          style={{ width: BANNER_W * scale, height: BANNER_H * scale }}
+          style={{
+            // Exact scaled box; min 0 stops flex min-height:auto from using the canvas
+            // intrinsic height and blowing past the viewport (clips bottom strip / CTA).
+            width: BANNER_W * scale,
+            height: BANNER_H * scale,
+            minWidth: 0,
+            minHeight: 0,
+            overflow: 'hidden',
+            flexShrink: 0,
+            boxSizing: 'border-box',
+            position: 'relative',
+          }}
         >
           <div
             ref={captureRef}
             id={boundsSurfaceId}
             dir="ltr"
             className={captureClassName(exporting)}
-            style={{ width: BANNER_W, height: BANNER_H, transform: `scale(${scale})` }}
+            style={{
+              width: BANNER_W,
+              height: BANNER_H,
+              transform: `scale(${scale})`,
+              overflow: 'hidden',
+            }}
           >
             {renderCanvasBackground(workspace)}
 

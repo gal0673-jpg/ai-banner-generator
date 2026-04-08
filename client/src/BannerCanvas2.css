@@ -7,6 +7,7 @@
 .bc2-root {}
 
 .bc2-viewport {
+  box-sizing: border-box;
   width: 100%;
   max-width: min(96%, 860px);
   margin: 0 auto;
@@ -19,9 +20,12 @@
 }
 
 .bc2-viewport.bc2-viewport--9-16 {
+  box-sizing: border-box;
   aspect-ratio: 9 / 16;
-  max-width: min(96%, 520px);
+  width: min(96%, 520px, calc(92vh * 9 / 16));
+  max-width: min(96%, 520px, calc(92vh * 9 / 16));
   max-height: min(92vh, 960px);
+  height: auto;
 }
 
 .bc2-viewport-inner {
@@ -31,6 +35,8 @@
   display: flex;
   align-items: center;
   justify-content: center;
+  min-width: 0;
+  min-height: 0;
 }
 
 /* ── Canvas root ──────────────────────────────────────────────────────────── */
@@ -178,13 +184,15 @@
   flex: 0 0 auto;
   width: 100%;
   min-width: 0;
-  min-height: 100px;
+  min-height: 0;
+  height: auto;
 }
 
 .bc2-feat-pill {
-  flex: 1;
+  flex: 1 1 auto;
   min-width: 0;
-  min-height: 128px;
+  min-height: 0;
+  height: auto;
   /* Dark glass — no backdrop-filter (html-to-image compatible) */
   background: rgba(10, 15, 30, 0.65);
   border: 1px solid rgba(255, 255, 255, 0.18);
@@ -216,7 +224,8 @@
   color: rgba(255, 255, 255, 0.90);
   line-height: 1.52;
   flex: 1 1 auto;
-  min-height: 2.8em;
+  min-height: 0;
+  overflow: visible;
   direction: rtl;
   text-align: right;
   outline: none;

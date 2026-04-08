@@ -17,6 +17,8 @@ const heebo = loadFont("normal", {
 });
 
 const LEFT_RATIO = 0.44;
+/** Bottom text band height at 1080×1920 (60% of frame) — scales headline/subhead with canvas defaults */
+const D1_VERTICAL_TEXT_PANEL_H = 1152;
 const HOOK_FRAMES = 60;
 const BASE_BULLET_START = [18, 26, 34];
 const BASE_CTA_START = 52;
@@ -207,6 +209,24 @@ export const Design1Composition = ({
   const px = Math.round(containerW * 0.08);
   const py = Math.round(containerH * 0.06);
 
+  // Match BannerCanvas DF_VERTICAL / DF_SQUARE (caps only guard extreme aspect ratios)
+  const headlineFs = Math.min(
+    280,
+    containerH * (isVertical ? 112 / D1_VERTICAL_TEXT_PANEL_H : 72 / 1080),
+  );
+  const subheadFs = Math.min(
+    220,
+    containerH * (isVertical ? 46 / D1_VERTICAL_TEXT_PANEL_H : 34 / 1080),
+  );
+  const bulletFs = Math.min(
+    180,
+    containerH * (isVertical ? 34 / D1_VERTICAL_TEXT_PANEL_H : 28 / 1080),
+  );
+  const ctaFs = Math.min(
+    220,
+    containerH * (isVertical ? 48 / D1_VERTICAL_TEXT_PANEL_H : 38 / 1080),
+  );
+
   const renderTextPanel = () => (
     <div
       lang="he"
@@ -262,7 +282,7 @@ export const Design1Composition = ({
           as="h1"
           style={{
             margin: 0,
-            fontSize: Math.min(68, containerH * 0.125),
+            fontSize: headlineFs,
             fontWeight: 800,
             lineHeight: 1.15,
             color: "#0f172a",
@@ -278,7 +298,7 @@ export const Design1Composition = ({
             as="p"
             style={{
               margin: `${containerH * 0.018}px 0 0`,
-              fontSize: Math.min(32, containerH * 0.068),
+              fontSize: subheadFs,
               fontWeight: 500,
               lineHeight: 1.5,
               color: "#475569",
@@ -338,7 +358,7 @@ export const Design1Composition = ({
                   <RtlText
                     style={{
                       flex: 1,
-                      fontSize: Math.min(27, containerH * 0.053),
+                      fontSize: bulletFs,
                       fontWeight: 500,
                       lineHeight: 1.45,
                       color: "#1e293b",
@@ -369,7 +389,7 @@ export const Design1Composition = ({
                 backgroundColor: brandHex,
                 color: "#ffffff",
                 fontWeight: 800,
-                fontSize: Math.min(34, containerH * 0.072),
+                fontSize: ctaFs,
                 textAlign: "center",
                 boxShadow: `0 10px 32px rgba(${br},${bg},${bb},0.4)`,
               }}
@@ -432,7 +452,7 @@ export const Design1Composition = ({
           <div
             dir="rtl"
             style={{
-              fontSize: Math.min(168, height * 0.15),
+              fontSize: Math.min(300, height * 0.15),
               fontWeight: 800,
               color: "#ffffff",
               textAlign: "center",

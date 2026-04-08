@@ -7,25 +7,22 @@ import {
 } from './components/canvas/useBannerCanvasState.js'
 
 // ─── Design 1 shared horizontal layout constants ──────────────────────────────
-const DF_SQUARE = { headline: 58, subhead: 26, bullets: 22, cta: 30 }
-const DF_VERTICAL = { headline: 70, subhead: 32, bullets: 26, cta: 36 }
 const DC = { headline: '#0f172a', subhead: '#475569', bullets: '#1e293b' }
 
 const LEFT_W = 475
 const DIVIDER_W = 6
 const RIGHT_X = LEFT_W + DIVIDER_W
 const STRIP_H = 70
-const RPAD = 44
-const CONTENT_X = RIGHT_X + RPAD
-const CONTENT_W = 1080 - CONTENT_X - RPAD
-const LOGO_W = 200
+
+const DF_SQUARE = { headline: 54, subhead: 26, bullets: 20, cta: 30 }
+const DF_VERTICAL = { headline: 70, subhead: 32, bullets: 26, cta: 38 }
 
 const DESIGN1_SQUARE_BOXES = {
-  logo: { x: 1080 - RPAD - LOGO_W, y: 44, width: LOGO_W, height: 72 },
-  headline: { x: CONTENT_X, y: 148, width: CONTENT_W, height: 210 },
-  subhead: { x: CONTENT_X, y: 372, width: CONTENT_W, height: 110 },
-  bullets: { x: CONTENT_X, y: 494, width: CONTENT_W, height: 292 },
-  cta: { x: CONTENT_X, y: 802, width: CONTENT_W, height: 86 },
+  logo: { x: 836, y: 30, width: 200, height: 72 },
+  headline: { x: 515, y: 120, width: 520, height: 260 },
+  subhead: { x: 515, y: 390, width: 520, height: 120 },
+  bullets: { x: 515, y: 530, width: 520, height: 260 },
+  cta: { x: 515, y: 820, width: 520, height: 100 },
 }
 
 const DESIGN1_LAYER_UI = {
