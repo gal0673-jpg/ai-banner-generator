@@ -7,8 +7,9 @@ import BannerCanvas2 from './BannerCanvas2.jsx'
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
 
-function formatStatus(status) {
+function formatStatus(status, { videoRendering = false } = {}) {
   if (!status) return 'מתחיל…'
+  if (status === 'completed' && videoRendering) return 'מייצר וידאו ברקע…'
   const map = {
     pending: 'ממתין…',
     scraped: 'סורק את האתר…',
@@ -45,6 +46,9 @@ function StatusSkeleton() {
 /** Must match api.SUPERUSER_EMAIL (primary admin only). */
 const PRIMARY_ADMIN_EMAIL = 'gal0673@gmail.com'
 
+const VIDEO_RENDERING_HINT =
+  'הווידאו מיוצר ברקע — אפשר להמשיך לערוך את הבאנר. · Video is rendering in the background; you can keep editing.'
+
 function Spinner({ className = '' }) {
   return (
     <span
@@ -72,8 +76,8 @@ export default function BannerWorkspace() {
   const [aiContextErr,  setAiContextErr]  = useState(null)
   const [activeDesign,  setActiveDesign]  = useState(1)
   const [aspectRatio,   setAspectRatio]   = useState('1:1')
-  const [isRenderingVideo, setIsRenderingVideo] = useState(false)
   const [videoRenderError, setVideoRenderError] = useState(null)
+  const [sseBump, setSseBump] = useState(0)
   const [videoHook,        setVideoHook]        = useState('')
   // Tracks the taskId for which we've already initialised videoHook from the
   // server, so that subsequent statusPayload updates don't overwrite user edits.
@@ -88,6 +92,7 @@ export default function BannerWorkspace() {
 
   const terminal  = statusPayload?.status === 'completed' || statusPayload?.status === 'failed'
   const isPolling = Boolean(taskId && !terminal)
+  const videoRendering = statusPayload?.video_status === 'processing'
   const completed =
     statusPayload?.status === 'completed' &&
     statusPayload?.background_url &&
@@ -131,11 +136,10 @@ export default function BannerWorkspace() {
     return () => { cancelled = true }
   }, [ready, user])
 
-  // While a task is non-terminal, poll status so we still pick up DB updates if SSE drops.
+  // Poll on an interval whenever a task is loaded (covers banner pipeline, async video render, and SSE gaps).
   useEffect(() => {
     if (!taskId) return undefined
     const tick = async () => {
-      if (terminalRef.current) return
       try {
         const { data } = await api.get(`/status/${taskId}`)
         setStatusPayload(data)
@@ -165,7 +169,7 @@ export default function BannerWorkspace() {
       try {
         const data = JSON.parse(event.data)
         setStatusPayload(data)
-        if (data.status === 'completed' || data.status === 'failed') {
+        if (data.status === 'failed') {
           sseTerminalRef.current = true
           sse.close()
         }
@@ -180,7 +184,7 @@ export default function BannerWorkspace() {
     }
 
     return () => { sse.close() }
-  }, [taskId])
+  }, [taskId, sseBump])
 
   // Initialise videoHook from the server value exactly once per task (when the
   // task first arrives in a completed state).  After that we leave local state
@@ -229,28 +233,43 @@ export default function BannerWorkspace() {
   const handleRenderVideo = useCallback(async () => {
     if (!taskId) return
     setVideoRenderError(null)
-    setIsRenderingVideo(true)
     try {
       const { data } = await api.post(`/tasks/${taskId}/render-video`, {
         design_type: activeDesign,
         aspect_ratio: aspectRatio,
       })
-      setStatusPayload((p) => {
-        if (!p) return p
-        return {
-          ...p,
-          video_url_1: typeof data?.video_url_1 === 'string' ? data.video_url_1 : p.video_url_1,
-          video_url_2: typeof data?.video_url_2 === 'string' ? data.video_url_2 : p.video_url_2,
-          video_url_1_vertical: typeof data?.video_url_1_vertical === 'string' ? data.video_url_1_vertical : p.video_url_1_vertical,
-          video_url_2_vertical: typeof data?.video_url_2_vertical === 'string' ? data.video_url_2_vertical : p.video_url_2_vertical,
-        }
-      })
+      if (data?.status === 'processing') {
+        setStatusPayload((p) =>
+          p
+            ? {
+                ...p,
+                video_status: 'processing',
+                video_render_error: null,
+              }
+            : p,
+        )
+        setSseBump((n) => n + 1)
+      }
     } catch (err) {
       setVideoRenderError(axiosErrorMessage(err))
-    } finally {
-      setIsRenderingVideo(false)
     }
   }, [taskId, activeDesign, aspectRatio])
+
+  useEffect(() => {
+    if (statusPayload?.video_status === 'failed' && statusPayload?.video_render_error) {
+      setVideoRenderError(statusPayload.video_render_error)
+    }
+  }, [statusPayload?.video_status, statusPayload?.video_render_error])
+
+  const prevVideoStatusRef = useRef(null)
+  useEffect(() => {
+    const v = statusPayload?.video_status
+    const prev = prevVideoStatusRef.current
+    if (prev === 'processing' && v !== 'processing' && v !== 'failed') {
+      setVideoRenderError(null)
+    }
+    prevVideoStatusRef.current = v
+  }, [statusPayload?.video_status])
 
   const handleDownloadAiContext = useCallback(async () => {
     setAiContextErr(null)
@@ -312,14 +331,15 @@ export default function BannerWorkspace() {
       s === 'failed'      ? 'bg-red-500/15 text-red-700 dark:text-red-300 ring-red-500/25'
       : s === 'completed' ? 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 ring-emerald-500/25'
       : 'bg-indigo-500/15 text-indigo-700 dark:text-indigo-200 ring-indigo-500/25'
+    const showSpinner = isPolling || videoRendering
     return (
       <span className={`inline-flex items-center gap-2 rounded-full px-3 py-1 text-xs font-medium ring-1 ${tone}`}>
-        {isPolling && <Spinner className="!size-3.5 border-indigo-400/40 border-t-indigo-300" />}
-        <span className="opacity-90">{formatStatus(s)}</span>
+        {showSpinner && <Spinner className="!size-3.5 border-indigo-400/40 border-t-indigo-300" />}
+        <span className="opacity-90">{formatStatus(s, { videoRendering })}</span>
         <span className="font-mono uppercase tracking-wide opacity-70" dir="ltr">({s ?? '…'})</span>
       </span>
     )
-  }, [taskId, statusPayload?.status, isPolling])
+  }, [taskId, statusPayload?.status, isPolling, videoRendering])
 
   return (
     <div
@@ -668,7 +688,8 @@ export default function BannerWorkspace() {
                           }
                           onPersist={handleTaskPersist}
                           onRenderVideo={handleRenderVideo}
-                          isRenderingVideo={isRenderingVideo}
+                          isRenderingVideo={videoRendering}
+                          videoRenderingHint={VIDEO_RENDERING_HINT}
                           aspectRatio={aspectRatio}
                         />
                       </div>
@@ -696,7 +717,8 @@ export default function BannerWorkspace() {
                           }
                           onPersist={handleTaskPersist}
                           onRenderVideo={handleRenderVideo}
-                          isRenderingVideo={isRenderingVideo}
+                          isRenderingVideo={videoRendering}
+                          videoRenderingHint={VIDEO_RENDERING_HINT}
                           aspectRatio={aspectRatio}
                         />
                       </div>

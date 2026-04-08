@@ -63,6 +63,8 @@ export default function BannerWorkspaceContainer({
   onPersist,
   onRenderVideo,
   isRenderingVideo = false,
+  /** Shown under the action row while async video render runs (non-blocking). */
+  videoRenderingHint = '',
   aspectRatio = '1:1',
   persistDesignKey,
   stateDefaults,
@@ -499,10 +501,19 @@ export default function BannerWorkspaceContainer({
             onClick={onRenderVideo}
             disabled={isRenderingVideo}
           >
-            {isRenderingVideo ? 'מייצר וידאו…' : '🎬 ייצר סרטון אנימציה'}
+            {isRenderingVideo ? 'מייצר וידאו ברקע…' : '🎬 ייצר סרטון אנימציה'}
           </button>
         )}
       </div>
+      {isRenderingVideo && videoRenderingHint ? (
+        <p
+          className="mt-2 text-center text-sm text-slate-600 dark:text-slate-400 px-2"
+          role="status"
+          aria-live="polite"
+        >
+          {videoRenderingHint}
+        </p>
+      ) : null}
       {downloadError && (
         <p className={downloadErrorClassName} role="alert">
           {downloadError}

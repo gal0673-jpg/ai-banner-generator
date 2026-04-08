@@ -103,6 +103,8 @@ def _banner_task_status_dict(task_id: str, row: BannerTask) -> dict[str, Any]:
         "rendered_banner_2_vertical_url": row.rendered_banner_2_vertical_url,
         "video_url_1_vertical": row.video_url_1_vertical,
         "video_url_2_vertical": row.video_url_2_vertical,
+        "video_status": row.video_status,
+        "video_render_error": row.video_render_error,
     }
 
 
@@ -248,6 +250,135 @@ def _public_api_base(request: Request) -> str:
 def _video_engine_render_url() -> str:
     base = os.environ.get("VIDEO_ENGINE_URL", "http://127.0.0.1:9000").rstrip("/")
     return f"{base}/render"
+
+
+def _persist_video_task_state(task_uuid: uuid.UUID, **kwargs: Any) -> None:
+    """Update banner_tasks row fields (video_status, URLs, errors, etc.)."""
+    with SessionLocal() as db:
+        row = db.get(BannerTask, task_uuid)
+        if row is None:
+            return
+        for key, value in kwargs.items():
+            setattr(row, key, value)
+        db.commit()
+
+
+def _execute_video_render_worker(
+    task_id: str,
+    design_type: int,
+    aspect_ratio: str,
+    public_base: str,
+) -> None:
+    """Call the video engine and persist the resulting URL (runs inside Celery worker)."""
+    tid = uuid.UUID(task_id)
+    render_url = _video_engine_render_url()
+
+    with SessionLocal() as db:
+        row = db.get(BannerTask, tid)
+        if row is None:
+            return
+        if row.status != "completed":
+            row.video_status = "failed"
+            row.video_render_error = "Task is not completed; cannot render video."
+            db.commit()
+            return
+        payload = _video_payload_for_engine(row, design_type, public_base, aspect_ratio)
+        payload["task_id"] = task_id
+        if not payload["headline"]:
+            row.video_status = "failed"
+            row.video_render_error = "headline is required for video render."
+            db.commit()
+            return
+        if not payload["background_url"]:
+            row.video_status = "failed"
+            row.video_render_error = "background_url is missing for this task."
+            db.commit()
+            return
+
+    try:
+        r = requests.post(render_url, json=payload, timeout=600)
+    except requests.RequestException as exc:
+        _persist_video_task_state(
+            tid,
+            video_status="failed",
+            video_render_error=f"Video engine unreachable ({render_url}): {exc}",
+        )
+        return
+
+    if r.status_code >= 400:
+        detail = r.text[:500] if r.text else r.reason
+        try:
+            err_json = r.json()
+            if isinstance(err_json, dict):
+                raw_d = err_json.get("details") or err_json.get("error") or detail
+                if isinstance(raw_d, list):
+                    detail = " ".join(str(x) for x in raw_d)
+                else:
+                    detail = str(raw_d)
+        except (json.JSONDecodeError, ValueError):
+            pass
+        _persist_video_task_state(
+            tid,
+            video_status="failed",
+            video_render_error=f"Video engine error: {detail}",
+        )
+        return
+
+    try:
+        data = r.json()
+    except json.JSONDecodeError:
+        _persist_video_task_state(
+            tid,
+            video_status="failed",
+            video_render_error="Video engine returned invalid JSON.",
+        )
+        return
+
+    if not data.get("success"):
+        fail = data.get("error") or data.get("details") or "Video render failed"
+        if isinstance(fail, list):
+            fail = " ".join(str(x) for x in fail)
+        _persist_video_task_state(tid, video_status="failed", video_render_error=str(fail))
+        return
+
+    video_url = data.get("videoUrl") or data.get("video_url")
+    if not video_url or not isinstance(video_url, str):
+        _persist_video_task_state(
+            tid,
+            video_status="failed",
+            video_render_error="Video engine response missing videoUrl.",
+        )
+        return
+
+    cleaned = video_url.strip()
+    is_vertical = aspect_ratio == "9:16"
+    with SessionLocal() as db:
+        row = db.get(BannerTask, tid)
+        if row is None:
+            return
+        if design_type == 2:
+            if is_vertical:
+                row.video_url_2_vertical = cleaned
+            else:
+                row.video_url_2 = cleaned
+        else:
+            if is_vertical:
+                row.video_url_1_vertical = cleaned
+            else:
+                row.video_url_1 = cleaned
+        row.video_status = None
+        row.video_render_error = None
+        db.commit()
+
+
+@celery_app.task(name="render_video_task")
+def render_video_task(
+    task_id: str,
+    design_type: int,
+    aspect_ratio: str,
+    public_base: str,
+) -> None:
+    _execute_video_render_worker(task_id, design_type, aspect_ratio, public_base)
 
 
 def _pick_canvas_slice(canvas_state: Any, design: int, aspect_ratio: str = "1:1") -> dict[str, Any]:
@@ -643,29 +774,27 @@ async def stream_task_status(
             raise HTTPException(status_code=404, detail="Unknown task_id")
 
     async def event_generator():
-        # Emit the first snapshot immediately on connect, then only when status changes
-        # (reconnect / refresh still get one fresh frame).
-        last_emitted_status: str | None = None
+        """Emit when task ``status`` or video fields change; stop after a stable terminal frame."""
+        last_payload_json: str | None = None
         while True:
-            event_payload: dict[str, Any] | None = None
-            current_status: str | None = None
-
-            # Open a fresh short-lived session on every tick so we always
-            # read the latest committed state from the database.
             with SessionLocal() as db:
                 row = db.get(BannerTask, tid)
                 if row is None:
                     break
-                current_status = row.status  # type: ignore[assignment]
-                if last_emitted_status is None or current_status != last_emitted_status:
-                    last_emitted_status = current_status
-                    event_payload = _banner_task_status_dict(task_id, row)
+                payload = _banner_task_status_dict(task_id, row)
+                blob = json.dumps(payload, sort_keys=True, default=str)
 
-            if event_payload is not None:
-                yield f"data: {json.dumps(event_payload)}\n\n"
+            if blob != last_payload_json:
+                last_payload_json = blob
+                yield f"data: {blob}\n\n"
 
-            if current_status in ("completed", "failed"):
-                break  # close the stream; client will receive the final event
+            current_status = payload["status"]
+            video_st = payload.get("video_status")
+
+            if current_status == "failed":
+                break
+            if current_status == "completed" and video_st != "processing":
+                break
 
             await asyncio.sleep(1.5)
 
@@ -753,6 +882,11 @@ def render_task_video(
             status_code=409,
             detail="Task must be completed before rendering video.",
         )
+    if row.video_status == "processing":
+        raise HTTPException(
+            status_code=409,
+            detail="Video render is already in progress for this task.",
+        )
 
     public_base = _public_api_base(request)
     payload = _video_payload_for_engine(row, body.design_type, public_base, body.aspect_ratio)
@@ -762,75 +896,24 @@ def render_task_video(
     if not payload["background_url"]:
         raise HTTPException(status_code=400, detail="background_url is missing for this task.")
 
-    render_url = _video_engine_render_url()
-    try:
-        r = requests.post(render_url, json=payload, timeout=600)
-    except requests.RequestException as exc:
-        raise HTTPException(
-            status_code=502,
-            detail=f"Video engine unreachable ({render_url}): {exc}",
-        ) from exc
-
-    if r.status_code >= 400:
-        detail = r.text[:500] if r.text else r.reason
-        try:
-            err_json = r.json()
-            if isinstance(err_json, dict):
-                raw_d = err_json.get("details") or err_json.get("error") or detail
-                if isinstance(raw_d, list):
-                    detail = " ".join(str(x) for x in raw_d)
-                else:
-                    detail = raw_d
-        except (json.JSONDecodeError, ValueError):
-            pass
-        raise HTTPException(status_code=502, detail=f"Video engine error: {detail}")
-
-    try:
-        data = r.json()
-    except json.JSONDecodeError as exc:
-        raise HTTPException(
-            status_code=502,
-            detail="Video engine returned invalid JSON.",
-        ) from exc
-
-    if not data.get("success"):
-        fail = data.get("error") or data.get("details") or "Video render failed"
-        if isinstance(fail, list):
-            fail = " ".join(str(x) for x in fail)
-        raise HTTPException(status_code=502, detail=str(fail))
-
-    video_url = data.get("videoUrl") or data.get("video_url")
-    if not video_url or not isinstance(video_url, str):
-        raise HTTPException(
-            status_code=502,
-            detail="Video engine response missing videoUrl.",
-        )
-
-    cleaned = video_url.strip()
-    is_vertical = body.aspect_ratio == "9:16"
-    if body.design_type == 2:
-        if is_vertical:
-            row.video_url_2_vertical = cleaned
-        else:
-            row.video_url_2 = cleaned
-    else:
-        if is_vertical:
-            row.video_url_1_vertical = cleaned
-        else:
-            row.video_url_1 = cleaned
+    row.video_status = "processing"
+    row.video_render_error = None
     db.commit()
-    db.refresh(row)
 
-    return {
-        "task_id": task_id,
-        "design_type": body.design_type,
-        "aspect_ratio": body.aspect_ratio,
-        "video_url": cleaned,
-        "video_url_1": row.video_url_1,
-        "video_url_2": row.video_url_2,
-        "video_url_1_vertical": row.video_url_1_vertical,
-        "video_url_2_vertical": row.video_url_2_vertical,
-    }
+    try:
+        render_video_task.delay(task_id, int(body.design_type), str(body.aspect_ratio), public_base)
+    except Exception as exc:
+        _persist_video_task_state(
+            tid,
+            video_status="failed",
+            video_render_error=f"Could not queue video render: {exc}",
+        )
+        raise HTTPException(
+            status_code=503,
+            detail="לא ניתן לשלוח ייצור וידאו לתור (Celery). ודא ש-Redis רץ וה-worker פעיל.",
+        ) from exc
+
+    return {"status": "processing"}
 
 
 @app.get("/admin/tasks")
@@ -870,6 +953,8 @@ def admin_list_tasks(
                 "rendered_banner_2_vertical_url": t.rendered_banner_2_vertical_url,
                 "video_url_1_vertical": t.video_url_1_vertical,
                 "video_url_2_vertical": t.video_url_2_vertical,
+                "video_status": t.video_status,
+                "video_render_error": t.video_render_error,
             }
         )
     return out

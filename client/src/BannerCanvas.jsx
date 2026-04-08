@@ -185,6 +185,7 @@ export default function BannerCanvas({
   onPersist,
   onRenderVideo,
   isRenderingVideo = false,
+  videoRenderingHint = 'הווידאו מיוצר ברקע — אפשר להמשיך לערוך את הבאנר.',
   aspectRatio = '1:1',
 }) {
   const isVertical = aspectRatio === '9:16'
@@ -242,6 +243,7 @@ export default function BannerCanvas({
       onPersist={onPersist}
       onRenderVideo={onRenderVideo}
       isRenderingVideo={isRenderingVideo}
+      videoRenderingHint={videoRenderingHint}
       aspectRatio={aspectRatio}
       persistDesignKey={persistDesignKey}
       stateDefaults={stateDefaults}

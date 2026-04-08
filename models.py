@@ -69,4 +69,8 @@ class BannerTask(Base):
     video_url_1_vertical: Mapped[str | None] = mapped_column(String(1024), nullable=True)
     video_url_2_vertical: Mapped[str | None] = mapped_column(String(1024), nullable=True)
 
+    # Async video render: null | "processing" | "failed" (cleared on success)
+    video_status: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    video_render_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+
     user: Mapped["User"] = relationship("User", back_populates="tasks")
