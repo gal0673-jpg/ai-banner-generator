@@ -19,10 +19,9 @@ const CONTENT_W = 1080 - CONTENT_PAD * 2
 
 const DESIGN2_SQUARE_BOXES = {
   logo: { x: 1080 - CONTENT_PAD - 210, y: 50, width: 210, height: 78 },
-  headline: { x: CONTENT_PAD, y: 198, width: CONTENT_W, height: 252 },
-  subhead: { x: CONTENT_PAD, y: 462, width: CONTENT_W, height: 128 },
-  bullets: { x: CONTENT_PAD, y: 602, width: CONTENT_W, height: 278 },
-  cta: { x: CONTENT_PAD + 80, y: 898, width: CONTENT_W - 160, height: 98 },
+  // Flex content stack: headline top (y=198) through cta bottom (y≈996).
+  // height is used only for drag y-clamping; visual height is auto.
+  contentStack: { x: CONTENT_PAD, y: 198, width: CONTENT_W, height: 840 },
 }
 
 const DESIGN2_LAYER_UI = {
@@ -155,7 +154,6 @@ export default function BannerCanvas2({
       filter: (el) => {
         if (el.classList?.contains('bc2-resize-handle-root')) return false
         if (el.closest?.('.bc2-resize-handle-root')) return false
-        if (el.classList?.contains('bc2-cta-drag-handle')) return false
         if (el.classList?.contains('banner-text-controls')) return false
         if (el.closest?.('.banner-text-controls')) return false
         return true

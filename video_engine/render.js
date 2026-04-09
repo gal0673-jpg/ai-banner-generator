@@ -14,18 +14,22 @@ const OUTPUT_DIR = path.join(__dirname, "output");
 function normalizeDesignTemplate(v) {
   if (v === undefined || v === null) return 1;
   const n = Number(v);
-  return n === 2 ? 2 : 1;
+  if (n === 2) return 2;
+  if (n === 3) return 3;
+  return 1;
 }
 
 function normalizeVideoLayout(body) {
   const raw = body?.video_layout ?? body?.videoLayout;
   if (raw === "immersive") return "immersive";
-  if (raw === "split") return "split";
-  return normalizeDesignTemplate(
+  if (raw === "minimal")   return "minimal";
+  if (raw === "split")     return "split";
+  const dt = normalizeDesignTemplate(
     body?.designTemplate ?? body?.design_type ?? body?.designType,
-  ) === 2
-    ? "immersive"
-    : "split";
+  );
+  if (dt === 2) return "immersive";
+  if (dt === 3) return "minimal";
+  return "split";
 }
 
 /** Resolve relative asset paths (e.g. /task-files/...) when VIDEO_ENGINE_ASSET_BASE_URL is set. */
@@ -89,7 +93,7 @@ function getBundleServeUrl() {
 }
 
 /**
- * @param {Record<string, unknown>} inputProps — includes designTemplate (1 | 2)
+ * @param {Record<string, unknown>} inputProps — includes designTemplate (1 | 2 | 3)
  * @param {{ publicBaseUrl?: string }} options
  */
 export async function renderBannerVideo(inputProps, options = {}) {

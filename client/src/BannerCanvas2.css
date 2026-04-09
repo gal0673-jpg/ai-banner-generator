@@ -22,9 +22,11 @@
 .bc2-viewport.bc2-viewport--9-16 {
   box-sizing: border-box;
   aspect-ratio: 9 / 16;
-  width: min(96%, 520px, calc(92vh * 9 / 16));
-  max-width: min(96%, 520px, calc(92vh * 9 / 16));
-  max-height: min(92vh, 960px);
+  /* calc(96vh * 9/16) caps width so the aspect-ratio height stays ≤ 96vh.
+     max-height is intentionally omitted — clamping height independently of width
+     breaks the single-axis scale calculation and clips the bottom domain strip. */
+  width: min(96%, 560px, calc(96vh * 9 / 16));
+  max-width: min(96%, 560px, calc(96vh * 9 / 16));
   height: auto;
 }
 
@@ -90,6 +92,29 @@
 .bc2-layer--cta  .bc2-layer-inner {
   padding: 6px 6px 6px 6px;
   padding-top: 44px;
+}
+
+/* Content stack layer: no layer-level padding — each section handles its own spacing */
+.bc2-layer--stack .bc2-layer-inner {
+  padding: 4px;
+}
+
+/* Show each section's TextControls on section hover */
+.bc2-canvas:not(.bc2-capture) .banner-content-section:hover .banner-text-controls {
+  opacity: 1;
+  pointer-events: all;
+}
+
+/* Text cursor inside the stack sections */
+.bc2-layer--stack .bc2-text,
+.bc2-layer--stack .bc2-feat-text {
+  cursor: text;
+}
+
+/* Restore grab cursor while the stack is being dragged */
+.bc2-layer--dragging.bc2-layer--stack .bc2-text,
+.bc2-layer--dragging.bc2-layer--stack .bc2-feat-text {
+  cursor: grabbing !important;
 }
 
 /* Hover / drag outlines — visible against dark background */
@@ -459,3 +484,4 @@
 @media (prefers-color-scheme: dark) {
   .bc2-download-error { color: #fca5a5; }
 }
+

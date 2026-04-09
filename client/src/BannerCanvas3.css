@@ -1,0 +1,367 @@
+/* ═══════════════════════════════════════════════════════════════════════════
+   BannerCanvas3 — "Minimalist Card" design (Design 3)
+   Solid brand-colour background; all content inside a white floating card.
+   All selectors are prefixed with bc3- to avoid collision with Design 1 / 2.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/* ── Viewport ─────────────────────────────────────────────────────────────── */
+.bc3-root {}
+
+.bc3-viewport {
+  box-sizing: border-box;
+  width: 100%;
+  max-width: min(96%, 860px);
+  margin: 0 auto;
+  aspect-ratio: 1 / 1;
+  position: relative;
+  border-radius: 14px;
+  overflow: hidden;
+  box-shadow: 0 16px 56px rgba(0, 0, 0, 0.30);
+}
+
+.bc3-viewport.bc3-viewport--9-16 {
+  box-sizing: border-box;
+  aspect-ratio: 9 / 16;
+  width: min(96%, 560px, calc(96vh * 9 / 16));
+  max-width: min(96%, 560px, calc(96vh * 9 / 16));
+  /* max-height removed: aspect-ratio + width already constrain the viewport correctly.
+     Adding max-height caused a race where clientHeight was clamped but clientWidth was
+     not, leading to the canvas scale being too large and clipping the bottom strip. */
+  height: auto;
+}
+
+.bc3-viewport-inner {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 0;
+  min-height: 0;
+}
+
+/* ── Canvas root ──────────────────────────────────────────────────────────── */
+.bc3-canvas {
+  transform-origin: top left;
+  color-scheme: light;
+  direction: ltr;
+  font-family: 'Heebo', 'Segoe UI', 'Helvetica Neue', Arial, sans-serif;
+}
+
+.bc3-canvas.bc3-capture {
+  color-scheme: light !important;
+}
+
+.bc3-canvas.bc3-capture .bc3-resize-handle-root {
+  visibility: hidden !important;
+  opacity: 0 !important;
+  pointer-events: none !important;
+}
+
+/* ── Layer shell ──────────────────────────────────────────────────────────── */
+.bc3-layer-inner {
+  width: 100%;
+  height: 100%;
+  box-sizing: border-box;
+  display: block;
+  position: relative;
+}
+
+.bc3-text-shell {
+  box-sizing: border-box;
+  direction: rtl;
+  text-align: right;
+  unicode-bidi: isolate;
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+/* ── Layer drag & outline ─────────────────────────────────────────────────── */
+.bc3-layer {
+  box-sizing: border-box;
+  cursor: grab;
+  outline: 2px dashed transparent;
+  outline-offset: 2px;
+  border-radius: 4px;
+  transition: outline-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.bc3-layer--text .bc3-layer-inner,
+.bc3-layer--cta  .bc3-layer-inner {
+  padding: 6px;
+  padding-top: 44px;
+}
+
+/* Content stack layer: no layer-level padding — each section handles its own spacing */
+.bc3-layer--stack .bc3-layer-inner {
+  padding: 4px;
+}
+
+/* Show each section's TextControls on section hover */
+.bc3-canvas:not(.bc3-capture) .banner-content-section:hover .banner-text-controls {
+  opacity: 1;
+  pointer-events: all;
+}
+
+/* Text cursor inside the stack sections */
+.bc3-layer--stack .bc3-text,
+.bc3-layer--stack .bc3-feat-text {
+  cursor: text;
+}
+
+/* Restore grab cursor while the stack is being dragged */
+.bc3-layer--dragging.bc3-layer--stack .bc3-text,
+.bc3-layer--dragging.bc3-layer--stack .bc3-feat-text {
+  cursor: grabbing !important;
+}
+
+/* Hover / drag outlines — dark, visible on white card */
+.bc3-canvas:not(.bc3-capture) .bc3-layer:hover:not(.bc3-layer--dragging) {
+  outline-color: rgba(30, 41, 59, 0.28);
+  box-shadow: 0 0 0 1px rgba(30, 41, 59, 0.10);
+}
+
+.bc3-canvas:not(.bc3-capture) .bc3-layer.bc3-layer--dragging {
+  outline-color: rgba(30, 41, 59, 0.65);
+  box-shadow: 0 0 0 2px rgba(30, 41, 59, 0.12);
+}
+
+.bc3-canvas.bc3-capture .bc3-layer {
+  outline: none !important;
+  box-shadow: none !important;
+  cursor: default;
+}
+
+.bc3-layer--text .bc3-text,
+.bc3-layer--cta  .bc3-text { cursor: text; }
+
+.bc3-layer--dragging.bc3-layer--text .bc3-text,
+.bc3-layer--dragging.bc3-layer--cta  .bc3-text { cursor: grabbing !important; }
+
+/* ── Logo ─────────────────────────────────────────────────────────────────── */
+.bc3-logo-img {
+  display: block;
+  max-width: 100%;
+  max-height: 100%;
+  width: auto;
+  height: auto;
+  object-fit: contain;
+  object-position: right center;
+  pointer-events: none;
+  user-select: none;
+}
+
+/* ── Text layers — DARK on white card ────────────────────────────────────── */
+.bc3-text {
+  width: 100%;
+  min-height: 1.2em;
+  outline: none;
+  cursor: text;
+  direction: rtl;
+  text-align: right;
+  color: #0f172a;
+  line-height: 1.22;
+  word-break: break-word;
+}
+
+.bc3-headline {
+  font-size: 62px;
+  font-weight: 900;
+  letter-spacing: -0.025em;
+  line-height: 1.12;
+  color: #0f172a;
+}
+
+.bc3-subhead {
+  font-size: 24px;
+  font-weight: 400;
+  line-height: 1.55;
+  color: #475569;
+}
+
+/* ── Feature list — simple vertical rows on white ────────────────────────── */
+.bc3-feat-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  direction: rtl;
+  width: 100%;
+  height: 100%;
+  align-items: stretch;
+}
+
+/* Both orientations use column layout; modifier kept for API parity. */
+.bc3-feat-grid.bc3-feat-grid--vertical {
+  flex-direction: column;
+}
+
+.bc3-feat-pill {
+  flex: 0 0 auto;
+  min-width: 0;
+  height: auto;
+  background: #f8fafc;
+  border: 1.5px solid #e2e8f0;
+  border-radius: 12px;
+  padding: 14px 18px;
+  display: flex;
+  flex-direction: row;
+  gap: 14px;
+  align-items: center;
+  direction: rtl;
+}
+
+.bc3-feat-icon {
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  font-weight: 800;
+  flex-shrink: 0;
+  color: #ffffff;
+}
+
+.bc3-feat-text {
+  font-size: 17px;
+  font-weight: 500;
+  color: #1e293b;
+  line-height: 1.52;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: visible;
+  direction: rtl;
+  text-align: right;
+  outline: none;
+  cursor: text;
+  word-break: break-word;
+  display: block;
+  width: 100%;
+}
+
+.bc3-layer--dragging.bc3-layer--bullets .bc3-feat-text {
+  cursor: grabbing !important;
+}
+
+/* ── CTA drag handle ─────────────────────────────────────────────────────── */
+.bc3-cta-drag-handle {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  gap: 0.35rem;
+  min-height: 26px;
+  padding: 4px 8px;
+  margin-bottom: 4px;
+  cursor: grab;
+  border-radius: 8px;
+  background: rgba(15, 23, 42, 0.06);
+  border: 1px dashed rgba(15, 23, 42, 0.28);
+  direction: rtl;
+  user-select: none;
+}
+
+.bc3-cta-drag-grip {
+  display: block;
+  width: 22px;
+  height: 4px;
+  border-radius: 2px;
+  background: rgba(15, 23, 42, 0.45);
+  box-shadow:
+    0 6px 0 rgba(15, 23, 42, 0.30),
+    0 12px 0 rgba(15, 23, 42, 0.18);
+}
+
+.bc3-cta-drag-label {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: rgba(15, 23, 42, 0.55);
+}
+
+.bc3-layer--dragging.bc3-layer--cta .bc3-cta-drag-handle {
+  cursor: grabbing !important;
+}
+
+.bc3-canvas.bc3-capture .bc3-cta-drag-handle {
+  display: none !important;
+}
+
+.bc3-canvas.bc3-capture .banner-text-controls {
+  display: none !important;
+}
+
+/* Text controls: show on layer hover */
+.bc3-canvas:not(.bc3-capture) .bc3-layer--text:hover .banner-text-controls,
+.bc3-canvas:not(.bc3-capture) .bc3-layer--cta:hover  .banner-text-controls {
+  opacity: 1;
+  pointer-events: all;
+}
+
+/* TextControls uses inverse-scale so it always renders at native UI size.
+   Only override the toolbar color scheme for the white-card surface. */
+.bc3-canvas .banner-text-controls {
+  background: rgba(15, 23, 42, 0.72);
+  backdrop-filter: blur(4px);
+}
+
+/* ── CTA button ──────────────────────────────────────────────────────────── */
+.bc3-cta {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  direction: rtl;
+  font-size: 28px;
+  font-weight: 800;
+  border-radius: 14px;
+  padding: 0.45em 0.9em;
+  vertical-align: middle;
+}
+
+.bc3-cta.bc3-text {
+  text-shadow: none;
+}
+
+/* ── Download row ────────────────────────────────────────────────────────── */
+.bc3-download-row {
+  margin-top: 1.25rem;
+  display: flex;
+  justify-content: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.bc3-btn-download {
+  padding: 0.7rem 1.5rem;
+  font-size: 0.95rem;
+  font-weight: 600;
+  border: none;
+  border-radius: 10px;
+  background: #1e293b;
+  color: #f1f5f9;
+  cursor: pointer;
+}
+
+.bc3-btn-download:hover:not(:disabled) {
+  background: #334155;
+}
+
+.bc3-btn-download:disabled {
+  opacity: 0.65;
+  cursor: wait;
+}
+
+.bc3-download-error {
+  margin: 0.5rem 0 0;
+  text-align: center;
+  color: #b91c1c;
+  font-size: 0.9rem;
+}
+
+@media (prefers-color-scheme: dark) {
+  .bc3-download-error { color: #fca5a5; }
+}

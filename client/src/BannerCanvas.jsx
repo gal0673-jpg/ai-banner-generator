@@ -15,14 +15,14 @@ const RIGHT_X = LEFT_W + DIVIDER_W
 const STRIP_H = 70
 
 const DF_SQUARE = { headline: 54, subhead: 26, bullets: 20, cta: 30 }
-const DF_VERTICAL = { headline: 70, subhead: 32, bullets: 26, cta: 38 }
+/** 9:16 canvas is tall; use sizes closer to Design 2 vertical for readability after scaling. */
+const DF_VERTICAL = { headline: 92, subhead: 42, bullets: 34, cta: 48 }
 
 const DESIGN1_SQUARE_BOXES = {
-  logo: { x: 836, y: 30, width: 200, height: 72 },
-  headline: { x: 515, y: 120, width: 520, height: 260 },
-  subhead: { x: 515, y: 390, width: 520, height: 120 },
-  bullets: { x: 515, y: 530, width: 520, height: 260 },
-  cta: { x: 515, y: 820, width: 520, height: 100 },
+  logo:         { x: 836, y: 30,  width: 200, height: 72  },
+  // Flex content stack: spans from headline top (y=120) through cta bottom (y≈920).
+  // height is used only for drag y-clamping; visual height is auto.
+  contentStack: { x: 515, y: 120, width: 520, height: 840 },
 }
 
 const DESIGN1_LAYER_UI = {
@@ -201,7 +201,6 @@ export default function BannerCanvas({
       filter: (el) => {
         if (el.classList?.contains('banner-resize-handle-root')) return false
         if (el.closest?.('.banner-resize-handle-root')) return false
-        if (el.classList?.contains('banner-cta-drag-handle')) return false
         if (el.classList?.contains('banner-text-controls')) return false
         if (el.closest?.('.banner-text-controls')) return false
         return true

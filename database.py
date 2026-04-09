@@ -13,9 +13,15 @@ if not DATABASE_URL:
         "DATABASE_URL is not set. Add it to your .env (e.g. mysql+pymysql://user:pass@localhost/dbname)."
     )
 
+# Avoid hanging FastAPI/Celery forever when MySQL is down or unreachable (pymysql).
+_connect_args: dict = {}
+if "mysql" in DATABASE_URL or "pymysql" in DATABASE_URL:
+    _connect_args["connect_timeout"] = 10
+
 engine = create_engine(
     DATABASE_URL,
     pool_pre_ping=True,
+    connect_args=_connect_args or {},
 )
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)

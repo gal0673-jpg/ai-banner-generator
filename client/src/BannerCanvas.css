@@ -13,16 +13,16 @@
 }
 
 /*
- * 1080×1920 preview: drive width so height = width×16/9 never exceeds the viewport cap.
- * (max-width + max-height + aspect-ratio alone can yield a used height slightly larger than
- * the flex-allocated slot, so clientHeight undervalues the true box and scale overflows.)
+ * 9:16 preview: constrain width so height never exceeds ~96 vh.
+ * calc(96vh * 9/16) caps the width so the aspect-ratio-derived height stays ≤ 96 vh.
+ * max-height is intentionally omitted — it can clamp clientHeight independently of
+ * clientWidth, breaking the single-axis scale calculation in BannerWorkspaceContainer.
  */
 .banner-viewport.banner-viewport--9-16 {
   box-sizing: border-box;
   aspect-ratio: 9 / 16;
-  width: min(96%, 520px, calc(92vh * 9 / 16));
-  max-width: min(96%, 520px, calc(92vh * 9 / 16));
-  max-height: min(92vh, 960px);
+  width: min(96%, 560px, calc(96vh * 9 / 16));
+  max-width: min(96%, 560px, calc(96vh * 9 / 16));
   height: auto;
 }
 
@@ -96,6 +96,41 @@
 
 .banner-layer--logo .banner-layer-inner {
   padding: 6px;
+}
+
+/* Content stack layer: no layer-level padding — each section handles its own spacing */
+.banner-layer--stack .banner-layer-inner {
+  padding: 4px;
+}
+
+/* ── Flex-stack sections: per-element text editing ───────────────────────── */
+/* Each section is a flow child of the flex-col inside the stack layer.
+   position: relative anchors the absolutely-positioned TextControls toolbar. */
+.banner-content-section {
+  position: relative;
+  width: 100%;
+  box-sizing: border-box;
+  padding-top: 44px; /* reserve space for the inverse-scaled TextControls toolbar */
+}
+
+/* Show each section's TextControls when the pointer is inside that section. */
+.banner-canvas:not(.capture-mode) .banner-content-section:hover .banner-text-controls {
+  opacity: 1;
+  pointer-events: all;
+}
+
+/* Text cursor inside the stack sections */
+.banner-layer--stack .banner-text,
+.banner-layer--stack .banner-feat-text,
+.banner-layer--stack .bc2-feat-text,
+.banner-layer--stack .bc3-feat-text {
+  cursor: text;
+}
+
+/* Restore grab cursor while the stack is being dragged */
+.banner-layer--dragging.banner-layer--stack .banner-text,
+.banner-layer--dragging.banner-layer--stack .banner-feat-text {
+  cursor: grabbing !important;
 }
 
 /* Hover / active outlines — visible against the light right panel */
@@ -429,6 +464,47 @@
 
 .banner-canvas.capture-mode .banner-text-controls {
   display: none !important;
+}
+
+/* ── Design 1 · 9:16 — extra spacing for stacked layout ─────────────────────── */
+.banner-viewport--9-16 .banner-layer--text .banner-layer-inner,
+.banner-viewport--9-16 .banner-layer--cta .banner-layer-inner {
+  padding-top: 44px;
+}
+
+.banner-viewport--9-16 .banner-cta-drag-handle {
+  min-height: 52px;
+  padding: 10px 16px;
+  margin-bottom: 8px;
+  border-radius: 12px;
+  gap: 0.5rem;
+}
+
+.banner-viewport--9-16 .banner-cta-drag-grip {
+  width: 38px;
+  height: 6px;
+  border-radius: 3px;
+  box-shadow:
+    0 8px 0 rgba(15, 23, 42, 0.30),
+    0 16px 0 rgba(15, 23, 42, 0.15);
+}
+
+.banner-viewport--9-16 .banner-cta-drag-label {
+  font-size: 22px;
+  font-weight: 700;
+}
+
+.banner-viewport--9-16 .banner-feat-icon {
+  width: 44px;
+  height: 44px;
+  border-radius: 11px;
+  font-size: 22px;
+}
+
+.banner-viewport--9-16 .banner-feat-card {
+  padding: 28px 18px 30px;
+  gap: 14px;
+  border-radius: 16px;
 }
 
 /* ── Download row ────────────────────────────────────────────────────────────── */

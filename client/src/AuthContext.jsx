@@ -10,8 +10,14 @@ export function AuthProvider({ children }) {
   // Restore session from the HttpOnly cookie via the server (no localStorage).
   useEffect(() => {
     let cancelled = false
+    // Without a timeout, a hung proxy/API/DB connection can leave the SPA on "טוען…" forever.
+    const failsafeMs = 12_000
+    const failsafe = window.setTimeout(() => {
+      if (!cancelled) setReady(true)
+    }, failsafeMs)
+
     api
-      .get('/auth/me')
+      .get('/auth/me', { timeout: 10_000 })
       .then((res) => {
         const email = res.data?.email
         if (!cancelled && email) {
@@ -19,13 +25,15 @@ export function AuthProvider({ children }) {
         }
       })
       .catch(() => {
-        /* not logged in or expired cookie */
+        /* not logged in, expired cookie, network error, or timeout */
       })
       .finally(() => {
+        window.clearTimeout(failsafe)
         if (!cancelled) setReady(true)
       })
     return () => {
       cancelled = true
+      window.clearTimeout(failsafe)
     }
   }, [])
 
@@ -36,6 +44,7 @@ export function AuthProvider({ children }) {
 
     await api.post('/auth/login', body, {
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      timeout: 25_000,
     })
 
     const normalizedEmail = email.trim().toLowerCase()
@@ -46,7 +55,7 @@ export function AuthProvider({ children }) {
 
   const logout = useCallback(async () => {
     try {
-      await api.post('/auth/logout')
+      await api.post('/auth/logout', {}, { timeout: 10_000 })
     } catch {
       /* still clear local UI state */
     }

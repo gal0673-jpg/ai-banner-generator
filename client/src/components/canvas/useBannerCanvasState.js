@@ -1,11 +1,12 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react'
 import {
-  applyBannerPersistSlice,
   BANNER_VERTICAL_9_16,
-  buildBannerPersistSlice,
+  buildPersistSliceFromState,
   contrastingTextColor,
+  mergePersistSliceIntoState,
   normalizeBrandHex,
 } from './canvasUtils.js'
+import { useDebouncedCallback } from './useDebouncedCallback.js'
 
 // ─── 9:16 vertical layout metrics (Design 1: top/bottom split) ───────────────
 // Image = exactly 40% of full canvas height (e.g. 1920 × 0.4 = 768px), then 6px divider,
@@ -24,42 +25,146 @@ export function computeDesign1VerticalMetrics(bannerHeight = BANNER_VERTICAL_9_1
 
 /**
  * Default layer boxes for Design 1 @ 9:16 (1080×1920).
- * Stack sits higher with ~180px breathing room above the domain strip so Reels/TikTok player chrome
- * does not cover bullets/CTA (strip starts ≈ y 1850).
+ * Content stack starts where the headline used to be and spans down through the CTA area.
+ * Using a generous height so the drag y-clamp stays permissive (~820px headroom at top).
  */
-export const DESIGN1_DEFAULT_LOGO_VERTICAL = { x: 836, y: 40, width: 200, height: 72 }
-export const DESIGN1_DEFAULT_HEADLINE_VERTICAL = { x: 44, y: 760, width: 992, height: 260 }
-export const DESIGN1_DEFAULT_SUBHEAD_VERTICAL = { x: 44, y: 1040, width: 992, height: 160 }
-export const DESIGN1_DEFAULT_BULLETS_VERTICAL = { x: 44, y: 1220, width: 992, height: 420 }
-export const DESIGN1_DEFAULT_CTA_VERTICAL = { x: 120, y: 1660, width: 840, height: 110 }
+export const DESIGN1_DEFAULT_LOGO_VERTICAL         = { x: 836, y: 40,  width: 200, height: 72   }
+export const DESIGN1_DEFAULT_CONTENT_STACK_VERTICAL = { x: 44,  y: 760, width: 992, height: 1050 }
 
 export const DESIGN1_DEFAULT_BOXES_VERTICAL = {
-  logo: { ...DESIGN1_DEFAULT_LOGO_VERTICAL },
-  headline: { ...DESIGN1_DEFAULT_HEADLINE_VERTICAL },
-  subhead: { ...DESIGN1_DEFAULT_SUBHEAD_VERTICAL },
-  bullets: { ...DESIGN1_DEFAULT_BULLETS_VERTICAL },
-  cta: { ...DESIGN1_DEFAULT_CTA_VERTICAL },
+  logo:         { ...DESIGN1_DEFAULT_LOGO_VERTICAL },
+  contentStack: { ...DESIGN1_DEFAULT_CONTENT_STACK_VERTICAL },
 }
 
 // ─── 9:16 vertical layout (Design 2: full-bleed; same 40% + 6px + text band as D1) ─
 // Strip H = 64 → content ends at y = 1856. textZoneTop = 774.
 
-export const DESIGN2_DEFAULT_LOGO_VERTICAL = { x: 806, y: 52, width: 210, height: 78 }
-export const DESIGN2_DEFAULT_HEADLINE_VERTICAL = { x: 64, y: 690, width: 952, height: 320 }
-export const DESIGN2_DEFAULT_SUBHEAD_VERTICAL = { x: 64, y: 1040, width: 952, height: 180 }
-export const DESIGN2_DEFAULT_BULLETS_VERTICAL = { x: 64, y: 1240, width: 952, height: 420 }
-export const DESIGN2_DEFAULT_CTA_VERTICAL = { x: 144, y: 1680, width: 792, height: 110 }
+export const DESIGN2_DEFAULT_LOGO_VERTICAL         = { x: 806, y: 52,  width: 210, height: 78   }
+export const DESIGN2_DEFAULT_CONTENT_STACK_VERTICAL = { x: 64,  y: 380, width: 952, height: 1100 }
 
 export const DESIGN2_DEFAULT_BOXES_VERTICAL = {
-  logo: { ...DESIGN2_DEFAULT_LOGO_VERTICAL },
-  headline: { ...DESIGN2_DEFAULT_HEADLINE_VERTICAL },
-  subhead: { ...DESIGN2_DEFAULT_SUBHEAD_VERTICAL },
-  bullets: { ...DESIGN2_DEFAULT_BULLETS_VERTICAL },
-  cta: { ...DESIGN2_DEFAULT_CTA_VERTICAL },
+  logo:         { ...DESIGN2_DEFAULT_LOGO_VERTICAL },
+  contentStack: { ...DESIGN2_DEFAULT_CONTENT_STACK_VERTICAL },
 }
 
+// ─── 9:16 vertical layout (Design 3: minimalist card) ────────────────────────
+// Card: x=80 y=180 w=920 h=1560 (brand-colour margins of 80px H / 180px V).
+// Inner padding 72px → content starts at x=152, y=252.
+
+export const DESIGN3_DEFAULT_BOXES_VERTICAL = {
+  logo:         { x: 628, y: 220, width: 220, height: 80   },
+  contentStack: { x: 152, y: 330, width: 776, height: 1300 },
+}
+
+// ─── Action type constants ────────────────────────────────────────────────────
+
 /**
- * Shared editable-banner state: text, layer boxes, typography, debounced persist.
+ * Exported so `BannerWorkspaceContainer` (and tests) can reference action types
+ * without string literals.
+ *
+ * @type {{ UPDATE_TEXT: string, SET_BULLET_AT: string, UPDATE_BOX: string, UPDATE_STYLE: string, RESET: string }}
+ */
+export const ACTIONS = Object.freeze({
+  UPDATE_TEXT:   'UPDATE_TEXT',   // { field: 'headline'|'subhead'|'cta', value: string }
+  SET_BULLET_AT: 'SET_BULLET_AT', // { index: number, value: string }
+  UPDATE_BOX:    'UPDATE_BOX',    // { layer: 'logo'|'contentStack', box: BoxRect }
+  UPDATE_STYLE:  'UPDATE_STYLE',  // { field: styleKey, value: any }
+  RESET:         'RESET',         // { state: BannerCanvasState }
+})
+
+// ─── Reducer ─────────────────────────────────────────────────────────────────
+
+/**
+ * Pure reducer for banner canvas state.
+ * Exported for unit testing — do NOT use directly in components.
+ *
+ * @param {BannerCanvasState} state
+ * @param {{ type: string, [k: string]: any }} action
+ * @returns {BannerCanvasState}
+ */
+export function bannerReducer(state, action) {
+  switch (action.type) {
+    case ACTIONS.UPDATE_TEXT:
+      return { ...state, [action.field]: action.value }
+
+    case ACTIONS.SET_BULLET_AT: {
+      const bullets = [...state.bullets]
+      bullets[action.index] = action.value
+      return { ...state, bullets }
+    }
+
+    case ACTIONS.UPDATE_BOX:
+      return {
+        ...state,
+        boxes: { ...state.boxes, [action.layer]: action.box },
+      }
+
+    case ACTIONS.UPDATE_STYLE:
+      return {
+        ...state,
+        style: { ...state.style, [action.field]: action.value },
+      }
+
+    case ACTIONS.RESET:
+      return action.state
+
+    default:
+      return state
+  }
+}
+
+// ─── Initial state builder ────────────────────────────────────────────────────
+
+/**
+ * Build the initial (or reset) reducer state from props.
+ * Pure function — safe to call inside `useReducer`'s initialiser and `RESET` dispatch.
+ */
+function buildInitialState({ headlineInitial, subheadInitial, bulletPoints, ctaInitial, defaults, brandColor, savedCanvasSlice }) {
+  const { fontSizes: DF, textColors: DC, boxes: DEFAULT_BOXES } = defaults
+
+  const base = {
+    headline: headlineInitial ?? '',
+    subhead:  subheadInitial  ?? '',
+    bullets:  [...(bulletPoints || [])],
+    cta:      ctaInitial      ?? '',
+    boxes: {
+      logo:         { ...DEFAULT_BOXES.logo },
+      contentStack: { ...DEFAULT_BOXES.contentStack },
+    },
+    style: {
+      headlineFs:    DF.headline,
+      headlineAlign: 'right',
+      headlineColor: DC.headline,
+      subheadFs:     DF.subhead,
+      subheadAlign:  'right',
+      subheadColor:  DC.subhead,
+      bulletsFs:     DF.bullets,
+      bulletsAlign:  'right',
+      bulletsColor:  DC.bullets,
+      ctaFs:         DF.cta,
+      ctaAlign:      'center',
+      ctaColor:      contrastingTextColor(normalizeBrandHex(brandColor)),
+    },
+  }
+
+  return savedCanvasSlice && typeof savedCanvasSlice === 'object'
+    ? mergePersistSliceIntoState(base, savedCanvasSlice)
+    : base
+}
+
+// ─── Hook ─────────────────────────────────────────────────────────────────────
+
+/**
+ * Shared editable-banner state manager.
+ *
+ * Replaces 19 individual `useState` hooks with a single `useReducer` for text,
+ * boxes, and typography — enabling atomic resets (1 render instead of 20+).
+ *
+ * Persist scheduling uses `useDebouncedCallback` which:
+ *   - always reads the latest state via a synchronised ref (no stale closures)
+ *   - flushes on unmount automatically
+ *   - passes an `AbortSignal` to `onPersist` so callers can cancel in-flight
+ *     PATCH requests when newer edits supersede them (race-condition safety)
  *
  * @param {object} options
  * @param {string} [options.taskId]
@@ -69,12 +174,9 @@ export const DESIGN2_DEFAULT_BOXES_VERTICAL = {
  * @param {string[]} [options.bulletPoints]
  * @param {string} [options.ctaInitial]
  * @param {object | null} [options.savedCanvasSlice]
- * @param {function} [options.onPersist]
- * @param {string} options.persistDesignKey — canvas_state key (e.g. design1, design1_vertical, design2_vertical)
+ * @param {(payload: object, signal?: AbortSignal) => void} [options.onPersist]
+ * @param {string} options.persistDesignKey
  * @param {object} options.defaults
- * @param {{ headline: number, subhead: number, bullets: number, cta: number }} options.defaults.fontSizes
- * @param {{ headline: string, subhead: string, bullets: string }} options.defaults.textColors
- * @param {{ logo: object, headline: object, subhead: object, bullets: object, cta: object }} options.defaults.boxes
  */
 export function useBannerCanvasState({
   taskId,
@@ -88,242 +190,191 @@ export function useBannerCanvasState({
   persistDesignKey,
   defaults,
 }) {
-  const { fontSizes: DF, textColors: DC, boxes: DEFAULT_BOXES } = defaults
-
-  const [headline, setHeadline] = useState(headlineInitial ?? '')
-  const [subhead, setSubhead] = useState(subheadInitial ?? '')
-  const [bullets, setBullets] = useState(() => [...(bulletPoints || [])])
-  const [cta, setCta] = useState(ctaInitial ?? '')
-
-  const [logoBox, setLogoBox] = useState(() => ({ ...DEFAULT_BOXES.logo }))
-  const [headlineBox, setHeadlineBox] = useState(() => ({ ...DEFAULT_BOXES.headline }))
-  const [subheadBox, setSubheadBox] = useState(() => ({ ...DEFAULT_BOXES.subhead }))
-  const [bulletsBox, setBulletsBox] = useState(() => ({ ...DEFAULT_BOXES.bullets }))
-  const [ctaBox, setCtaBox] = useState(() => ({ ...DEFAULT_BOXES.cta }))
-  const [draggingKey, setDraggingKey] = useState(null)
-
-  const [headlineFs, setHeadlineFs] = useState(DF.headline)
-  const [headlineAlign, setHeadlineAlign] = useState('right')
-  const [subheadFs, setSubheadFs] = useState(DF.subhead)
-  const [subheadAlign, setSubheadAlign] = useState('right')
-  const [bulletsFs, setBulletsFs] = useState(DF.bullets)
-  const [bulletsAlign, setBulletsAlign] = useState('right')
-  const [ctaFs, setCtaFs] = useState(DF.cta)
-  const [ctaAlign, setCtaAlign] = useState('center')
-  const [headlineColor, setHeadlineColor] = useState(DC.headline)
-  const [subheadColor, setSubheadColor] = useState(DC.subhead)
-  const [bulletsColor, setBulletsColor] = useState(DC.bullets)
-  const [ctaColor, setCtaColor] = useState('#ffffff')
-
-  const persistTimerRef = useRef(null)
-  const stateRef = useRef({})
-
-  const flushPersist = useCallback(() => {
-    if (!onPersist || !taskId) return
-    const s = stateRef.current
-    onPersist({
-      headline: s.headline,
-      subhead: s.subhead,
-      cta: s.cta,
-      bullet_points: s.bullets,
-      canvas_state: { v: 1, [persistDesignKey]: buildBannerPersistSlice(s) },
-    })
-  }, [onPersist, taskId, persistDesignKey])
-
-  const flushPersistRef = useRef(flushPersist)
-  flushPersistRef.current = flushPersist
-
-  const schedulePersist = useCallback(() => {
-    if (!onPersist || !taskId) return
-    clearTimeout(persistTimerRef.current)
-    persistTimerRef.current = setTimeout(() => {
-      persistTimerRef.current = null
-      flushPersist()
-    }, 1000)
-  }, [onPersist, taskId, flushPersist])
-
-  useEffect(
-    () => () => {
-      clearTimeout(persistTimerRef.current)
-      persistTimerRef.current = null
-      flushPersistRef.current()
-    },
-    [],
+  // ── Reducer ───────────────────────────────────────────────────────────────
+  const [state, dispatch] = useReducer(
+    bannerReducer,
+    undefined,
+    () => buildInitialState({ headlineInitial, subheadInitial, bulletPoints, ctaInitial, defaults, brandColor, savedCanvasSlice }),
   )
 
-  useEffect(() => {
-    stateRef.current = {
-      headline,
-      subhead,
-      bullets,
-      cta,
-      brand_color: brandColor,
-      logoBox,
-      headlineBox,
-      subheadBox,
-      bulletsBox,
-      ctaBox,
-      headlineFs,
-      headlineAlign,
-      headlineColor,
-      subheadFs,
-      subheadAlign,
-      subheadColor,
-      bulletsFs,
-      bulletsAlign,
-      bulletsColor,
-      ctaFs,
-      ctaAlign,
-      ctaColor,
-    }
-  }, [
-    headline,
-    subhead,
-    bullets,
-    cta,
-    logoBox,
-    headlineBox,
-    subheadBox,
-    bulletsBox,
-    ctaBox,
-    headlineFs,
-    headlineAlign,
-    headlineColor,
-    subheadFs,
-    subheadAlign,
-    subheadColor,
-    bulletsFs,
-    bulletsAlign,
-    bulletsColor,
-    ctaFs,
-    ctaAlign,
-    ctaColor,
-    brandColor,
-  ])
+  // ── Transient UI state (not persisted) ────────────────────────────────────
+  const [draggingKey, setDraggingKey] = useState(null)
 
-  const bulletsKey = bulletPoints ? JSON.stringify(bulletPoints) : ''
+  // ── Always-fresh refs (synchronised inline, no useEffect lag) ────────────
+  // Reading props via refs in the persist callback avoids closure staleness
+  // and eliminates the need to list them as useCallback dependencies.
+  const stateRef            = useRef(state)
+  stateRef.current          = state
+
+  const onPersistRef        = useRef(onPersist)
+  onPersistRef.current      = onPersist
+
+  const taskIdRef           = useRef(taskId)
+  taskIdRef.current         = taskId
+
+  const persistDesignKeyRef = useRef(persistDesignKey)
+  persistDesignKeyRef.current = persistDesignKey
+
+  const brandColorRef       = useRef(brandColor)
+  brandColorRef.current     = brandColor
+
+  // AbortController for the in-flight PATCH request.
+  // Replaced on every flush so stale responses are automatically discarded.
+  const abortControllerRef  = useRef(null)
+
+  // ── Persist callback (stable — reads everything via refs) ────────────────
+  const persistCallback = useCallback(() => {
+    if (!onPersistRef.current || !taskIdRef.current) return
+
+    // Cancel the previous in-flight PATCH before issuing a new one.
+    if (abortControllerRef.current) abortControllerRef.current.abort()
+    const controller = new AbortController()
+    abortControllerRef.current = controller
+
+    const s = stateRef.current
+    onPersistRef.current(
+      {
+        headline:      s.headline,
+        subhead:       s.subhead,
+        cta:           s.cta,
+        bullet_points: s.bullets,
+        canvas_state: {
+          v: 1,
+          [persistDesignKeyRef.current]: buildPersistSliceFromState(s, brandColorRef.current),
+        },
+      },
+      controller.signal,
+    )
+  }, []) // stable — all reads go through refs
+
+  // ── Debounced persist (1 s quiet window) ─────────────────────────────────
+  const { schedule: schedulePersist } = useDebouncedCallback(persistCallback, 1000)
+
+  // ── Combined dispatch + debounce schedule ─────────────────────────────────
+  // Preferred API in BannerWorkspaceContainer — replaces the (setter + schedulePersist) pairs.
+  const dispatchAndPersist = useCallback(
+    (action) => {
+      dispatch(action)
+      schedulePersist()
+    },
+    [schedulePersist],
+  )
+
+  // ── Reset state when the task or its server data changes ──────────────────
+  // Using derived string keys (`bulletsKey`, `savedSliceKey`) rather than the
+  // raw arrays/objects prevents spurious resets when the parent re-renders
+  // with a new array reference but identical content.
+  const bulletsKey    = bulletPoints    ? JSON.stringify(bulletPoints)    : ''
   const savedSliceKey = useMemo(
     () => (savedCanvasSlice && typeof savedCanvasSlice === 'object' ? JSON.stringify(savedCanvasSlice) : ''),
     [savedCanvasSlice],
   )
 
   useEffect(() => {
-    setHeadline(headlineInitial ?? '')
-    setSubhead(subheadInitial ?? '')
-    setBullets([...(bulletPoints || [])])
-    setCta(ctaInitial ?? '')
-    setLogoBox({ ...DEFAULT_BOXES.logo })
-    setHeadlineBox({ ...DEFAULT_BOXES.headline })
-    setSubheadBox({ ...DEFAULT_BOXES.subhead })
-    setBulletsBox({ ...DEFAULT_BOXES.bullets })
-    setCtaBox({ ...DEFAULT_BOXES.cta })
+    dispatch({
+      type: ACTIONS.RESET,
+      state: buildInitialState({
+        headlineInitial,
+        subheadInitial,
+        bulletPoints,
+        ctaInitial,
+        defaults,
+        brandColor,
+        savedCanvasSlice,
+      }),
+    })
     setDraggingKey(null)
-    setHeadlineFs(DF.headline)
-    setHeadlineAlign('right')
-    setSubheadFs(DF.subhead)
-    setSubheadAlign('right')
-    setBulletsFs(DF.bullets)
-    setBulletsAlign('right')
-    setCtaFs(DF.cta)
-    setCtaAlign('center')
-    setHeadlineColor(DC.headline)
-    setSubheadColor(DC.subhead)
-    setBulletsColor(DC.bullets)
-    const bg = normalizeBrandHex(brandColor)
-    setCtaColor(contrastingTextColor(bg))
-    if (savedCanvasSlice && typeof savedCanvasSlice === 'object') {
-      applyBannerPersistSlice(savedCanvasSlice, {
-        setLogoBox,
-        setHeadlineBox,
-        setSubheadBox,
-        setBulletsBox,
-        setCtaBox,
-        setHeadlineFs,
-        setHeadlineAlign,
-        setHeadlineColor,
-        setSubheadFs,
-        setSubheadAlign,
-        setSubheadColor,
-        setBulletsFs,
-        setBulletsAlign,
-        setBulletsColor,
-        setCtaFs,
-        setCtaAlign,
-        setCtaColor,
-      })
-    }
   }, [
     taskId,
     bulletsKey,
-    bulletPoints,
     savedSliceKey,
     headlineInitial,
     subheadInitial,
     ctaInitial,
     brandColor,
-    savedCanvasSlice,
-    persistDesignKey,
-    defaults,
+    persistDesignKey, // changes with aspect-ratio switch (e.g. 'design2' → 'design2_vertical')
+    defaults,         // new box defaults when aspect-ratio changes
+    // bulletPoints / savedCanvasSlice are intentionally excluded — their
+    // serialised keys above are the actual change detectors.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   ])
 
-  const setBulletAt = useCallback(
-    (index, value) => {
-      setBullets((prev) => {
-        const next = [...prev]
-        next[index] = value
-        return next
-      })
-      schedulePersist()
-    },
-    [schedulePersist],
+  // ── Stable box setters ────────────────────────────────────────────────────
+  // BannerLayer / canvasUtils call setBox with a functional-updater:
+  //   setLogoBox((prev) => ({ ...prev, x: newX, y: newY }))
+  // These wrappers resolve the updater synchronously via stateRef so the
+  // dispatch can carry a plain value (reducers must not hold functions).
+  const makeBoxSetter = useCallback(
+    (layer) => (updaterOrValue) =>
+      dispatch({
+        type: ACTIONS.UPDATE_BOX,
+        layer,
+        box: typeof updaterOrValue === 'function'
+          ? updaterOrValue(stateRef.current.boxes[layer])
+          : updaterOrValue,
+      }),
+    [],
   )
 
+  // Memoised once — stable references for the lifetime of the hook instance.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const setLogoBox          = useMemo(() => makeBoxSetter('logo'),         [makeBoxSetter])
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const setContentStackBox  = useMemo(() => makeBoxSetter('contentStack'), [makeBoxSetter])
+
+  // ── setBulletAt convenience ───────────────────────────────────────────────
+  const setBulletAt = useCallback(
+    (index, value) => dispatchAndPersist({ type: ACTIONS.SET_BULLET_AT, index, value }),
+    [dispatchAndPersist],
+  )
+
+  // ── Return ────────────────────────────────────────────────────────────────
   return {
-    headline,
-    setHeadline,
-    subhead,
-    setSubhead,
-    bullets,
-    setBullets,
-    cta,
-    setCta,
-    logoBox,
-    setLogoBox,
-    headlineBox,
-    setHeadlineBox,
-    subheadBox,
-    setSubheadBox,
-    bulletsBox,
-    setBulletsBox,
-    ctaBox,
-    setCtaBox,
+    // ── Text reads
+    headline: state.headline,
+    subhead:  state.subhead,
+    bullets:  state.bullets,
+    cta:      state.cta,
+
+    // ── Box reads
+    logoBox:         state.boxes.logo,
+    contentStackBox: state.boxes.contentStack,
+
+    // ── Style reads
+    headlineFs:    state.style.headlineFs,
+    headlineAlign: state.style.headlineAlign,
+    headlineColor: state.style.headlineColor,
+    subheadFs:     state.style.subheadFs,
+    subheadAlign:  state.style.subheadAlign,
+    subheadColor:  state.style.subheadColor,
+    bulletsFs:     state.style.bulletsFs,
+    bulletsAlign:  state.style.bulletsAlign,
+    bulletsColor:  state.style.bulletsColor,
+    ctaFs:         state.style.ctaFs,
+    ctaAlign:      state.style.ctaAlign,
+    ctaColor:      state.style.ctaColor,
+
+    // ── Transient
     draggingKey,
     setDraggingKey,
-    headlineFs,
-    setHeadlineFs,
-    headlineAlign,
-    setHeadlineAlign,
-    headlineColor,
-    setHeadlineColor,
-    subheadFs,
-    setSubheadFs,
-    subheadAlign,
-    setSubheadAlign,
-    subheadColor,
-    setSubheadColor,
-    bulletsFs,
-    setBulletsFs,
-    bulletsAlign,
-    setBulletsAlign,
-    bulletsColor,
-    setBulletsColor,
-    ctaFs,
-    setCtaFs,
-    ctaAlign,
-    setCtaAlign,
-    ctaColor,
-    setCtaColor,
+
+    // ── Action dispatch
+    dispatch,
+
+    /**
+     * Dispatch an action AND schedule a debounced persist in one call.
+     * Use this instead of the legacy `setter(v); schedulePersist()` pattern.
+     */
+    dispatchAndPersist,
+
+    // ── Stable box setters (support functional-updater form)
+    setLogoBox,
+    setContentStackBox,
+
+    // ── Persist
     schedulePersist,
+
+    // ── Bullet convenience
     setBulletAt,
   }
 }

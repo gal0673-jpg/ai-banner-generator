@@ -4,6 +4,7 @@ import api, { API_BASE_URL, API_BASE_URL_DISPLAY } from './api.js'
 import { useAuth } from './AuthContext.jsx'
 import BannerCanvas from './BannerCanvas.jsx'
 import BannerCanvas2 from './BannerCanvas2.jsx'
+import BannerCanvas3 from './BannerCanvas3.jsx'
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
 
@@ -115,9 +116,13 @@ export default function BannerWorkspace() {
     if (!statusPayload) return null
     let u
     if (aspectRatio === '9:16') {
-      u = activeDesign === 1 ? statusPayload.video_url_1_vertical : statusPayload.video_url_2_vertical
+      if (activeDesign === 3)      u = statusPayload.video_url_3_vertical
+      else if (activeDesign === 2) u = statusPayload.video_url_2_vertical
+      else                         u = statusPayload.video_url_1_vertical
     } else {
-      u = activeDesign === 1 ? statusPayload.video_url_1 : statusPayload.video_url_2
+      if (activeDesign === 3)      u = statusPayload.video_url_3
+      else if (activeDesign === 2) u = statusPayload.video_url_2
+      else                         u = statusPayload.video_url_1
     }
     return typeof u === 'string' && u.trim() ? u.trim() : null
   }, [statusPayload, activeDesign, aspectRatio])
@@ -241,18 +246,20 @@ export default function BannerWorkspace() {
 
   const handleLogout = () => { logout(); navigate('/login', { replace: true }) }
 
-  const handleTaskPersist = useCallback(async (partial) => {
+  const handleTaskPersist = useCallback(async (partial, signal) => {
     if (!taskId || !partial) return
     try {
       const body = {}
-      if (partial.headline !== undefined)     body.headline     = partial.headline
-      if (partial.subhead !== undefined)      body.subhead      = partial.subhead
-      if (partial.cta !== undefined)          body.cta          = partial.cta
+      if (partial.headline !== undefined)      body.headline      = partial.headline
+      if (partial.subhead !== undefined)       body.subhead       = partial.subhead
+      if (partial.cta !== undefined)           body.cta           = partial.cta
       if (partial.bullet_points !== undefined) body.bullet_points = partial.bullet_points
-      if (partial.video_hook !== undefined)   body.video_hook   = partial.video_hook
-      if (partial.canvas_state !== undefined) body.canvas_state = partial.canvas_state
+      if (partial.video_hook !== undefined)    body.video_hook    = partial.video_hook
+      if (partial.canvas_state !== undefined)  body.canvas_state  = partial.canvas_state
       if (Object.keys(body).length === 0) return
-      const { data } = await api.patch(`/tasks/${taskId}`, body)
+      // `signal` is an AbortSignal provided by useBannerCanvasState to cancel
+      // in-flight PATCH requests when a newer edit supersedes them.
+      const { data } = await api.patch(`/tasks/${taskId}`, body, { signal })
       setStatusPayload((p) =>
         p
           ? {
@@ -267,6 +274,9 @@ export default function BannerWorkspace() {
           : p,
       )
     } catch (err) {
+      // Axios throws CanceledError (code ERR_CANCELED) when the AbortSignal fires.
+      // This is expected and not an error worth logging.
+      if (err?.code === 'ERR_CANCELED' || err?.name === 'CanceledError' || err?.name === 'AbortError') return
       console.error('Auto-save failed', err)
     }
   }, [taskId])
@@ -653,6 +663,7 @@ export default function BannerWorkspace() {
                         {[
                           { id: 1, label: 'עיצוב 1', sub: 'Split Panel' },
                           { id: 2, label: 'עיצוב 2', sub: 'Immersive' },
+                          { id: 3, label: 'עיצוב 3', sub: 'Minimal Card' },
                         ].map(({ id, label, sub }) => (
                           <button
                             key={id}
@@ -770,7 +781,7 @@ export default function BannerWorkspace() {
 
                     {/* Design 1 */}
                     {activeDesign === 1 && (
-                      <div className="overflow-hidden rounded-2xl border border-slate-200 dark:border-slate-700 shadow-2xl">
+                      <div className="rounded-2xl border border-slate-200 dark:border-slate-700 shadow-2xl">
                         <BannerCanvas
                           key={`${taskId}-d1-${aspectRatio}`}
                           apiBase={API_BASE_URL}
@@ -799,7 +810,7 @@ export default function BannerWorkspace() {
 
                     {/* Design 2 */}
                     {activeDesign === 2 && (
-                      <div className="overflow-hidden rounded-2xl border border-slate-800 shadow-2xl">
+                      <div className="rounded-2xl border border-slate-800 shadow-2xl">
                         <BannerCanvas2
                           key={`${taskId}-d2-${aspectRatio}`}
                           apiBase={API_BASE_URL}
@@ -816,6 +827,35 @@ export default function BannerWorkspace() {
                             aspectRatio === '9:16'
                               ? (statusPayload.canvas_state?.design2_vertical ?? null)
                               : (statusPayload.canvas_state?.design2 ?? null)
+                          }
+                          onPersist={handleTaskPersist}
+                          onRenderVideo={handleRenderVideo}
+                          isRenderingVideo={videoRendering}
+                          videoRenderingHint={VIDEO_RENDERING_HINT}
+                          aspectRatio={aspectRatio}
+                        />
+                      </div>
+                    )}
+
+                    {/* Design 3 */}
+                    {activeDesign === 3 && (
+                      <div className="rounded-2xl border border-slate-200 shadow-2xl">
+                        <BannerCanvas3
+                          key={`${taskId}-d3-${aspectRatio}`}
+                          apiBase={API_BASE_URL}
+                          taskId={taskId}
+                          backgroundUrl={statusPayload.background_url}
+                          logoUrl={statusPayload.logo_url}
+                          headline={statusPayload.headline}
+                          subhead={statusPayload.subhead}
+                          bulletPoints={statusPayload.bullet_points}
+                          cta={statusPayload.cta}
+                          brandColor={statusPayload.brand_color}
+                          siteUrl={url}
+                          savedCanvasSlice={
+                            aspectRatio === '9:16'
+                              ? (statusPayload.canvas_state?.design3_vertical ?? null)
+                              : (statusPayload.canvas_state?.design3 ?? null)
                           }
                           onPersist={handleTaskPersist}
                           onRenderVideo={handleRenderVideo}

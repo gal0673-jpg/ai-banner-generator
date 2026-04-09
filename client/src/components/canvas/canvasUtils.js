@@ -87,12 +87,17 @@ export function waitForImagesInNode(root) {
 
 /**
  * Map layer DOM position to design pixel space using the canvas root rect.
+ *
  * @param {HTMLElement | null} canvasEl
  * @param {HTMLElement | null} layerEl
  * @param {function} setBox - React setState for { x, y, width, height }
  * @param {{ width: number, height: number }} designSize - logical canvas size (e.g. BANNER_SQUARE_1_1)
+ * @param {number} [viewportScale=1] - CSS transform scale applied to the canvas element.
+ *   Used to convert the layer element's rendered offsetHeight (screen px) to canvas px for
+ *   accurate y-clamping, especially important for autoHeight layers whose box.height may
+ *   be a stale default rather than the real rendered height.
  */
-export function commitPositionInBanner(canvasEl, layerEl, setBox, designSize) {
+export function commitPositionInBanner(canvasEl, layerEl, setBox, designSize, viewportScale = 1) {
   if (!canvasEl || !layerEl) return
   const w = designSize?.width ?? BANNER_SQUARE_1_1.width
   const h = designSize?.height ?? BANNER_SQUARE_1_1.height
@@ -101,15 +106,20 @@ export function commitPositionInBanner(canvasEl, layerEl, setBox, designSize) {
   if (cr.width <= 0 || cr.height <= 0) return
   const nx = ((lr.left - cr.left) / cr.width) * w
   const ny = ((lr.top - cr.top) / cr.height) * h
+  // Use the layer's actual rendered height (screen px ÷ scale → canvas px) for clamping.
+  // This is more accurate than b.height which can be stale for autoHeight layers.
+  const actualH = viewportScale > 0 ? layerEl.offsetHeight / viewportScale : 0
   setBox((b) => ({
     ...b,
     x: clamp(Math.round(nx), 0, Math.max(0, w - b.width)),
-    y: clamp(Math.round(ny), 0, Math.max(0, h - b.height)),
+    y: clamp(Math.round(ny), 0, Math.max(0, h - (actualH || b.height))),
   }))
 }
 
 /**
- * Persisted slice shape (shared by design1 / design2 — only the JSON key differs).
+ * Build the persisted slice from the LEGACY flat state shape.
+ * Kept for backward-compatibility — prefer `buildPersistSliceFromState` for
+ * the reducer-based state shape.
  */
 export function buildBannerPersistSlice(s) {
   return {
@@ -136,6 +146,82 @@ export function buildBannerPersistSlice(s) {
     ctaAlign: s.ctaAlign,
     ctaColor: s.ctaColor,
   }
+}
+
+/**
+ * Build the persisted slice from the REDUCER state shape
+ * `{ headline, subhead, cta, bullets, boxes: { logo, ... }, style: { headlineFs, ... } }`.
+ *
+ * @param {object} state  — reducer state from `useBannerCanvasState`
+ * @param {string} brandColor — current brand colour prop (stored for round-trip)
+ */
+export function buildPersistSliceFromState(state, brandColor) {
+  return {
+    headline:        state.headline,
+    subhead:         state.subhead,
+    cta:             state.cta,
+    bullets:         state.bullets,
+    brand_color:     brandColor ?? '',
+    logoBox:         state.boxes.logo,
+    contentStackBox: state.boxes.contentStack,
+    headlineFs:      state.style.headlineFs,
+    headlineAlign:   state.style.headlineAlign,
+    headlineColor:   state.style.headlineColor,
+    subheadFs:       state.style.subheadFs,
+    subheadAlign:    state.style.subheadAlign,
+    subheadColor:    state.style.subheadColor,
+    bulletsFs:       state.style.bulletsFs,
+    bulletsAlign:    state.style.bulletsAlign,
+    bulletsColor:    state.style.bulletsColor,
+    ctaFs:           state.style.ctaFs,
+    ctaAlign:        state.style.ctaAlign,
+    ctaColor:        state.style.ctaColor,
+  }
+}
+
+/**
+ * Merge a persisted slice back into a reducer state object, returning a new
+ * state value.  Replaces `applyBannerPersistSlice` (which required individual
+ * setters) when the reducer pattern is used.
+ *
+ * @param {object} state  — current reducer state (will NOT be mutated)
+ * @param {object} slice  — persisted slice (may be null / undefined)
+ * @returns {object} new state with slice values applied
+ */
+export function mergePersistSliceIntoState(state, slice) {
+  if (!slice || typeof slice !== 'object') return state
+  const boxes = { ...state.boxes }
+  const style = { ...state.style }
+
+  if (slice.logoBox) boxes.logo = { ...slice.logoBox }
+
+  // New format: single contentStackBox
+  if (slice.contentStackBox) {
+    boxes.contentStack = { ...slice.contentStackBox }
+  } else if (slice.headlineBox) {
+    // Backward-compat: old saved slices stored individual boxes.
+    // Derive contentStack position from the headline box (they shared x/y/width).
+    boxes.contentStack = {
+      ...boxes.contentStack,
+      x:     slice.headlineBox.x,
+      y:     slice.headlineBox.y,
+      width: slice.headlineBox.width,
+    }
+  }
+
+  if (typeof slice.headlineFs === 'number') style.headlineFs    = slice.headlineFs
+  if (slice.headlineAlign)                  style.headlineAlign = slice.headlineAlign
+  if (slice.headlineColor)                  style.headlineColor = slice.headlineColor
+  if (typeof slice.subheadFs === 'number')  style.subheadFs     = slice.subheadFs
+  if (slice.subheadAlign)                   style.subheadAlign  = slice.subheadAlign
+  if (slice.subheadColor)                   style.subheadColor  = slice.subheadColor
+  if (typeof slice.bulletsFs === 'number')  style.bulletsFs     = slice.bulletsFs
+  if (slice.bulletsAlign)                   style.bulletsAlign  = slice.bulletsAlign
+  if (slice.bulletsColor)                   style.bulletsColor  = slice.bulletsColor
+  if (typeof slice.ctaFs === 'number')      style.ctaFs         = slice.ctaFs
+  if (slice.ctaAlign)                       style.ctaAlign      = slice.ctaAlign
+  if (slice.ctaColor)                       style.ctaColor      = slice.ctaColor
+  return { ...state, boxes, style }
 }
 
 export function applyBannerPersistSlice(slice, setters) {

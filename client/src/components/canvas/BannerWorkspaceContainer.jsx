@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useId, useRef, useState } from 'react'
-import { useDragControls } from 'framer-motion'
 import BannerLayer from './BannerLayer.jsx'
 import EditableText from './EditableText.jsx'
 import TextControls from './TextControls.jsx'
@@ -12,7 +11,7 @@ import {
   hexToRgb,
   normalizeBrandHex,
 } from './canvasUtils.js'
-import { useBannerCanvasState } from './useBannerCanvasState.js'
+import { ACTIONS, useBannerCanvasState } from './useBannerCanvasState.js'
 
 /**
  * @typedef {object} BannerLayerUiConfig
@@ -93,8 +92,6 @@ export default function BannerWorkspaceContainer({
     ? `${surfaceIdPrefix}-${taskId}`
     : `${surfaceIdPrefix}-${reactSurfaceSuffix}`
 
-  const ctaDragControls = useDragControls()
-
   const [scale, setScale] = useState(1)
   const [exporting, setExporting] = useState(false)
   const [downloadError, setDownloadError] = useState(null)
@@ -113,49 +110,23 @@ export default function BannerWorkspaceContainer({
   })
 
   const {
+    // Text
     headline,
-    setHeadline,
     subhead,
-    setSubhead,
     bullets,
     cta,
-    setCta,
-    logoBox,
-    setLogoBox,
-    headlineBox,
-    setHeadlineBox,
-    subheadBox,
-    setSubheadBox,
-    bulletsBox,
-    setBulletsBox,
-    ctaBox,
-    setCtaBox,
-    draggingKey,
-    setDraggingKey,
-    headlineFs,
-    setHeadlineFs,
-    headlineAlign,
-    setHeadlineAlign,
-    headlineColor,
-    setHeadlineColor,
-    subheadFs,
-    setSubheadFs,
-    subheadAlign,
-    setSubheadAlign,
-    subheadColor,
-    setSubheadColor,
-    bulletsFs,
-    setBulletsFs,
-    bulletsAlign,
-    setBulletsAlign,
-    bulletsColor,
-    setBulletsColor,
-    ctaFs,
-    setCtaFs,
-    ctaAlign,
-    setCtaAlign,
-    ctaColor,
-    setCtaColor,
+    // Boxes (stable setters — support functional-updater form)
+    logoBox,          setLogoBox,
+    contentStackBox,  setContentStackBox,
+    // Style reads
+    headlineFs,    headlineAlign,    headlineColor,
+    subheadFs,     subheadAlign,     subheadColor,
+    bulletsFs,     bulletsAlign,     bulletsColor,
+    ctaFs,         ctaAlign,         ctaColor,
+    // Dragging
+    draggingKey,   setDraggingKey,
+    // Actions
+    dispatchAndPersist,
     schedulePersist,
     setBulletAt,
   } = canvasState
@@ -174,11 +145,13 @@ export default function BannerWorkspaceContainer({
     if (!el) return
     const update = () => {
       const w = el.clientWidth
-      const h = el.clientHeight
-      if (w <= 0 || h <= 0) return
-      const sx = w / BANNER_W
-      const sy = h / BANNER_H
-      setScale(Math.min(sx, sy))
+      if (w <= 0) return
+      // Drive scale from the width axis only.  The viewport CSS enforces the correct
+      // aspect-ratio, so BANNER_H * (w / BANNER_W) always equals the viewport height.
+      // Reading clientHeight as well introduces a race when aspect-ratio + max-height
+      // interact: clientHeight can be clamped while clientWidth is not, causing the
+      // canvas visual height to exceed the outer viewport and clip the bottom strip.
+      setScale(w / BANNER_W)
     }
     const ro = new ResizeObserver(() => {
       requestAnimationFrame(update)
@@ -215,8 +188,6 @@ export default function BannerWorkspaceContainer({
       draggingKey === id ? ` ${layerUi.layerBase}--dragging` : ''
     }`
 
-  const minHeadlineH = layerUi.minHeadlineHeight ?? 56
-
   const workspace = {
     BANNER_W,
     BANNER_H,
@@ -245,16 +216,11 @@ export default function BannerWorkspaceContainer({
         <div
           className={viewportInnerClassName}
           style={{
-            // Exact scaled box; min 0 stops flex min-height:auto from using the canvas
-            // intrinsic height and blowing past the viewport (clips bottom strip / CTA).
-            width: BANNER_W * scale,
-            height: BANNER_H * scale,
-            minWidth: 0,
-            minHeight: 0,
+            // CSS provides `position: absolute; inset: 0` so this inner div fills the
+            // outer viewport exactly.  Do NOT set an explicit width/height or override
+            // position here — that would break the inset-0 sizing and re-introduce the
+            // height-mismatch clipping bug on 9:16 layouts.
             overflow: 'hidden',
-            flexShrink: 0,
-            boxSizing: 'border-box',
-            position: 'relative',
           }}
         >
           <div
@@ -298,214 +264,145 @@ export default function BannerWorkspaceContainer({
               />
             </BannerLayer>
 
+            {/*
+             * ── Content stack — single draggable/resizable layer for all text ──────────
+             * Headline, subhead, bullets, and CTA live in a flex-col so long content
+             * never overlaps.  Each section owns its own TextControls (shown on
+             * section-hover via CSS) so typography for each element is still editable.
+             * Horizontal resize is allowed; vertical size is driven by content (autoHeight).
+             */}
             <BannerLayer
               canvasRef={captureRef}
-              box={headlineBox}
-              setBox={setHeadlineBox}
-              className={`${layerClass('headline')} ${layerUi.layerTextMod}`}
-              layerKey="headline"
+              box={contentStackBox}
+              setBox={setContentStackBox}
+              className={layerClass('stack')}
+              layerKey="stack"
               setDraggingKey={setDraggingKey}
               viewportScale={scale}
-              minWidth={280}
-              minHeight={minHeadlineH}
+              minWidth={200}
+              autoHeight
               onUserCommit={schedulePersist}
               designSize={designSize}
               {...handleProps}
             >
-              <TextControls
-                fontSize={headlineFs}
-                onFontSize={(v) => {
-                  setHeadlineFs(v)
-                  schedulePersist()
-                }}
-                align={headlineAlign}
-                onAlign={(v) => {
-                  setHeadlineAlign(v)
-                  schedulePersist()
-                }}
-                color={headlineColor}
-                onColor={(v) => {
-                  setHeadlineColor(v)
-                  schedulePersist()
-                }}
-              />
-              <div className={layerUi.headlineTextShellClass} dir="rtl">
-                <EditableText
-                  className={layerUi.headlineEditableClass}
-                  style={{ fontSize: headlineFs, textAlign: headlineAlign, color: headlineColor }}
-                  text={headline}
-                  resetKey={taskId}
-                  onTextChange={(v) => {
-                    setHeadline(v)
-                    schedulePersist()
-                  }}
-                />
-              </div>
-            </BannerLayer>
-
-            <BannerLayer
-              canvasRef={captureRef}
-              box={subheadBox}
-              setBox={setSubheadBox}
-              className={`${layerClass('subhead')} ${layerUi.layerTextMod}`}
-              layerKey="subhead"
-              setDraggingKey={setDraggingKey}
-              viewportScale={scale}
-              minWidth={280}
-              minHeight={48}
-              onUserCommit={schedulePersist}
-              designSize={designSize}
-              {...handleProps}
-            >
-              <TextControls
-                fontSize={subheadFs}
-                onFontSize={(v) => {
-                  setSubheadFs(v)
-                  schedulePersist()
-                }}
-                align={subheadAlign}
-                onAlign={(v) => {
-                  setSubheadAlign(v)
-                  schedulePersist()
-                }}
-                color={subheadColor}
-                onColor={(v) => {
-                  setSubheadColor(v)
-                  schedulePersist()
-                }}
-              />
-              <div className={layerUi.subheadTextShellClass} dir="rtl">
-                <EditableText
-                  className={layerUi.subheadEditableClass}
-                  style={{ fontSize: subheadFs, textAlign: subheadAlign, color: subheadColor }}
-                  text={subhead}
-                  resetKey={taskId}
-                  onTextChange={(v) => {
-                    setSubhead(v)
-                    schedulePersist()
-                  }}
-                />
-              </div>
-            </BannerLayer>
-
-            <BannerLayer
-              canvasRef={captureRef}
-              box={bulletsBox}
-              setBox={setBulletsBox}
-              className={`${layerClass('bullets')} ${layerUi.layerTextMod}`}
-              layerKey="bullets"
-              setDraggingKey={setDraggingKey}
-              viewportScale={scale}
-              minWidth={280}
-              minHeight={200}
-              onUserCommit={schedulePersist}
-              designSize={designSize}
-              {...handleProps}
-            >
-              <TextControls
-                fontSize={bulletsFs}
-                onFontSize={(v) => {
-                  setBulletsFs(v)
-                  schedulePersist()
-                }}
-                align={bulletsAlign}
-                onAlign={(v) => {
-                  setBulletsAlign(v)
-                  schedulePersist()
-                }}
-                color={bulletsColor}
-                onColor={(v) => {
-                  setBulletsColor(v)
-                  schedulePersist()
-                }}
-              />
               <div
-                className={`${layerUi.featGridBase}${isVertical ? ` ${layerUi.featGridVertical}` : ''}`}
-                dir="rtl"
+                style={{
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: '20px',
+                  width: '100%',
+                }}
               >
-                {bullets.map((b, i) => (
-                  <div
-                    key={`${taskId}-b-${i}`}
-                    className={layerUi.featItemClass}
-                    style={{ borderTopColor: ctaBgHex }}
-                  >
-                    <div
-                      className={layerUi.featIconClass}
-                      style={{ backgroundColor: ctaBgHex, color: ctaFgHex }}
-                    >
-                      ✓
-                    </div>
+                {/* ── Headline ───────────────────────────────────────────────────── */}
+                <div className="banner-content-section">
+                  <TextControls
+                    fontSize={headlineFs}
+                    onFontSize={(v) => dispatchAndPersist({ type: ACTIONS.UPDATE_STYLE, field: 'headlineFs', value: v })}
+                    align={headlineAlign}
+                    onAlign={(v) => dispatchAndPersist({ type: ACTIONS.UPDATE_STYLE, field: 'headlineAlign', value: v })}
+                    color={headlineColor}
+                    onColor={(v) => dispatchAndPersist({ type: ACTIONS.UPDATE_STYLE, field: 'headlineColor', value: v })}
+                    viewportScale={scale}
+                  />
+                  <div className={layerUi.headlineTextShellClass} dir="rtl" style={{ height: 'auto' }}>
                     <EditableText
-                      as="span"
-                      className={layerUi.featTextClass}
-                      style={{ fontSize: bulletsFs, textAlign: bulletsAlign, color: bulletsColor }}
-                      text={b}
-                      resetKey={`${taskId}-${i}`}
-                      onTextChange={(t) => setBulletAt(i, t)}
+                      className={layerUi.headlineEditableClass}
+                      style={{ fontSize: headlineFs, textAlign: headlineAlign, color: headlineColor }}
+                      text={headline}
+                      resetKey={taskId}
+                      onTextChange={(v) => dispatchAndPersist({ type: ACTIONS.UPDATE_TEXT, field: 'headline', value: v })}
                     />
                   </div>
-                ))}
-              </div>
-            </BannerLayer>
-
-            <BannerLayer
-              canvasRef={captureRef}
-              box={ctaBox}
-              setBox={setCtaBox}
-              className={`${layerClass('cta')} ${layerUi.layerCtaMod}`}
-              layerKey="cta"
-              setDraggingKey={setDraggingKey}
-              viewportScale={scale}
-              minWidth={160}
-              minHeight={52}
-              dragHandleOnly
-              dragControls={ctaDragControls}
-              onUserCommit={schedulePersist}
-              designSize={designSize}
-              {...handleProps}
-            >
-              <TextControls
-                fontSize={ctaFs}
-                onFontSize={(v) => {
-                  setCtaFs(v)
-                  schedulePersist()
-                }}
-                align={ctaAlign}
-                onAlign={(v) => {
-                  setCtaAlign(v)
-                  schedulePersist()
-                }}
-                color={ctaColor}
-                onColor={(v) => {
-                  setCtaColor(v)
-                  schedulePersist()
-                }}
-              />
-              <div className={layerUi.ctaTextShellClass}>
-                <div
-                  className={layerUi.ctaDragHandleClass}
-                  title="גרור להזזה"
-                  onPointerDown={(e) => ctaDragControls.start(e)}
-                >
-                  <span className={layerUi.ctaDragGripClass} aria-hidden />
-                  <span className={layerUi.ctaDragLabelClass}>גרור</span>
                 </div>
-                <div className="mt-1" style={{ textAlign: ctaAlign }} dir="rtl">
-                  <EditableText
-                    className={layerUi.ctaEditableClass}
-                    text={cta}
-                    resetKey={taskId}
-                    onTextChange={(v) => {
-                      setCta(v)
-                      schedulePersist()
-                    }}
-                    style={{
-                      fontSize: ctaFs,
-                      backgroundColor: ctaBgHex,
-                      color: ctaColor,
-                      boxShadow: layerUi.getCtaBoxShadow({ ctaBgHex, brandR, brandG, brandB }),
-                    }}
+
+                {/* ── Subhead ────────────────────────────────────────────────────── */}
+                <div className="banner-content-section">
+                  <TextControls
+                    fontSize={subheadFs}
+                    onFontSize={(v) => dispatchAndPersist({ type: ACTIONS.UPDATE_STYLE, field: 'subheadFs', value: v })}
+                    align={subheadAlign}
+                    onAlign={(v) => dispatchAndPersist({ type: ACTIONS.UPDATE_STYLE, field: 'subheadAlign', value: v })}
+                    color={subheadColor}
+                    onColor={(v) => dispatchAndPersist({ type: ACTIONS.UPDATE_STYLE, field: 'subheadColor', value: v })}
+                    viewportScale={scale}
                   />
+                  <div className={layerUi.subheadTextShellClass} dir="rtl" style={{ height: 'auto' }}>
+                    <EditableText
+                      className={layerUi.subheadEditableClass}
+                      style={{ fontSize: subheadFs, textAlign: subheadAlign, color: subheadColor }}
+                      text={subhead}
+                      resetKey={taskId}
+                      onTextChange={(v) => dispatchAndPersist({ type: ACTIONS.UPDATE_TEXT, field: 'subhead', value: v })}
+                    />
+                  </div>
+                </div>
+
+                {/* ── Bullets / feature cards ────────────────────────────────────── */}
+                <div className="banner-content-section">
+                  <TextControls
+                    fontSize={bulletsFs}
+                    onFontSize={(v) => dispatchAndPersist({ type: ACTIONS.UPDATE_STYLE, field: 'bulletsFs', value: v })}
+                    align={bulletsAlign}
+                    onAlign={(v) => dispatchAndPersist({ type: ACTIONS.UPDATE_STYLE, field: 'bulletsAlign', value: v })}
+                    color={bulletsColor}
+                    onColor={(v) => dispatchAndPersist({ type: ACTIONS.UPDATE_STYLE, field: 'bulletsColor', value: v })}
+                    viewportScale={scale}
+                  />
+                  <div
+                    className={`${layerUi.featGridBase}${isVertical ? ` ${layerUi.featGridVertical}` : ''}`}
+                    dir="rtl"
+                    style={{ height: 'auto' }}
+                  >
+                    {bullets.map((b, i) => (
+                      <div
+                        key={`${taskId}-b-${i}`}
+                        className={layerUi.featItemClass}
+                        style={{ borderTopColor: ctaBgHex }}
+                      >
+                        <div
+                          className={layerUi.featIconClass}
+                          style={{ backgroundColor: ctaBgHex, color: ctaFgHex }}
+                        >
+                          ✓
+                        </div>
+                        <EditableText
+                          as="span"
+                          className={layerUi.featTextClass}
+                          style={{ fontSize: bulletsFs, textAlign: bulletsAlign, color: bulletsColor }}
+                          text={b}
+                          resetKey={`${taskId}-${i}`}
+                          onTextChange={(t) => setBulletAt(i, t)}
+                        />
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                {/* ── CTA ───────────────────────────────────────────────────────── */}
+                <div className="banner-content-section">
+                  <TextControls
+                    fontSize={ctaFs}
+                    onFontSize={(v) => dispatchAndPersist({ type: ACTIONS.UPDATE_STYLE, field: 'ctaFs', value: v })}
+                    align={ctaAlign}
+                    onAlign={(v) => dispatchAndPersist({ type: ACTIONS.UPDATE_STYLE, field: 'ctaAlign', value: v })}
+                    color={ctaColor}
+                    onColor={(v) => dispatchAndPersist({ type: ACTIONS.UPDATE_STYLE, field: 'ctaColor', value: v })}
+                    viewportScale={scale}
+                  />
+                  <div style={{ textAlign: ctaAlign }} dir="rtl">
+                    <EditableText
+                      className={layerUi.ctaEditableClass}
+                      text={cta}
+                      resetKey={taskId}
+                      onTextChange={(v) => dispatchAndPersist({ type: ACTIONS.UPDATE_TEXT, field: 'cta', value: v })}
+                      style={{
+                        fontSize: ctaFs,
+                        backgroundColor: ctaBgHex,
+                        color: ctaColor,
+                        boxShadow: layerUi.getCtaBoxShadow({ ctaBgHex, brandR, brandG, brandB }),
+                      }}
+                    />
+                  </div>
                 </div>
               </div>
             </BannerLayer>

@@ -13,7 +13,7 @@
     {
       "label": "Run FastAPI",
       "type": "shell",
-      "command": "python -m uvicorn api:app --reload --host 127.0.0.1 --port 8888",
+      "command": "${workspaceFolder}\\.venv\\Scripts\\python.exe -m uvicorn api:app --reload --host 127.0.0.1 --port 8888",
       "options": {
         "cwd": "${workspaceFolder}"
       },
@@ -34,7 +34,7 @@
     {
       "label": "Run React",
       "type": "shell",
-      "command": "npm run dev",
+      "command": "npm run dev -- --host 127.0.0.1 --port 5173 --strictPort",
       "options": {
         "cwd": "${workspaceFolder}/client"
       },
@@ -47,8 +47,8 @@
         "pattern": [{ "regexp": "^(.*)$", "message": 1 }],
         "background": {
           "activeOnStart": true,
-          "beginsPattern": "vite v|VITE v|> .*dev|npm run dev",
-          "endsPattern": "ready in \\d+ ms|ready in \\d+\\.\\d+ s|Local:\\s+http"
+          "beginsPattern": "vite|VITE|> .*dev|npm run dev",
+          "endsPattern": "ready in|127\\.0\\.0\\.1:5173|localhost:5173|Local:\\s+http"
         }
       }
     },
@@ -76,7 +76,7 @@
     {
       "label": "Run Celery (Banner)",
       "type": "shell",
-      "command": "python -m celery -A celery_app worker -Q banner_queue --loglevel=info -P gevent -n banner_worker@%h",
+      "command": "${workspaceFolder}\\.venv\\Scripts\\python.exe -m celery -A celery_app worker -Q banner_queue --loglevel=info -P gevent -n banner_worker@%h",
       "options": {
         "cwd": "${workspaceFolder}"
       },
@@ -98,7 +98,7 @@
     {
       "label": "Run Celery (Video)",
       "type": "shell",
-      "command": "python -m celery -A celery_app worker -Q video_queue --loglevel=info -P gevent -n video_worker@%h",
+      "command": "${workspaceFolder}\\.venv\\Scripts\\python.exe -m celery -A celery_app worker -Q video_queue --loglevel=info -P gevent -n video_worker@%h",
       "options": {
         "cwd": "${workspaceFolder}"
       },

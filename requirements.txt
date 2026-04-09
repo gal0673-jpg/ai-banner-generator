@@ -1,15 +1,20 @@
 # Backend (api + crawl + creative pipeline)
+# setuptools: distutils shim on Python 3.12+ (undetected-chromedriver imports distutils.version)
+setuptools>=69.0
 fastapi
 python-multipart
 uvicorn[standard]
 python-dotenv
 openai
 requests
+httpx
+beautifulsoup4
 tenacity
 selenium
 undetected-chromedriver
 pillow
 celery
+gevent
 redis
 tenacity
 

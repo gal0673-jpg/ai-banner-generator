@@ -2,8 +2,10 @@ import { colorInputHex } from './canvasUtils.js'
 
 /**
  * Top-right text toolbar; hidden during PNG export via html-to-image filter on `.banner-text-controls`.
+ * An inverse CSS scale is applied so the toolbar always appears at native screen size regardless
+ * of how much the parent canvas element is scaled down to fit the viewport.
  */
-export default function TextControls({ fontSize, onFontSize, align, onAlign, color, onColor }) {
+export default function TextControls({ fontSize, onFontSize, align, onAlign, color, onColor, viewportScale = 1 }) {
   /** stopPropagation only — preventDefault on mousedown breaks <input type="color" /> picker */
   const stopDrag = (e) => {
     e.stopPropagation()
@@ -13,8 +15,14 @@ export default function TextControls({ fontSize, onFontSize, align, onAlign, col
     e.stopPropagation()
   }
   const cv = colorInputHex(color)
+  const inverseScale = viewportScale > 0 ? 1 / viewportScale : 1
   return (
-    <div className="banner-text-controls" onMouseDown={stopDrag} onClick={stopDrag}>
+    <div
+      className="banner-text-controls"
+      style={{ transform: `scale(${inverseScale})`, transformOrigin: 'top right' }}
+      onMouseDown={stopDrag}
+      onClick={stopDrag}
+    >
       <div className="btc-group">
         <button type="button" className="btc-btn" onMouseDown={(e) => { stopBtn(e); onFontSize(Math.max(10, fontSize - 2)) }} title="הקטן גופן">A−</button>
         <span className="btc-val">{fontSize}px</span>

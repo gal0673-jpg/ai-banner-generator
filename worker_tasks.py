@@ -2,21 +2,60 @@
 
 from __future__ import annotations
 
+import atexit
 import json
 import os
 import re
+import signal
+import threading
 import uuid
 from typing import Any
 
 import requests
 from celery import Task
+from celery.exceptions import SoftTimeLimitExceeded
 
 from celery_app import celery_app
 from database import SessionLocal
-from main import crawl_from_url, run_agency_banner_pipeline
+from main import crawl_from_url, quit_all_active_drivers, run_agency_banner_pipeline
 from models import BannerTask
 from services.banner_service import TASKS_DIR, persist_task, rendered_banner_urls_for_task
 from services.video_service import video_engine_render_url, video_payload_for_engine
+
+# ── Chrome leak-prevention: guarantee cleanup on any exit path ────────────────
+#
+# Celery's *soft* time limit raises SoftTimeLimitExceeded inside the running task
+# (catchable). The *hard* limit sends SIGKILL — uncatchable — but we register both
+# SIGTERM (graceful shutdown) and atexit so we cover as many scenarios as possible.
+# SIGKILL survivors (orphaned chrome/chromedriver processes) are the only remainder;
+# those must be dealt with at the OS / container level.
+
+_chrome_cleanup_lock = threading.Lock()
+
+
+def _emergency_chrome_cleanup() -> None:
+    """Kill every Chrome instance this process spawned. Idempotent and thread-safe."""
+    with _chrome_cleanup_lock:
+        try:
+            quit_all_active_drivers()
+        except Exception:
+            pass
+
+
+atexit.register(_emergency_chrome_cleanup)
+
+# Override SIGTERM only in the main thread; Celery's prefork/gevent pools spawn
+# additional threads where signal registration is a no-op or raises ValueError.
+if threading.current_thread() is threading.main_thread():
+    _prev_sigterm = signal.getsignal(signal.SIGTERM)
+
+    def _sigterm_handler(signum: int, frame: object) -> None:  # noqa: ANN001
+        _emergency_chrome_cleanup()
+        if callable(_prev_sigterm):
+            _prev_sigterm(signum, frame)  # type: ignore[arg-type]
+        raise SystemExit(0)
+
+    signal.signal(signal.SIGTERM, _sigterm_handler)
 
 _BRAND_HEX = re.compile(r"^#[0-9A-Fa-f]{6}$")
 
@@ -68,10 +107,22 @@ def run_banner_task(
     task_uuid = uuid.UUID(task_id)
     work_dir = TASKS_DIR / task_id
     work_dir.mkdir(parents=True, exist_ok=True)
-    # Move off "pending" as soon as the worker picks up the job — crawl (Selenium) can take minutes.
+    # Move off "pending" as soon as the worker picks up the job — crawl can take minutes.
     persist_task(task_uuid, status="scraped")
     print(f"[run_banner_task] task_id={task_id} status=scraped (crawl starting)", flush=True)
-    crawl_from_url(url, work_dir=work_dir, campaign_brief=brief)
+
+    try:
+        crawl_from_url(url, work_dir=work_dir, campaign_brief=brief)
+    except SoftTimeLimitExceeded:
+        # Celery soft time limit fired inside the crawl.  Chrome may still be alive —
+        # kill it before Celery's hard limit sends SIGKILL and leaves orphans.
+        _emergency_chrome_cleanup()
+        persist_task(
+            task_uuid,
+            status="failed",
+            error="Crawl timed out (Celery soft time limit exceeded).",
+        )
+        raise  # re-raise so Celery records the exception and stops retrying
 
     if not os.environ.get("OPENAI_API_KEY"):
         persist_task(task_uuid, status="failed", error="OPENAI_API_KEY is not set")

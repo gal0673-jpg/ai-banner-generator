@@ -6,6 +6,9 @@ import react from '@vitejs/plugin-react'
 export default defineConfig({
   plugins: [react(), tailwindcss()],
   server: {
+    host: '127.0.0.1',
+    port: 5173,
+    strictPort: true,
     proxy: {
       // Same-origin API in dev when client/.env has VITE_API_URL= (empty)
       '/auth': { target: 'http://127.0.0.1:8888', changeOrigin: true },

@@ -1,5 +1,5 @@
 AI BANNER CONTEXT EXPORT
-Generated (UTC): 2026-04-08 14:24:56 UTC
+Generated (UTC): 2026-04-09 09:52:24 UTC
 Project root: C:\laragon\www\python
 Output filename: ai-banner-context.txt
 
@@ -113,7 +113,7 @@ python/
 │   ├── banner_service.py
 │   └── video_service.py
 ├── tasks
-│   └── [43 task UUID folders — runtime outputs omitted]
+│   └── [62 task UUID folders — runtime outputs omitted]
 ├── video_engine
 │   ├── public
 │   │   ├── ding.mp3
@@ -1019,6 +1019,7 @@ from dotenv import load_dotenv
 load_dotenv(Path(__file__).resolve().parent / ".env")
 
 from celery import Celery
+from kombu import Queue
 
 celery_app = Celery(
     "banner_generator",
@@ -1027,6 +1028,10 @@ celery_app = Celery(
     include=["worker_tasks"],
 )
 
+# Explicit resource-isolated queues.
+banner_queue = "banner_queue"
+video_queue = "video_queue"
+
 celery_app.conf.update(
     broker_connection_retry_on_startup=True,
     task_serializer="json",
@@ -1034,6 +1039,14 @@ celery_app.conf.update(
     accept_content=["json"],
     timezone="UTC",
     enable_utc=True,
+    task_queues=(
+        Queue(banner_queue),
+        Queue(video_queue),
+    ),
+    task_routes={
+        "run_banner_task": {"queue": banner_queue},
+        "render_video_task": {"queue": video_queue},
+    },
 )
 
 # ``include=`` alone does not import task modules when this file is loaded; the worker
@@ -1476,9 +1489,15 @@ if not DATABASE_URL:
         "DATABASE_URL is not set. Add it to your .env (e.g. mysql+pymysql://user:pass@localhost/dbname)."
     )
 
+# Avoid hanging FastAPI/Celery forever when MySQL is down or unreachable (pymysql).
+_connect_args: dict = {}
+if "mysql" in DATABASE_URL or "pymysql" in DATABASE_URL:
+    _connect_args["connect_timeout"] = 10
+
 engine = create_engine(
     DATABASE_URL,
     pool_pre_ping=True,
+    connect_args=_connect_args or {},
 )
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
@@ -2480,7 +2499,11 @@ import io
 import json
 import os
 import random
+import re
+import shutil
+import subprocess
 import sys
+import tempfile
 import time
 from collections import deque
 from pathlib import Path
@@ -2488,10 +2511,18 @@ from urllib.parse import unquote, urljoin, urlparse, urlunparse
 
 import requests
 from PIL import Image, UnidentifiedImageError
-from selenium import webdriver
-from selenium.common.exceptions import WebDriverException
-from selenium.webdriver.chrome.options import Options
+from selenium.common.exceptions import (  # type: ignore[import-untyped]
+    ElementClickInterceptedException,
+    NoAlertPresentException,
+    NoSuchWindowException,
+    TimeoutException,
+    UnexpectedAlertPresentException,
+    WebDriverException,
+)
 from selenium.webdriver.common.by import By
+from selenium.webdriver.remote.webdriver import WebDriver
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.webdriver.support.ui import WebDriverWait
 
 BASE_DIR = Path(__file__).resolve().parent
 MAX_PAGES = 10
@@ -2499,6 +2530,11 @@ OUTPUT_FILE = BASE_DIR / "scraped_content.txt"
 LOGO_FILE = BASE_DIR / "logo.png"
 SEPARATOR = "=" * 80
 RENDER_WAIT_SECONDS = 10
+
+# Hard timeouts so a single problematic page can't hang Celery indefinitely.
+PAGE_LOAD_TIMEOUT_SECONDS = 35
+SCRIPT_TIMEOUT_SECONDS = 25
+DOM_READY_TIMEOUT_SECONDS = 20
 
 # Case-insensitive for ASCII; Hebrew phrases matched as literal substrings.
 JUNK_KEYWORDS = (
@@ -2513,6 +2549,148 @@ JUNK_KEYWORDS = (
     "תנאי שימוש",
 )
 
+def _chrome_major_from_executable(exe: str) -> int | None:
+    """Parse major version from ``chrome --version`` / ``chromium --version``."""
+    if not exe or not os.path.isfile(exe):
+        return None
+    kw: dict = {
+        "capture_output": True,
+        "text": True,
+        "timeout": 20,
+    }
+    if sys.platform == "win32":
+        kw["creationflags"] = subprocess.CREATE_NO_WINDOW
+    try:
+        out = subprocess.run([exe, "--version"], **kw)
+        line = (out.stdout or out.stderr or "").strip()
+        m = re.search(r"(?:Chrome|Chromium|Microsoft Edge)\s+(\d+)\.", line, re.I)
+        if not m:
+            m = re.search(r"(\d+)\.", line)
+        if m:
+            major = int(m.group(1))
+            if 50 <= major <= 300:
+                return major
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    return None
+
+
+def _chrome_major_from_registry_windows() -> int | None:
+    import winreg
+
+    for root, subkey in (
+        (winreg.HKEY_CURRENT_USER, r"Software\Google\Chrome\BLBeacon"),
+        (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Google\Chrome\BLBeacon"),
+        (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\WOW6432Node\Google\Chrome\BLBeacon"),
+    ):
+        try:
+            with winreg.OpenKey(root, subkey) as key:
+                ver, _ = winreg.QueryValueEx(key, "version")
+            major = int(str(ver).split(".", 1)[0])
+            if 50 <= major <= 300:
+                return major
+        except OSError:
+            continue
+    return None
+
+
+def clear_undetected_chromedriver_cache() -> None:
+    """Remove cached chromedriver binaries (stale cache causes wrong major vs browser)."""
+    roots: list[Path] = []
+    for base in (
+        os.path.expandvars(r"%APPDATA%\undetected_chromedriver"),
+        os.path.expandvars(r"%LOCALAPPDATA%\undetected_chromedriver"),
+        Path.home() / "AppData" / "Roaming" / "undetected_chromedriver",
+    ):
+        if not base:
+            continue
+        roots.append(Path(base))
+    seen: set[str] = set()
+    for p in roots:
+        try:
+            key = str(p.resolve())
+        except OSError:
+            key = str(p)
+        if key in seen:
+            continue
+        seen.add(key)
+        if p.is_dir():
+            shutil.rmtree(p, ignore_errors=True)
+
+
+def resolve_chrome_for_uc() -> tuple[str | None, int | None]:
+    """
+    Return ``(browser_executable_path, version_main)`` for undetected-chromedriver.
+
+    Prefer the real binary's ``--version`` over the Registry (they can disagree).
+
+    Env:
+    - ``CHROME_BINARY`` / ``GOOGLE_CHROME_BIN``: path to chrome/chromium exe
+    - ``CHROME_MAJOR_VERSION``: force major (int), e.g. 116
+    - ``UC_CLEAR_DRIVER_CACHE``: if ``1``/``true``, delete undetected-chromedriver cache dirs before start
+    - ``UC_PATCHER_FORCE_CLOSE``: default ``1`` on Windows — kill locking ``chromedriver`` so a fresh
+      driver can replace a stale binary (undetected-chromedriver otherwise reuses driver 117 while Chrome is 116).
+      Set to ``0`` to disable.
+    """
+    flag = os.environ.get("UC_CLEAR_DRIVER_CACHE", "").strip().lower()
+    if flag in ("1", "true", "yes"):
+        clear_undetected_chromedriver_cache()
+
+    raw_major = os.environ.get("CHROME_MAJOR_VERSION", "").strip()
+    major_override = int(raw_major) if raw_major.isdigit() and 50 <= int(raw_major) <= 300 else None
+
+    env_bin = (
+        os.environ.get("CHROME_BINARY", "").strip()
+        or os.environ.get("GOOGLE_CHROME_BIN", "").strip()
+    )
+    if env_bin:
+        env_bin = os.path.normpath(env_bin)
+        if os.path.isfile(env_bin):
+            maj = _chrome_major_from_executable(env_bin)
+            return env_bin, major_override or maj
+        if major_override is not None:
+            return None, major_override
+
+    if sys.platform == "win32":
+        # User-level Chrome is usually the one that runs / updates; check it before Program Files.
+        for exe in (
+            os.path.expandvars(r"%LocalAppData%\Google\Chrome\Application\chrome.exe"),
+            os.path.expandvars(r"%ProgramFiles%\Google\Chrome\Application\chrome.exe"),
+            os.path.expandvars(r"%ProgramFiles(x86)%\Google\Chrome\Application\chrome.exe"),
+            os.path.expandvars(r"%LocalAppData%\Chromium\Application\chromium.exe"),
+        ):
+            if not os.path.isfile(exe):
+                continue
+            maj = _chrome_major_from_executable(exe)
+            if maj is not None:
+                return os.path.normpath(exe), major_override or maj
+
+        reg_maj = _chrome_major_from_registry_windows()
+        if reg_maj is not None:
+            return None, major_override or reg_maj
+        return None, major_override
+
+    if sys.platform == "darwin":
+        for exe in (
+            "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+            "/Applications/Chromium.app/Contents/MacOS/Chromium",
+        ):
+            if os.path.isfile(exe):
+                maj = _chrome_major_from_executable(exe)
+                if maj is not None:
+                    return exe, major_override or maj
+        return None, major_override
+
+    for cmd in ("google-chrome-stable", "google-chrome", "chromium", "chromium-browser"):
+        pth = shutil.which(cmd)
+        if not pth:
+            continue
+        maj = _chrome_major_from_executable(pth)
+        if maj is not None:
+            return pth, major_override or maj
+    return None, major_override
+
+
 REQUEST_HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -2526,6 +2704,8 @@ REQUEST_HEADERS = {
 def normalize_url(url: str) -> str:
     """Add https:// when no scheme is given."""
     url = url.strip()
+    while url.startswith("/"):
+        url = url[1:]
     if not url:
         return url
     parsed = urlparse(url)
@@ -2594,18 +2774,298 @@ def format_page_block(page_url: str, title: str, paragraphs: list[str]) -> str:
     return "\n".join(lines)
 
 
-def build_headless_chrome() -> webdriver.Chrome:
-    options = Options()
+def _patch_real_chrome_local_state() -> None:
+    """
+    Patch the real Chrome installation's Local State file to disable the
+    'Show profile picker on startup' checkbox.  This is the only reliable way
+    to suppress the picker when the user has the checkbox ticked inside Chrome.
+    """
+    local_app_data = os.environ.get("LOCALAPPDATA", "")
+    if not local_app_data:
+        return
+
+    chrome_local_state_path = os.path.join(
+        local_app_data, "Google", "Chrome", "User Data", "Local State"
+    )
+    if not os.path.exists(chrome_local_state_path):
+        return
+
+    try:
+        with open(chrome_local_state_path, "r", encoding="utf-8") as f:
+            state = json.load(f)
+
+        changed = False
+
+        profile_section = state.setdefault("profile", {})
+        if profile_section.get("picker_shown_on_startup") is not False:
+            profile_section["picker_shown_on_startup"] = False
+            changed = True
+
+        browser_section = state.setdefault("browser", {})
+        if browser_section.get("show_profile_chooser_on_startup") is not False:
+            browser_section["show_profile_chooser_on_startup"] = False
+            changed = True
+
+        if changed:
+            with open(chrome_local_state_path, "w", encoding="utf-8") as f:
+                json.dump(state, f, indent=2)
+    except Exception:
+        pass
+
+
+def _seed_chrome_profile(profile_dir: str) -> None:
+    """
+    Pre-populate a fresh Chrome user-data-dir so Chrome treats it as an existing profile.
+    This suppresses the profile-picker / first-run dialogs on Windows multi-profile installs.
+    """
+    default_dir = os.path.join(profile_dir, "Default")
+    os.makedirs(default_dir, exist_ok=True)
+
+    local_state = {
+        "profile": {
+            "profiles_order": ["Default"],
+            "last_used": "Default",
+            "picker_shown_on_startup": False,
+            "profile_counts_reported": 1,
+            "info_cache": {
+                "Default": {
+                    "name": "Default",
+                    "is_using_default_name": True,
+                }
+            },
+        },
+        "browser": {
+            "has_seen_welcome_page": True,
+            "show_profile_chooser_on_startup": False,
+            "enabled_labs_experiments": [],
+        },
+        "user_manager": {
+            "shown_count": 1,
+            "serial_number_salt": "0",
+        },
+    }
+    with open(os.path.join(profile_dir, "Local State"), "w", encoding="utf-8") as f:
+        json.dump(local_state, f)
+
+    preferences = {
+        "profile": {
+            "exit_type": "Normal",
+            "exited_cleanly": True,
+            "name": "Default",
+        },
+        "browser": {
+            "has_seen_welcome_page": True,
+        },
+        "session": {
+            "restore_on_startup": 1,
+        },
+    }
+    with open(os.path.join(default_dir, "Preferences"), "w", encoding="utf-8") as f:
+        json.dump(preferences, f)
+
+
+def build_headless_chrome() -> WebDriver:
+    """
+    Undetected Chrome driver (stealthier than stock Selenium) with hard timeouts.
+    Keep this function signature stable: other modules import it indirectly.
+    """
+    try:
+        # Python 3.12+ removed stdlib distutils; undetected-chromedriver still imports it.
+        # setuptools vendors a compatible distutils — import it before uc.
+        import setuptools  # noqa: F401
+    except ModuleNotFoundError:
+        pass
+
+    try:
+        import undetected_chromedriver as uc
+    except ModuleNotFoundError as exc:
+        py = sys.executable
+        missing = getattr(exc, "name", "") or ""
+        if missing == "distutils" or "distutils" in str(exc):
+            raise RuntimeError(
+                "בגרסת Python שלך הוסר המודול distutils מהספרייה הסטנדרטית, "
+                "וב־undetected-chromedriver עדיין נעשה בו שימוש. "
+                f'נסה קודם: "{py}" -m pip install -U setuptools '
+                "ואז הרץ שוב. אם עדיין נכשל — מומלץ venv עם Python 3.11 או 3.12 (יציב יותר עם Selenium/Chrome)."
+            ) from exc
+        raise RuntimeError(
+            "חסרה חבילת undetected-chromedriver בסביבת ה-Python שמריצה את משימת ה-crawl (בדרך כלל Celery). "
+            f'התקן לאותו מפרש שמריץ את ה-worker: "{py}" -m pip install undetected-chromedriver '
+            "(או: pip install -r requirements.txt מאותה סביבה)."
+        ) from exc
+
+    options = uc.ChromeOptions()
     options.add_argument("--headless=new")
     options.add_argument("--disable-gpu")
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
     options.add_argument("--window-size=1920,1080")
+    options.add_argument("--lang=en-US,en")
     options.add_argument(
         "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/131.0.0.0 Safari/537.36"
     )
-    return webdriver.Chrome(options=options)
+    options.add_argument("--disable-blink-features=AutomationControlled")
+    # Suppress Chrome's profile-picker / "Who's using Chrome?" dialog on Windows.
+    options.add_argument("--bwsi")
+    options.add_argument("--disable-features=NewProfilePicker,ProfileManagement")
+    options.add_argument("--no-default-browser-check")
+    options.add_argument("--no-first-run")
+
+    browser_path, version_main = resolve_chrome_for_uc()
+    # use_subprocess=False on Windows: let chromedriver own the browser lifecycle (fewer orphan GUIs).
+    _us = os.environ.get("UC_USE_SUBPROCESS", "").strip().lower()
+    if _us in ("1", "true", "yes"):
+        _use_sub = True
+    elif _us in ("0", "false", "no"):
+        _use_sub = False
+    else:
+        _use_sub = sys.platform != "win32"
+
+    driver_kwargs: dict = {"options": options, "use_subprocess": _use_sub}
+    if browser_path:
+        driver_kwargs["browser_executable_path"] = browser_path
+    # uc: version_main=0 is treated as "auto" → downloads latest Stable driver (wrong if Chrome is older).
+    if version_main is not None and int(version_main) > 0:
+        driver_kwargs["version_main"] = int(version_main)
+
+    # undetected_chromedriver: if chromedriver.exe is locked, patcher reuses old binary without re-fetch.
+    # Default force-close on Windows so CHROME_MAJOR_VERSION / detection can actually apply.
+    _pfc = os.environ.get("UC_PATCHER_FORCE_CLOSE", "1" if sys.platform == "win32" else "0").strip().lower()
+    driver_kwargs["patcher_force_close"] = _pfc not in ("0", "false", "no")
+
+    # Disable the "Show at startup" checkbox in the real Chrome installation.
+    _patch_real_chrome_local_state()
+
+    # Fresh user-data-dir with a pre-seeded profile → Chrome skips the profile picker.
+    profile_dir = tempfile.mkdtemp(prefix="banner_crawl_uc_")
+    _seed_chrome_profile(profile_dir)
+    driver_kwargs["user_data_dir"] = profile_dir
+    options.add_argument("--profile-directory=Default")
+
+    try:
+        driver = uc.Chrome(**driver_kwargs)
+    except Exception:
+        shutil.rmtree(profile_dir, ignore_errors=True)
+        raise
+
+    driver.set_page_load_timeout(PAGE_LOAD_TIMEOUT_SECONDS)
+    driver.set_script_timeout(SCRIPT_TIMEOUT_SECONDS)
+    setattr(driver, "_banner_uc_profile_dir", profile_dir)
+    return driver
+
+
+def _safe_dismiss_alerts(driver: WebDriver) -> None:
+    """Best-effort close of unexpected JS alerts that can block navigation/extraction."""
+    try:
+        alert = driver.switch_to.alert
+    except (WebDriverException, NoSuchWindowException, NoAlertPresentException):
+        return
+    try:
+        alert.dismiss()
+    except WebDriverException:
+        try:
+            alert.accept()
+        except WebDriverException:
+            return
+
+
+def _wait_dom_ready(driver: WebDriver, timeout_s: int) -> None:
+    """Wait for DOM to be ready; does not require full network idle."""
+    WebDriverWait(driver, timeout_s).until(
+        lambda d: (d.execute_script("return document.readyState") or "") in ("interactive", "complete")
+    )
+
+
+def _auto_dismiss_cookie_banners(driver: WebDriver) -> None:
+    """
+    Heuristic cookie/consent dismissal to reduce boilerplate in extracted <p> text.
+    Safe: best-effort only; never hard-fails the crawl.
+    """
+    try:
+        # Some banners are injected after initial load.
+        time.sleep(0.5)
+    except Exception:
+        pass
+
+    # Common CMP/framework selectors (OneTrust, Cookiebot, etc.) plus generic "accept" buttons.
+    selector_candidates = [
+        "#onetrust-accept-btn-handler",
+        "button#onetrust-accept-btn-handler",
+        "button[aria-label*='accept' i]",
+        "button[aria-label*='agree' i]",
+        "button[id*='accept' i]",
+        "button[class*='accept' i]",
+        "button[class*='consent' i]",
+        "button[id*='consent' i]",
+        "button",
+        "input[type='button']",
+        "input[type='submit']",
+        "a[role='button']",
+    ]
+
+    acceptish = (
+        "accept",
+        "agree",
+        "allow",
+        "allow all",
+        "ok",
+        "got it",
+        "i understand",
+        "continue",
+        "yes",
+        # Hebrew (common variants)
+        "אישור",
+        "מאשר",
+        "מסכים",
+        "מסכימ",
+        "הסכמ",
+        "אפשר",
+        "קבל",
+        "המשך",
+    )
+
+    def _looks_like_accept(el) -> bool:
+        try:
+            txt = ((el.text or "") + " " + (el.get_attribute("aria-label") or "")).strip()
+            if not txt:
+                txt = (el.get_attribute("value") or "").strip()
+            blob = txt.lower()
+            return any(k in blob for k in acceptish) or any(k in txt for k in acceptish if not k.isascii())
+        except WebDriverException:
+            return False
+
+    clicked = 0
+    seen_ids: set[str] = set()
+    for sel in selector_candidates:
+        if clicked >= 3:
+            break
+        try:
+            els = driver.find_elements(By.CSS_SELECTOR, sel)
+        except WebDriverException:
+            continue
+        for el in els[:25]:
+            if clicked >= 3:
+                break
+            try:
+                if el.id in seen_ids:
+                    continue
+                seen_ids.add(el.id)
+                if not el.is_displayed() or not el.is_enabled():
+                    continue
+                if not _looks_like_accept(el):
+                    continue
+                try:
+                    el.click()
+                except (ElementClickInterceptedException, WebDriverException):
+                    # JS click is often more reliable for overlayed dialogs.
+                    driver.execute_script("arguments[0].click();", el)
+                clicked += 1
+                # Give the DOM a moment to remove the overlay.
+                time.sleep(0.25)
+            except WebDriverException:
+                continue
 
 
 def run_agency_banner_pipeline(
@@ -2703,7 +3163,7 @@ def run_agency_banner_pipeline(
         )
 
 
-def extract_title_and_paragraphs(driver: webdriver.Chrome) -> tuple[str, list[str]]:
+def extract_title_and_paragraphs(driver: WebDriver) -> tuple[str, list[str]]:
     """Return document title and non-empty stripped text from all <p> elements in the live DOM."""
     title_text = (driver.title or "").strip()
     if not title_text:
@@ -2727,7 +3187,7 @@ def _anchor_label(el) -> str:
     return " ".join(p for p in parts if p)
 
 
-def discover_internal_links(driver: webdriver.Chrome, base_host: str) -> list[str]:
+def discover_internal_links(driver: WebDriver, base_host: str) -> list[str]:
     """Same-site http(s) hrefs only; skip junk URLs and junk anchor text (blocklist)."""
     current = driver.current_url
     found: list[str] = []
@@ -2745,7 +3205,7 @@ def discover_internal_links(driver: webdriver.Chrome, base_host: str) -> list[st
     return found
 
 
-def _resolve_img_url(driver: webdriver.Chrome, img) -> str | None:
+def _resolve_img_url(driver: WebDriver, img) -> str | None:
     """Best-effort absolute image URL from src, lazy attrs, or srcset."""
     base = driver.current_url
     src = (img.get_attribute("src") or "").strip()
@@ -2801,7 +3261,7 @@ def _img_element_priority(img) -> int:
     return score
 
 
-def extract_and_save_homepage_logo(driver: webdriver.Chrome, logo_file: Path) -> bool:
+def extract_and_save_homepage_logo(driver: WebDriver, logo_file: Path) -> bool:
     """
     Heuristic logo detection (header/nav, logo in attributes, custom-logo / site-logo).
     Download with requests; save as RGBA PNG for correct transparency.
@@ -2909,8 +3369,9 @@ def crawl_from_url(
     file_chunks: list[str] = []
     logo_saved = False
 
-    print("Starting headless Chrome (Selenium Manager)...")
+    print("Starting headless Chrome (undetected-chromedriver)...")
     driver = build_headless_chrome()
+    uc_profile = getattr(driver, "_banner_uc_profile_dir", None)
     try:
         while queue and pages_fetched < MAX_PAGES:
             url = queue.popleft()
@@ -2922,12 +3383,37 @@ def crawl_from_url(
                 time.sleep(random.uniform(1, 3))
 
             try:
-                driver.get(url)
-            except WebDriverException as e:
+                try:
+                    driver.get(url)
+                except TimeoutException:
+                    # Stop further resource loading; we'll still attempt extraction from what rendered.
+                    try:
+                        driver.execute_script("window.stop();")
+                    except WebDriverException:
+                        pass
+            except (UnexpectedAlertPresentException, WebDriverException) as e:
+                _safe_dismiss_alerts(driver)
                 print(f"Skip (navigation failed): {url} — {e}")
                 continue
 
-            time.sleep(RENDER_WAIT_SECONDS)
+            try:
+                _wait_dom_ready(driver, DOM_READY_TIMEOUT_SECONDS)
+            except (TimeoutException, WebDriverException):
+                # Proceed anyway; some heavy sites never reach a stable readyState.
+                pass
+
+            try:
+                _auto_dismiss_cookie_banners(driver)
+            except Exception:
+                pass
+
+            # Short, bounded render wait (replaces unbounded "hang" scenarios).
+            try:
+                WebDriverWait(driver, RENDER_WAIT_SECONDS).until(
+                    EC.presence_of_element_located((By.TAG_NAME, "body"))
+                )
+            except (TimeoutException, WebDriverException):
+                pass
 
             final_url = strip_fragment(driver.current_url)
 
@@ -2951,7 +3437,12 @@ def crawl_from_url(
             except WebDriverException as e:
                 print(f"Warning: link discovery failed on {final_url} — {e}")
     finally:
-        driver.quit()
+        try:
+            driver.quit()
+        except Exception:
+            pass
+        if uc_profile:
+            shutil.rmtree(uc_profile, ignore_errors=True)
 
     with open(output_file, "w", encoding="utf-8") as f:
         f.write(f"Crawl summary: {pages_fetched} page(s), starting from {start_url}\n\n")
@@ -3320,7 +3811,10 @@ def generate(
     db.commit()
     tid = str(task_id)
     try:
-        run_banner_task.delay(tid, url, brief, body.video_hook)
+        run_banner_task.apply_async(
+            args=[tid, url, brief, body.video_hook],
+            queue="banner_queue",
+        )
     except Exception as exc:
         persist_task(task_id, status="failed", error=str(exc))
         raise HTTPException(
@@ -3514,7 +4008,10 @@ def render_task_video(
     db.commit()
 
     try:
-        render_video_task.delay(task_id, int(body.design_type), str(body.aspect_ratio), public_base)
+        render_video_task.apply_async(
+            args=[task_id, int(body.design_type), str(body.aspect_ratio), public_base],
+            queue="video_queue",
+        )
     except Exception as exc:
         persist_video_task_state(
             tid,
@@ -3923,7 +4420,12 @@ class BannerGenerationTask(Task):
             pass
 
 
-@celery_app.task(bind=True, base=BannerGenerationTask, name="run_banner_task")
+@celery_app.task(
+    bind=True,
+    base=BannerGenerationTask,
+    name="run_banner_task",
+    queue="banner_queue",
+)
 def run_banner_task(
     self: BannerGenerationTask,
     task_id: str,
@@ -4137,7 +4639,7 @@ def execute_video_render_worker(
         db.commit()
 
 
-@celery_app.task(name="render_video_task")
+@celery_app.task(name="render_video_task", queue="video_queue")
 def render_video_task(
     task_id: str,
     design_type: int,
@@ -4559,8 +5061,14 @@ export function AuthProvider({ children }) {
   // Restore session from the HttpOnly cookie via the server (no localStorage).
   useEffect(() => {
     let cancelled = false
+    // Without a timeout, a hung proxy/API/DB connection can leave the SPA on "טוען…" forever.
+    const failsafeMs = 12_000
+    const failsafe = window.setTimeout(() => {
+      if (!cancelled) setReady(true)
+    }, failsafeMs)
+
     api
-      .get('/auth/me')
+      .get('/auth/me', { timeout: 10_000 })
       .then((res) => {
         const email = res.data?.email
         if (!cancelled && email) {
@@ -4568,13 +5076,15 @@ export function AuthProvider({ children }) {
         }
       })
       .catch(() => {
-        /* not logged in or expired cookie */
+        /* not logged in, expired cookie, network error, or timeout */
       })
       .finally(() => {
+        window.clearTimeout(failsafe)
         if (!cancelled) setReady(true)
       })
     return () => {
       cancelled = true
+      window.clearTimeout(failsafe)
     }
   }, [])
 
@@ -4585,6 +5095,7 @@ export function AuthProvider({ children }) {
 
     await api.post('/auth/login', body, {
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      timeout: 25_000,
     })
 
     const normalizedEmail = email.trim().toLowerCase()
@@ -4595,7 +5106,7 @@ export function AuthProvider({ children }) {
 
   const logout = useCallback(async () => {
     try {
-      await api.post('/auth/logout')
+      await api.post('/auth/logout', {}, { timeout: 10_000 })
     } catch {
       /* still clear local UI state */
     }
@@ -4651,9 +5162,9 @@ FILE: client/src/BannerCanvas.css
 .banner-viewport.banner-viewport--9-16 {
   box-sizing: border-box;
   aspect-ratio: 9 / 16;
-  width: min(96%, 520px, calc(92vh * 9 / 16));
-  max-width: min(96%, 520px, calc(92vh * 9 / 16));
-  max-height: min(92vh, 960px);
+  width: min(96%, 560px, calc(96vh * 9 / 16));
+  max-width: min(96%, 560px, calc(96vh * 9 / 16));
+  max-height: min(96vh, 1000px);
   height: auto;
 }
 
@@ -5062,6 +5573,88 @@ FILE: client/src/BannerCanvas.css
   display: none !important;
 }
 
+/* ── Design 1 · 9:16 — readable text + canvas-sized toolbars (same idea as bc2) ─ */
+.banner-viewport--9-16 .banner-layer--text .banner-layer-inner,
+.banner-viewport--9-16 .banner-layer--cta .banner-layer-inner {
+  padding-top: 100px;
+}
+
+.banner-viewport--9-16 .banner-canvas .banner-text-controls {
+  top: 10px;
+  right: 10px;
+  gap: 12px;
+  padding: 14px 18px;
+  border-radius: 14px;
+  max-width: calc(100% - 16px);
+}
+
+.banner-viewport--9-16 .banner-canvas .btc-group {
+  gap: 8px;
+}
+
+.banner-viewport--9-16 .banner-canvas .btc-btn {
+  font-size: 26px;
+  font-weight: 700;
+  padding: 12px 20px;
+  line-height: 1.2;
+  border-radius: 10px;
+  border-width: 2px;
+}
+
+.banner-viewport--9-16 .banner-canvas .btc-val {
+  font-size: 24px;
+  min-width: 100px;
+  padding: 0 10px;
+}
+
+.banner-viewport--9-16 .banner-canvas .btc-sep {
+  width: 2px;
+  height: 38px;
+  margin: 0 8px;
+}
+
+.banner-viewport--9-16 .banner-canvas .btc-color-wrap {
+  width: 52px;
+  height: 48px;
+  border-radius: 10px;
+  border-width: 2px;
+}
+
+.banner-viewport--9-16 .banner-cta-drag-handle {
+  min-height: 52px;
+  padding: 10px 16px;
+  margin-bottom: 8px;
+  border-radius: 12px;
+  gap: 0.5rem;
+}
+
+.banner-viewport--9-16 .banner-cta-drag-grip {
+  width: 38px;
+  height: 6px;
+  border-radius: 3px;
+  box-shadow:
+    0 8px 0 rgba(15, 23, 42, 0.30),
+    0 16px 0 rgba(15, 23, 42, 0.15);
+}
+
+.banner-viewport--9-16 .banner-cta-drag-label {
+  font-size: 22px;
+  font-weight: 700;
+}
+
+.banner-viewport--9-16 .banner-feat-icon {
+  width: 44px;
+  height: 44px;
+  border-radius: 11px;
+  font-size: 22px;
+}
+
+.banner-viewport--9-16 .banner-feat-card {
+  padding: 28px 18px 30px;
+  gap: 14px;
+  border-radius: 16px;
+}
+
 /* ── Download row ────────────────────────────────────────────────────────────── */
 .banner-download-row {
   margin-top: 1.25rem;
@@ -5127,7 +5720,8 @@ const RIGHT_X = LEFT_W + DIVIDER_W
 const STRIP_H = 70
 
 const DF_SQUARE = { headline: 54, subhead: 26, bullets: 20, cta: 30 }
-const DF_VERTICAL = { headline: 70, subhead: 32, bullets: 26, cta: 38 }
+/** 9:16 canvas is tall; use sizes closer to Design 2 vertical for readability after scaling. */
+const DF_VERTICAL = { headline: 92, subhead: 42, bullets: 34, cta: 48 }
 
 const DESIGN1_SQUARE_BOXES = {
   logo: { x: 836, y: 30, width: 200, height: 72 },
@@ -5404,9 +5998,12 @@ FILE: client/src/BannerCanvas2.css
 .bc2-viewport.bc2-viewport--9-16 {
   box-sizing: border-box;
   aspect-ratio: 9 / 16;
-  width: min(96%, 520px, calc(92vh * 9 / 16));
-  max-width: min(96%, 520px, calc(92vh * 9 / 16));
-  max-height: min(92vh, 960px);
+  /* Allow the viewport to grow tall enough to show the domain strip at the very bottom.
+     96vh gives slightly more room than the old 92vh; the 560px cap keeps it from
+     overflowing short/wide screens. */
+  width: min(96%, 560px, calc(96vh * 9 / 16));
+  max-width: min(96%, 560px, calc(96vh * 9 / 16));
+  max-height: min(96vh, 1000px);
   height: auto;
 }
 
@@ -5471,7 +6068,8 @@ FILE: client/src/BannerCanvas2.css
 .bc2-layer--text .bc2-layer-inner,
 .bc2-layer--cta  .bc2-layer-inner {
   padding: 6px 6px 6px 6px;
-  padding-top: 44px;
+  /* Room for enlarged .bc2-canvas .banner-text-controls (canvas-space px, scales with viewport). */
+  padding-top: 100px;
 }
 
 /* Hover / drag outlines — visible against dark background */
@@ -5840,6 +6438,50 @@ FILE: client/src/BannerCanvas2.css
 
 @media (prefers-color-scheme: dark) {
   .bc2-download-error { color: #fca5a5; }
+}
+
+/* ── Text toolbar: canvas-sized controls (Design 2) ───────────────────────────
+   The capture node is scaled down in the viewport; 13px UI reads tiny next to
+   ~100px headline fonts. Match approximate canvas proportions here. */
+.bc2-canvas .banner-text-controls {
+  top: 10px;
+  right: 10px;
+  gap: 12px;
+  padding: 14px 18px;
+  border-radius: 14px;
+  max-width: calc(100% - 16px);
+}
+
+.bc2-canvas .btc-group {
+  gap: 8px;
+}
+
+.bc2-canvas .btc-btn {
+  font-size: 26px;
+  font-weight: 700;
+  padding: 12px 20px;
+  line-height: 1.2;
+  border-radius: 10px;
+  border-width: 2px;
+}
+
+.bc2-canvas .btc-val {
+  font-size: 24px;
+  min-width: 100px;
+  padding: 0 10px;
+}
+
+.bc2-canvas .btc-sep {
+  width: 2px;
+  height: 38px;
+  margin: 0 8px;
+}
+
+.bc2-canvas .btc-color-wrap {
+  width: 52px;
+  height: 48px;
+  border-radius: 10px;
+  border-width: 2px;
 }
 
 
@@ -6843,7 +7485,7 @@ export default function BannerWorkspace() {
 
                     {/* Design 1 */}
                     {activeDesign === 1 && (
-                      <div className="overflow-hidden rounded-2xl border border-slate-200 dark:border-slate-700 shadow-2xl">
+                      <div className="rounded-2xl border border-slate-200 dark:border-slate-700 shadow-2xl">
                         <BannerCanvas
                           key={`${taskId}-d1-${aspectRatio}`}
                           apiBase={API_BASE_URL}
@@ -6872,7 +7514,7 @@ export default function BannerWorkspace() {
 
                     {/* Design 2 */}
                     {activeDesign === 2 && (
-                      <div className="overflow-hidden rounded-2xl border border-slate-800 shadow-2xl">
+                      <div className="rounded-2xl border border-slate-800 shadow-2xl">
                         <BannerCanvas2
                           key={`${taskId}-d2-${aspectRatio}`}
                           apiBase={API_BASE_URL}
@@ -7998,10 +8640,11 @@ export const DESIGN1_DEFAULT_BOXES_VERTICAL = {
 // Strip H = 64 → content ends at y = 1856. textZoneTop = 774.
 
 export const DESIGN2_DEFAULT_LOGO_VERTICAL = { x: 806, y: 52, width: 210, height: 78 }
-export const DESIGN2_DEFAULT_HEADLINE_VERTICAL = { x: 64, y: 690, width: 952, height: 320 }
-export const DESIGN2_DEFAULT_SUBHEAD_VERTICAL = { x: 64, y: 1040, width: 952, height: 180 }
-export const DESIGN2_DEFAULT_BULLETS_VERTICAL = { x: 64, y: 1240, width: 952, height: 420 }
-export const DESIGN2_DEFAULT_CTA_VERTICAL = { x: 144, y: 1680, width: 792, height: 110 }
+// Layout shifted up so CTA ends at ~1530 and the domain strip (y=1856) stays clearly visible.
+export const DESIGN2_DEFAULT_HEADLINE_VERTICAL = { x: 64, y: 380, width: 952, height: 300 }
+export const DESIGN2_DEFAULT_SUBHEAD_VERTICAL = { x: 64, y: 760, width: 952, height: 160 }
+export const DESIGN2_DEFAULT_BULLETS_VERTICAL = { x: 64, y: 940, width: 952, height: 380 }
+export const DESIGN2_DEFAULT_CTA_VERTICAL = { x: 144, y: 1420, width: 792, height: 110 }
 
 export const DESIGN2_DEFAULT_BOXES_VERTICAL = {
   logo: { ...DESIGN2_DEFAULT_LOGO_VERTICAL },
@@ -8377,14 +9020,23 @@ export default function Login() {
     try {
       await login(email, password)
     } catch (err) {
-      const detail = err.response?.data?.detail
-      const message =
-        typeof detail === 'string'
-          ? detail
-          : Array.isArray(detail)
-            ? detail.map((d) => d.msg || JSON.stringify(d)).join(' ')
-            : err.message || 'ההתחברות נכשלה'
-      setError(message)
+      const isTimeout =
+        err.code === 'ECONNABORTED' ||
+        (typeof err.message === 'string' && err.message.toLowerCase().includes('timeout'))
+      if (isTimeout) {
+        setError(
+          'פג הזמן לחיבור לשרת. ודא ש-FastAPI רץ על פורט 8888, ש-MySQL ב-Laragon פעיל, וש-Vite מפנה בקשות ל-API (או הגדר VITE_API_URL).'
+        )
+      } else {
+        const detail = err.response?.data?.detail
+        const message =
+          typeof detail === 'string'
+            ? detail
+            : Array.isArray(detail)
+              ? detail.map((d) => d.msg || JSON.stringify(d)).join(' ')
+              : err.message || 'ההתחברות נכשלה'
+        setError(message)
+      }
     } finally {
       setSubmitting(false)
     }
@@ -8525,6 +9177,9 @@ import react from '@vitejs/plugin-react'
 export default defineConfig({
   plugins: [react(), tailwindcss()],
   server: {
+    host: '127.0.0.1',
+    port: 5173,
+    strictPort: true,
     proxy: {
       // Same-origin API in dev when client/.env has VITE_API_URL= (empty)
       '/auth': { target: 'http://127.0.0.1:8888', changeOrigin: true },
@@ -10025,6 +10680,8 @@ FILE: requirements.txt
 ================================================================================
 
 # Backend (api + crawl + creative pipeline)
+# setuptools: distutils shim on Python 3.12+ (undetected-chromedriver imports distutils.version)
+setuptools>=69.0
 fastapi
 python-multipart
 uvicorn[standard]
@@ -10033,8 +10690,10 @@ openai
 requests
 tenacity
 selenium
+undetected-chromedriver
 pillow
 celery
+gevent
 redis
 tenacity
 

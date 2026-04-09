@@ -25,14 +25,23 @@ export default function Login() {
     try {
       await login(email, password)
     } catch (err) {
-      const detail = err.response?.data?.detail
-      const message =
-        typeof detail === 'string'
-          ? detail
-          : Array.isArray(detail)
-            ? detail.map((d) => d.msg || JSON.stringify(d)).join(' ')
-            : err.message || 'ההתחברות נכשלה'
-      setError(message)
+      const isTimeout =
+        err.code === 'ECONNABORTED' ||
+        (typeof err.message === 'string' && err.message.toLowerCase().includes('timeout'))
+      if (isTimeout) {
+        setError(
+          'פג הזמן לחיבור לשרת. ודא ש-FastAPI רץ על פורט 8888, ש-MySQL ב-Laragon פעיל, וש-Vite מפנה בקשות ל-API (או הגדר VITE_API_URL).'
+        )
+      } else {
+        const detail = err.response?.data?.detail
+        const message =
+          typeof detail === 'string'
+            ? detail
+            : Array.isArray(detail)
+              ? detail.map((d) => d.msg || JSON.stringify(d)).join(' ')
+              : err.message || 'ההתחברות נכשלה'
+        setError(message)
+      }
     } finally {
       setSubmitting(false)
     }
