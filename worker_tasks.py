@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import atexit
 import json
+import logging
 import os
 import re
 import signal
@@ -21,6 +22,8 @@ from main import crawl_from_url, quit_all_active_drivers, run_agency_banner_pipe
 from models import BannerTask
 from services.banner_service import TASKS_DIR, persist_task, rendered_banner_urls_for_task
 from services.video_service import video_engine_render_url, video_payload_for_engine
+
+logger = logging.getLogger(__name__)
 
 # ── Chrome leak-prevention: guarantee cleanup on any exit path ────────────────
 #
@@ -330,3 +333,155 @@ def render_video_task(
     public_base: str,
 ) -> None:
     execute_video_render_worker(task_id, design_type, aspect_ratio, public_base)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# UGC video pipeline task
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+@celery_app.task(
+    bind=True,
+    base=BannerGenerationTask,
+    name="run_ugc_task",
+    queue="video_queue",
+)
+def run_ugc_task(
+    self: BannerGenerationTask,
+    task_id: str,
+    url: str,
+    brief: str | None,
+    avatar_id: str,
+    video_length: str,
+) -> None:
+    """End-to-end UGC video pipeline.
+
+    1. Crawl *url* → scraped_content.txt
+    2. Generate Hebrew script via GPT-4o (ugc_director)
+    3. Synthesise combined spoken text via ElevenLabs → MP3 bytes
+    4. Generate talking-avatar video via HeyGen, poll until done
+    5. Persist final URL and mark ugc_status='completed'
+
+    All errors set ugc_status='failed' and ugc_error before re-raising as
+    BannerPipelineFatalError so the base class does not trigger banner-status
+    retries and the on_failure handler skips its status='failed' write.
+    """
+    from services.ugc_service import (
+        UGCServiceError,
+        generate_elevenlabs_audio,
+        generate_heygen_avatar_video,
+    )
+    import ugc_director
+
+    task_uuid = uuid.UUID(task_id)
+    work_dir = TASKS_DIR / task_id
+    work_dir.mkdir(parents=True, exist_ok=True)
+
+    logger.info("[run_ugc_task] task_id=%s  url=%s  avatar=%s  length=%s", task_id, url, avatar_id, video_length)
+
+    # ── Step 1: crawl ────────────────────────────────────────────────────────
+    try:
+        crawl_from_url(url, work_dir=work_dir, campaign_brief=brief)
+    except SoftTimeLimitExceeded:
+        _emergency_chrome_cleanup()
+        persist_task(
+            task_uuid,
+            ugc_status="failed",
+            ugc_error="Crawl timed out (Celery soft time limit exceeded).",
+        )
+        raise
+
+    scraped_path = work_dir / "scraped_content.txt"
+    if not scraped_path.is_file():
+        msg = "scraped_content.txt not found after crawl."
+        persist_task(task_uuid, ugc_status="failed", ugc_error=msg)
+        raise BannerPipelineFatalError(f"[run_ugc_task] {msg}")
+
+    scraped_text = scraped_path.read_text(encoding="utf-8").strip()
+    if not scraped_text:
+        msg = "scraped_content.txt is empty after crawl."
+        persist_task(task_uuid, ugc_status="failed", ugc_error=msg)
+        raise BannerPipelineFatalError(f"[run_ugc_task] {msg}")
+
+    persist_task(task_uuid, ugc_status="scraped")
+    logger.info("[run_ugc_task] task_id=%s  crawl complete (%d chars).", task_id, len(scraped_text))
+
+    # ── Step 2: generate UGC script ──────────────────────────────────────────
+    persist_task(task_uuid, ugc_status="generating_script")
+    logger.info("[run_ugc_task] task_id=%s  generating UGC script…", task_id)
+
+    try:
+        ugc_script = ugc_director.generate_ugc_script(
+            scraped_text=scraped_text,
+            brief=brief,
+            video_length=video_length,
+        )
+    except Exception as exc:
+        msg = f"UGC script generation failed: {exc}"
+        logger.error("[run_ugc_task] task_id=%s  %s", task_id, msg)
+        persist_task(task_uuid, ugc_status="failed", ugc_error=msg)
+        raise BannerPipelineFatalError(f"[run_ugc_task] {msg}") from exc
+
+    persist_task(task_uuid, ugc_script=ugc_script)
+    logger.info(
+        "[run_ugc_task] task_id=%s  script saved (%d scenes).",
+        task_id,
+        len(ugc_script.get("scenes", [])),
+    )
+
+    # ── Step 3: synthesise audio ─────────────────────────────────────────────
+    scenes = ugc_script.get("scenes") or []
+    combined_spoken_text = " ".join(
+        scene.get("spoken_text", "").strip() for scene in scenes
+    ).strip()
+
+    if not combined_spoken_text:
+        msg = "UGC script has no spoken text in any scene."
+        persist_task(task_uuid, ugc_status="failed", ugc_error=msg)
+        raise BannerPipelineFatalError(f"[run_ugc_task] {msg}")
+
+    persist_task(task_uuid, ugc_status="generating_audio")
+    logger.info(
+        "[run_ugc_task] task_id=%s  synthesising %d chars of audio…",
+        task_id,
+        len(combined_spoken_text),
+    )
+
+    try:
+        audio_bytes = generate_elevenlabs_audio(combined_spoken_text)
+    except UGCServiceError as exc:
+        msg = f"ElevenLabs audio generation failed: {exc}"
+        logger.error("[run_ugc_task] task_id=%s  %s", task_id, msg)
+        persist_task(task_uuid, ugc_status="failed", ugc_error=msg)
+        raise BannerPipelineFatalError(f"[run_ugc_task] {msg}") from exc
+
+    logger.info("[run_ugc_task] task_id=%s  audio ready (%d bytes).", task_id, len(audio_bytes))
+
+    # ── Step 4: generate avatar video via HeyGen ─────────────────────────────
+    persist_task(task_uuid, ugc_status="generating_avatar")
+    logger.info(
+        "[run_ugc_task] task_id=%s  submitting HeyGen avatar video (avatar_id=%s)…",
+        task_id,
+        avatar_id,
+    )
+
+    try:
+        video_url = generate_heygen_avatar_video(avatar_id=avatar_id, audio_bytes=audio_bytes)
+    except UGCServiceError as exc:
+        msg = f"HeyGen avatar video generation failed: {exc}"
+        logger.error("[run_ugc_task] task_id=%s  %s", task_id, msg)
+        persist_task(task_uuid, ugc_status="failed", ugc_error=msg)
+        raise BannerPipelineFatalError(f"[run_ugc_task] {msg}") from exc
+
+    # ── Step 5: persist completed state ──────────────────────────────────────
+    persist_task(
+        task_uuid,
+        ugc_raw_video_url=video_url,
+        ugc_status="completed",
+        ugc_error=None,
+    )
+    logger.info(
+        "[run_ugc_task] task_id=%s  COMPLETED. video_url=%s",
+        task_id,
+        video_url,
+    )

@@ -48,6 +48,7 @@ celery_app.conf.update(
     task_routes={
         "run_banner_task": {"queue": banner_queue},
         "render_video_task": {"queue": video_queue},
+        "run_ugc_task": {"queue": video_queue},
     },
 )
 

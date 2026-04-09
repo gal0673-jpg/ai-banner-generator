@@ -15,7 +15,7 @@ from starlette.responses import StreamingResponse
 from auth import get_current_user
 from database import SessionLocal, get_db
 from models import BannerTask, User
-from schemas import GenerateRequest, RenderVideoRequest, TaskPatchRequest
+from schemas import GenerateRequest, GenerateUGCRequest, RenderVideoRequest, TaskPatchRequest
 from services.banner_service import (
     banner_task_status_dict,
     merge_canvas_state,
@@ -23,7 +23,7 @@ from services.banner_service import (
     rendered_banner_urls_for_task,
 )
 from services.video_service import public_api_base, video_payload_for_engine
-from worker_tasks import persist_video_task_state, render_video_task, run_banner_task
+from worker_tasks import persist_video_task_state, render_video_task, run_banner_task, run_ugc_task
 
 router = APIRouter(tags=["banners"])
 
@@ -83,6 +83,81 @@ def generate(
                 "ושה-worker פעיל."
             ),
         ) from exc
+    return {"task_id": tid}
+
+
+@router.post("/generate-ugc")
+def generate_ugc(
+    body: GenerateUGCRequest,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Session = Depends(get_db),
+) -> dict[str, str]:
+    """Create a UGC avatar-video generation task and enqueue it to Celery.
+
+    Returns ``{"task_id": "<uuid>"}`` immediately; callers poll ``/status/{task_id}``
+    and inspect the ``ugc_status`` / ``ugc_raw_video_url`` fields.
+    """
+    url = body.url.strip()
+    if not url:
+        raise HTTPException(status_code=400, detail="url must not be empty")
+
+    brief = (body.brief or "").strip() or None
+    avatar_id = body.avatar_id.strip()
+    if not avatar_id:
+        raise HTTPException(status_code=400, detail="avatar_id must not be empty")
+
+    task_id = uuid.uuid4()
+    row = BannerTask(
+        id=task_id,
+        user_id=current_user.id,
+        status="pending",
+        url=url,
+        brief=brief,
+        ugc_avatar_id=avatar_id,
+        ugc_status="pending",
+        # Banner-pipeline fields are not used for UGC tasks; left null.
+        error=None,
+        headline=None,
+        subhead=None,
+        bullet_points=None,
+        cta=None,
+        video_hook=None,
+        brand_color=None,
+        background_url=None,
+        logo_url=None,
+        rendered_banner_1_url=None,
+        rendered_banner_2_url=None,
+        canvas_state=None,
+        video_url_1=None,
+        video_url_2=None,
+        rendered_banner_1_vertical_url=None,
+        rendered_banner_2_vertical_url=None,
+        video_url_1_vertical=None,
+        video_url_2_vertical=None,
+    )
+    db.add(row)
+    db.commit()
+
+    tid = str(task_id)
+    try:
+        run_ugc_task.apply_async(
+            args=[tid, url, brief, avatar_id, body.video_length],
+            queue="video_queue",
+        )
+    except Exception as exc:
+        persist_task(
+            task_id,
+            ugc_status="failed",
+            ugc_error=str(exc),
+        )
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "לא ניתן לשלוח את משימת UGC לתור (Celery). "
+                "ודא ש-Redis רץ וה-worker פעיל."
+            ),
+        ) from exc
+
     return {"task_id": tid}
 
 
