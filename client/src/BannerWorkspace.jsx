@@ -87,7 +87,6 @@ export default function BannerWorkspace() {
   const [aiContextBusy, setAiContextBusy] = useState(false)
   const [aiContextErr,  setAiContextErr]  = useState(null)
   const [activeDesign,  setActiveDesign]  = useState(1)
-  const [aspectRatio,   setAspectRatio]   = useState('1:1')
   const [videoRenderError, setVideoRenderError] = useState(null)
   const [sseBump, setSseBump] = useState(0)
   const [videoHook,        setVideoHook]        = useState('')
@@ -112,20 +111,23 @@ export default function BannerWorkspace() {
     statusPayload?.background_url &&
     statusPayload?.logo_url
 
-  const currentVideoUrl = useMemo(() => {
+  const squareVideoUrl = useMemo(() => {
     if (!statusPayload) return null
-    let u
-    if (aspectRatio === '9:16') {
-      if (activeDesign === 3)      u = statusPayload.video_url_3_vertical
-      else if (activeDesign === 2) u = statusPayload.video_url_2_vertical
-      else                         u = statusPayload.video_url_1_vertical
-    } else {
-      if (activeDesign === 3)      u = statusPayload.video_url_3
-      else if (activeDesign === 2) u = statusPayload.video_url_2
-      else                         u = statusPayload.video_url_1
-    }
+    const u =
+      activeDesign === 3 ? statusPayload.video_url_3
+      : activeDesign === 2 ? statusPayload.video_url_2
+      : statusPayload.video_url_1
     return typeof u === 'string' && u.trim() ? u.trim() : null
-  }, [statusPayload, activeDesign, aspectRatio])
+  }, [statusPayload, activeDesign])
+
+  const verticalVideoUrl = useMemo(() => {
+    if (!statusPayload) return null
+    const u =
+      activeDesign === 3 ? statusPayload.video_url_3_vertical
+      : activeDesign === 2 ? statusPayload.video_url_2_vertical
+      : statusPayload.video_url_1_vertical
+    return typeof u === 'string' && u.trim() ? u.trim() : null
+  }, [statusPayload, activeDesign])
 
   useEffect(() => {
     terminalRef.current = terminal
@@ -283,13 +285,13 @@ export default function BannerWorkspace() {
 
   const isPrimaryAdmin = user?.email?.toLowerCase() === PRIMARY_ADMIN_EMAIL
 
-  const handleRenderVideo = useCallback(async () => {
+  const handleRenderVideo = useCallback(async (aspectRatioParam = '1:1') => {
     if (!taskId) return
     setVideoRenderError(null)
     try {
       const { data } = await api.post(`/tasks/${taskId}/render-video`, {
         design_type: activeDesign,
-        aspect_ratio: aspectRatio,
+        aspect_ratio: aspectRatioParam,
       })
       if (data?.status === 'processing') {
         setStatusPayload((p) =>
@@ -306,7 +308,10 @@ export default function BannerWorkspace() {
     } catch (err) {
       setVideoRenderError(axiosErrorMessage(err))
     }
-  }, [taskId, activeDesign, aspectRatio])
+  }, [taskId, activeDesign])
+
+  const handleRenderVideo11  = useCallback(() => handleRenderVideo('1:1'),  [handleRenderVideo])
+  const handleRenderVideo916 = useCallback(() => handleRenderVideo('9:16'), [handleRenderVideo])
 
   useEffect(() => {
     if (statusPayload?.video_status === 'failed' && statusPayload?.video_render_error) {
@@ -421,7 +426,7 @@ export default function BannerWorkspace() {
     >
       {/* ── Top nav ─────────────────────────────────────────────── */}
       <header className="sticky top-0 z-20 border-b border-slate-200/80 dark:border-slate-800 bg-white/90 dark:bg-slate-900/90 backdrop-blur-md">
-        <div className="mx-auto flex max-w-7xl items-center justify-between gap-4 px-4 py-3 sm:px-6">
+        <div className="mx-auto flex max-w-[96%] items-center justify-between gap-4 px-4 py-3 sm:px-6">
           <div className="text-start">
             <h1 className="text-lg font-semibold tracking-tight text-slate-900 dark:text-white">
               סטודיו באנרים
@@ -458,7 +463,7 @@ export default function BannerWorkspace() {
         </div>
         {isPrimaryAdmin && aiContextErr && (
           <div
-            className="mx-auto max-w-7xl px-4 pb-2 sm:px-6 text-end text-xs text-red-600 dark:text-red-400"
+            className="mx-auto max-w-[96%] px-4 pb-2 sm:px-6 text-end text-xs text-red-600 dark:text-red-400"
             role="alert"
           >
             {aiContextErr}
@@ -467,7 +472,7 @@ export default function BannerWorkspace() {
       </header>
 
       {/* ── Two-column layout ────────────────────────────────────── */}
-      <div className="mx-auto grid max-w-7xl gap-6 px-4 py-6 lg:grid-cols-[minmax(280px,340px)_1fr] sm:px-6 lg:py-8">
+      <div className="mx-auto grid max-w-[96%] gap-6 px-4 py-6 lg:grid-cols-[minmax(300px,360px)_1fr] sm:px-6 lg:py-8">
 
         {/* ── Sidebar: form ─────────────────────────────────────── */}
         <aside className="space-y-4 lg:sticky lg:top-24 lg:self-start">
@@ -687,57 +692,6 @@ export default function BannerWorkspace() {
                         ))}
                       </div>
 
-                      {/* Aspect ratio toggle */}
-                      <div
-                        className="flex items-center gap-1 rounded-xl bg-slate-100 dark:bg-slate-800/80 p-1"
-                        role="group"
-                        aria-label="פורמט תמונה"
-                      >
-                        {[
-                          {
-                            ratio: '1:1',
-                            label: '1:1',
-                            sub: 'פיד',
-                            icon: (
-                              <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden className="shrink-0">
-                                <rect x="1" y="1" width="12" height="12" rx="1.5" stroke="currentColor" strokeWidth="1.5" />
-                              </svg>
-                            ),
-                          },
-                          {
-                            ratio: '9:16',
-                            label: '9:16',
-                            sub: 'סטורי',
-                            icon: (
-                              <svg width="10" height="14" viewBox="0 0 10 14" fill="none" aria-hidden className="shrink-0">
-                                <rect x="1" y="1" width="8" height="12" rx="1.5" stroke="currentColor" strokeWidth="1.5" />
-                              </svg>
-                            ),
-                          },
-                        ].map(({ ratio, label, sub, icon }) => (
-                          <button
-                            key={ratio}
-                            type="button"
-                            onClick={() => setAspectRatio(ratio)}
-                            className={`flex items-center gap-1.5 rounded-lg px-3 py-2 text-xs font-medium transition-all ${
-                              aspectRatio === ratio
-                                ? 'bg-white dark:bg-slate-700 shadow text-slate-900 dark:text-white'
-                                : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200'
-                            }`}
-                          >
-                            {icon}
-                            <span dir="ltr" className="font-mono tracking-tight">{label}</span>
-                            <span className={`text-[9px] font-normal rounded-full px-1.5 py-0.5 hidden sm:inline ${
-                              aspectRatio === ratio
-                                ? 'bg-violet-100 dark:bg-violet-900/50 text-violet-600 dark:text-violet-300'
-                                : 'bg-slate-200 dark:bg-slate-700 text-slate-400 dark:text-slate-500'
-                            }`}>
-                              {sub}
-                            </span>
-                          </button>
-                        ))}
-                      </div>
-
                     </div>
 
                     {/* Hint */}
@@ -781,88 +735,175 @@ export default function BannerWorkspace() {
 
                     {/* Design 1 */}
                     {activeDesign === 1 && (
-                      <div className="rounded-2xl border border-slate-200 dark:border-slate-700 shadow-2xl">
-                        <BannerCanvas
-                          key={`${taskId}-d1-${aspectRatio}`}
-                          apiBase={API_BASE_URL}
-                          taskId={taskId}
-                          backgroundUrl={statusPayload.background_url}
-                          logoUrl={statusPayload.logo_url}
-                          headline={statusPayload.headline}
-                          subhead={statusPayload.subhead}
-                          bulletPoints={statusPayload.bullet_points}
-                          cta={statusPayload.cta}
-                          brandColor={statusPayload.brand_color}
-                          siteUrl={url}
-                          savedCanvasSlice={
-                            aspectRatio === '9:16'
-                              ? (statusPayload.canvas_state?.design1_vertical ?? null)
-                              : (statusPayload.canvas_state?.design1 ?? null)
-                          }
-                          onPersist={handleTaskPersist}
-                          onRenderVideo={handleRenderVideo}
-                          isRenderingVideo={videoRendering}
-                          videoRenderingHint={VIDEO_RENDERING_HINT}
-                          aspectRatio={aspectRatio}
-                        />
+                      <div className="grid grid-cols-1 xl:grid-cols-2 gap-8">
+                        <div>
+                          <h3 className="text-center text-sm font-medium text-slate-500 dark:text-slate-400 mb-3">
+                            Feed (1:1)
+                          </h3>
+                          <div className="rounded-2xl border border-slate-200 dark:border-slate-700 shadow-2xl">
+                            <BannerCanvas
+                              key={`${taskId}-d1-11`}
+                              apiBase={API_BASE_URL}
+                              taskId={taskId}
+                              backgroundUrl={statusPayload.background_url}
+                              logoUrl={statusPayload.logo_url}
+                              headline={statusPayload.headline}
+                              subhead={statusPayload.subhead}
+                              bulletPoints={statusPayload.bullet_points}
+                              cta={statusPayload.cta}
+                              brandColor={statusPayload.brand_color}
+                              siteUrl={url}
+                              savedCanvasSlice={statusPayload.canvas_state?.design1 ?? null}
+                              onPersist={handleTaskPersist}
+                              onRenderVideo={handleRenderVideo11}
+                              isRenderingVideo={videoRendering}
+                              videoRenderingHint={VIDEO_RENDERING_HINT}
+                              aspectRatio="1:1"
+                            />
+                          </div>
+                        </div>
+                        <div>
+                          <h3 className="text-center text-sm font-medium text-slate-500 dark:text-slate-400 mb-3">
+                            Story / Reels (9:16)
+                          </h3>
+                          <div className="rounded-2xl border border-slate-200 dark:border-slate-700 shadow-2xl">
+                            <BannerCanvas
+                              key={`${taskId}-d1-916`}
+                              apiBase={API_BASE_URL}
+                              taskId={taskId}
+                              backgroundUrl={statusPayload.background_url}
+                              logoUrl={statusPayload.logo_url}
+                              headline={statusPayload.headline}
+                              subhead={statusPayload.subhead}
+                              bulletPoints={statusPayload.bullet_points}
+                              cta={statusPayload.cta}
+                              brandColor={statusPayload.brand_color}
+                              siteUrl={url}
+                              savedCanvasSlice={statusPayload.canvas_state?.design1_vertical ?? null}
+                              onPersist={handleTaskPersist}
+                              onRenderVideo={handleRenderVideo916}
+                              isRenderingVideo={videoRendering}
+                              videoRenderingHint={VIDEO_RENDERING_HINT}
+                              aspectRatio="9:16"
+                            />
+                          </div>
+                        </div>
                       </div>
                     )}
 
                     {/* Design 2 */}
                     {activeDesign === 2 && (
-                      <div className="rounded-2xl border border-slate-800 shadow-2xl">
-                        <BannerCanvas2
-                          key={`${taskId}-d2-${aspectRatio}`}
-                          apiBase={API_BASE_URL}
-                          taskId={taskId}
-                          backgroundUrl={statusPayload.background_url}
-                          logoUrl={statusPayload.logo_url}
-                          headline={statusPayload.headline}
-                          subhead={statusPayload.subhead}
-                          bulletPoints={statusPayload.bullet_points}
-                          cta={statusPayload.cta}
-                          brandColor={statusPayload.brand_color}
-                          siteUrl={url}
-                          savedCanvasSlice={
-                            aspectRatio === '9:16'
-                              ? (statusPayload.canvas_state?.design2_vertical ?? null)
-                              : (statusPayload.canvas_state?.design2 ?? null)
-                          }
-                          onPersist={handleTaskPersist}
-                          onRenderVideo={handleRenderVideo}
-                          isRenderingVideo={videoRendering}
-                          videoRenderingHint={VIDEO_RENDERING_HINT}
-                          aspectRatio={aspectRatio}
-                        />
+                      <div className="grid grid-cols-1 xl:grid-cols-2 gap-8">
+                        <div>
+                          <h3 className="text-center text-sm font-medium text-slate-500 dark:text-slate-400 mb-3">
+                            Feed (1:1)
+                          </h3>
+                          <div className="rounded-2xl border border-slate-800 shadow-2xl">
+                            <BannerCanvas2
+                              key={`${taskId}-d2-11`}
+                              apiBase={API_BASE_URL}
+                              taskId={taskId}
+                              backgroundUrl={statusPayload.background_url}
+                              logoUrl={statusPayload.logo_url}
+                              headline={statusPayload.headline}
+                              subhead={statusPayload.subhead}
+                              bulletPoints={statusPayload.bullet_points}
+                              cta={statusPayload.cta}
+                              brandColor={statusPayload.brand_color}
+                              siteUrl={url}
+                              savedCanvasSlice={statusPayload.canvas_state?.design2 ?? null}
+                              onPersist={handleTaskPersist}
+                              onRenderVideo={handleRenderVideo11}
+                              isRenderingVideo={videoRendering}
+                              videoRenderingHint={VIDEO_RENDERING_HINT}
+                              aspectRatio="1:1"
+                            />
+                          </div>
+                        </div>
+                        <div>
+                          <h3 className="text-center text-sm font-medium text-slate-500 dark:text-slate-400 mb-3">
+                            Story / Reels (9:16)
+                          </h3>
+                          <div className="rounded-2xl border border-slate-800 shadow-2xl">
+                            <BannerCanvas2
+                              key={`${taskId}-d2-916`}
+                              apiBase={API_BASE_URL}
+                              taskId={taskId}
+                              backgroundUrl={statusPayload.background_url}
+                              logoUrl={statusPayload.logo_url}
+                              headline={statusPayload.headline}
+                              subhead={statusPayload.subhead}
+                              bulletPoints={statusPayload.bullet_points}
+                              cta={statusPayload.cta}
+                              brandColor={statusPayload.brand_color}
+                              siteUrl={url}
+                              savedCanvasSlice={statusPayload.canvas_state?.design2_vertical ?? null}
+                              onPersist={handleTaskPersist}
+                              onRenderVideo={handleRenderVideo916}
+                              isRenderingVideo={videoRendering}
+                              videoRenderingHint={VIDEO_RENDERING_HINT}
+                              aspectRatio="9:16"
+                            />
+                          </div>
+                        </div>
                       </div>
                     )}
 
                     {/* Design 3 */}
                     {activeDesign === 3 && (
-                      <div className="rounded-2xl border border-slate-200 shadow-2xl">
-                        <BannerCanvas3
-                          key={`${taskId}-d3-${aspectRatio}`}
-                          apiBase={API_BASE_URL}
-                          taskId={taskId}
-                          backgroundUrl={statusPayload.background_url}
-                          logoUrl={statusPayload.logo_url}
-                          headline={statusPayload.headline}
-                          subhead={statusPayload.subhead}
-                          bulletPoints={statusPayload.bullet_points}
-                          cta={statusPayload.cta}
-                          brandColor={statusPayload.brand_color}
-                          siteUrl={url}
-                          savedCanvasSlice={
-                            aspectRatio === '9:16'
-                              ? (statusPayload.canvas_state?.design3_vertical ?? null)
-                              : (statusPayload.canvas_state?.design3 ?? null)
-                          }
-                          onPersist={handleTaskPersist}
-                          onRenderVideo={handleRenderVideo}
-                          isRenderingVideo={videoRendering}
-                          videoRenderingHint={VIDEO_RENDERING_HINT}
-                          aspectRatio={aspectRatio}
-                        />
+                      <div className="grid grid-cols-1 xl:grid-cols-2 gap-8">
+                        <div>
+                          <h3 className="text-center text-sm font-medium text-slate-500 dark:text-slate-400 mb-3">
+                            Feed (1:1)
+                          </h3>
+                          <div className="rounded-2xl border border-slate-200 shadow-2xl">
+                            <BannerCanvas3
+                              key={`${taskId}-d3-11`}
+                              apiBase={API_BASE_URL}
+                              taskId={taskId}
+                              backgroundUrl={statusPayload.background_url}
+                              logoUrl={statusPayload.logo_url}
+                              headline={statusPayload.headline}
+                              subhead={statusPayload.subhead}
+                              bulletPoints={statusPayload.bullet_points}
+                              cta={statusPayload.cta}
+                              brandColor={statusPayload.brand_color}
+                              siteUrl={url}
+                              savedCanvasSlice={statusPayload.canvas_state?.design3 ?? null}
+                              onPersist={handleTaskPersist}
+                              onRenderVideo={handleRenderVideo11}
+                              isRenderingVideo={videoRendering}
+                              videoRenderingHint={VIDEO_RENDERING_HINT}
+                              aspectRatio="1:1"
+                            />
+                          </div>
+                        </div>
+                        <div>
+                          <h3 className="text-center text-sm font-medium text-slate-500 dark:text-slate-400 mb-3">
+                            Story / Reels (9:16)
+                          </h3>
+                          <div className="rounded-2xl border border-slate-200 shadow-2xl">
+                            <BannerCanvas3
+                              key={`${taskId}-d3-916`}
+                              apiBase={API_BASE_URL}
+                              taskId={taskId}
+                              backgroundUrl={statusPayload.background_url}
+                              logoUrl={statusPayload.logo_url}
+                              headline={statusPayload.headline}
+                              subhead={statusPayload.subhead}
+                              bulletPoints={statusPayload.bullet_points}
+                              cta={statusPayload.cta}
+                              brandColor={statusPayload.brand_color}
+                              siteUrl={url}
+                              savedCanvasSlice={statusPayload.canvas_state?.design3_vertical ?? null}
+                              onPersist={handleTaskPersist}
+                              onRenderVideo={handleRenderVideo916}
+                              isRenderingVideo={videoRendering}
+                              videoRenderingHint={VIDEO_RENDERING_HINT}
+                              aspectRatio="9:16"
+                            />
+                          </div>
+                        </div>
                       </div>
                     )}
                   </div>
@@ -876,44 +917,80 @@ export default function BannerWorkspace() {
                     </div>
                   )}
 
-                  {currentVideoUrl ? (
+                  {(squareVideoUrl || verticalVideoUrl) ? (
                     <div className="rounded-2xl border border-slate-200 dark:border-slate-700 bg-gradient-to-b from-white to-slate-50 dark:from-slate-900 dark:to-slate-950 p-5 shadow-sm space-y-4">
-                      <div className="flex flex-wrap items-center justify-between gap-2">
-                        <h3 className="text-sm font-semibold text-slate-800 dark:text-slate-100">
-                          סרטון אנימציה
-                          <span className="text-slate-400 font-normal ms-2">
-                            (עיצוב {activeDesign}
-                            {aspectRatio === '9:16' && <span className="ms-1 text-violet-500 dark:text-violet-400">· 9:16</span>}
-                            )
-                          </span>
-                        </h3>
-                        <a
-                          href={currentVideoUrl}
-                          download
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="text-xs font-medium text-indigo-600 dark:text-indigo-400 hover:underline"
-                          dir="ltr"
-                        >
-                          הורד MP4
-                        </a>
+                      <h3 className="text-sm font-semibold text-slate-800 dark:text-slate-100">
+                        סרטון אנימציה
+                        <span className="text-slate-400 font-normal ms-2">(עיצוב {activeDesign})</span>
+                      </h3>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
+                        {squareVideoUrl && (
+                          <div className="space-y-2">
+                            <div className="flex items-center justify-between">
+                              <p className="text-xs font-medium text-slate-600 dark:text-slate-400">Feed (1:1)</p>
+                              <a
+                                href={squareVideoUrl}
+                                download
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="text-xs font-medium text-indigo-600 dark:text-indigo-400 hover:underline"
+                                dir="ltr"
+                              >
+                                הורד MP4
+                              </a>
+                            </div>
+                            <div className="rounded-xl overflow-hidden border border-slate-200/80 dark:border-slate-700 bg-black/5 dark:bg-black/40">
+                              <video
+                                key={squareVideoUrl}
+                                className="w-full h-auto max-h-[min(60vh,480px)] object-contain"
+                                src={squareVideoUrl}
+                                controls
+                                playsInline
+                                loop
+                                preload="metadata"
+                              >
+                                הדפדפן שלך אינו תומך בנגן וידאו.
+                              </video>
+                            </div>
+                            <p className="text-[10px] text-slate-400 dark:text-slate-500 font-mono break-all text-center" dir="ltr">
+                              {squareVideoUrl}
+                            </p>
+                          </div>
+                        )}
+                        {verticalVideoUrl && (
+                          <div className="space-y-2">
+                            <div className="flex items-center justify-between">
+                              <p className="text-xs font-medium text-slate-600 dark:text-slate-400">Story / Reels (9:16)</p>
+                              <a
+                                href={verticalVideoUrl}
+                                download
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="text-xs font-medium text-indigo-600 dark:text-indigo-400 hover:underline"
+                                dir="ltr"
+                              >
+                                הורד MP4
+                              </a>
+                            </div>
+                            <div className="rounded-xl overflow-hidden border border-slate-200/80 dark:border-slate-700 bg-black/5 dark:bg-black/40">
+                              <video
+                                key={verticalVideoUrl}
+                                className="w-full h-auto max-h-[min(60vh,480px)] object-contain"
+                                src={verticalVideoUrl}
+                                controls
+                                playsInline
+                                loop
+                                preload="metadata"
+                              >
+                                הדפדפן שלך אינו תומך בנגן וידאו.
+                              </video>
+                            </div>
+                            <p className="text-[10px] text-slate-400 dark:text-slate-500 font-mono break-all text-center" dir="ltr">
+                              {verticalVideoUrl}
+                            </p>
+                          </div>
+                        )}
                       </div>
-                      <div className="rounded-xl overflow-hidden border border-slate-200/80 dark:border-slate-700 bg-black/5 dark:bg-black/40 max-w-lg mx-auto">
-                        <video
-                          key={currentVideoUrl}
-                          className="w-full h-auto max-h-[min(70vh,520px)] object-contain"
-                          src={currentVideoUrl}
-                          controls
-                          playsInline
-                          loop
-                          preload="metadata"
-                        >
-                          הדפדפן שלך אינו תומך בנגן וידאו.
-                        </video>
-                      </div>
-                      <p className="text-[11px] text-slate-500 dark:text-slate-400 font-mono break-all text-center" dir="ltr">
-                        {currentVideoUrl}
-                      </p>
                     </div>
                   ) : null}
 

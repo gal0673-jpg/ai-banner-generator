@@ -73,4 +73,11 @@ class BannerTask(Base):
     video_status: Mapped[str | None] = mapped_column(String(64), nullable=True)
     video_render_error: Mapped[str | None] = mapped_column(Text, nullable=True)
 
+    # UGC AI video columns (HeyGen / talking-avatar pipeline)
+    ugc_script: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    ugc_avatar_id: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    ugc_raw_video_url: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    ugc_status: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    ugc_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+
     user: Mapped["User"] = relationship("User", back_populates="tasks")
