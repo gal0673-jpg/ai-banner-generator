@@ -53,6 +53,23 @@ const VIDEO_RENDERING_HINT =
 /** After "נתק מהמשימה", do not auto-load /banners/latest on refresh (stuck pending would return forever). */
 const SKIP_LATEST_RESTORE_KEY = 'banner_workspace_skip_latest_restore'
 
+/** D-ID sample portrait; stable for tests (see test_ugc.py). */
+const UGC_DEFAULT_AVATAR_URL =
+  'https://d-id-public-bucket.s3.us-west-2.amazonaws.com/alice.jpg'
+
+function formatUgcStatus(ugcStatus) {
+  if (!ugcStatus) return 'מתחיל…'
+  const map = {
+    pending: 'UGC: ממתין…',
+    scraped: 'UGC: נסרק את האתר…',
+    generating_script: 'UGC: מכין תסריט…',
+    generating_video: 'UGC: מייצר וידאו…',
+    completed: 'UGC: הושלם',
+    failed: 'UGC: נכשל',
+  }
+  return map[ugcStatus] || `UGC: ${ugcStatus.replace(/_/g, ' ')}`
+}
+
 function Spinner({ className = '' }) {
   return (
     <span
@@ -68,6 +85,50 @@ function readSkipLatestRestoreFlag() {
   } catch {
     return false
   }
+}
+
+/** Renders UGC video script scenes (spoken + on-screen copy). */
+function UgcScriptScenesBody({ scenes }) {
+  if (!Array.isArray(scenes) || scenes.length === 0) return null
+  return (
+    <ul className="space-y-4 pt-2">
+      {scenes.map((scene, i) => {
+        const num = scene?.scene_number ?? i + 1
+        const spoken = typeof scene?.spoken_text === 'string' ? scene.spoken_text.trim() : ''
+        const onScreen = typeof scene?.on_screen_text === 'string' ? scene.on_screen_text.trim() : ''
+        return (
+          <li
+            key={`ugc-scene-${num}-${i}`}
+            className="rounded-xl border border-slate-200/90 dark:border-slate-700/90 bg-slate-50/80 dark:bg-slate-950/50 p-4 text-right"
+          >
+            <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
+              <span className="inline-flex items-center rounded-full bg-indigo-100 dark:bg-indigo-950/80 px-2.5 py-0.5 text-[11px] font-semibold text-indigo-800 dark:text-indigo-200 ring-1 ring-indigo-200/80 dark:ring-indigo-800/60">
+                סצנה {num}
+              </span>
+            </div>
+            <div className="space-y-3">
+              <div>
+                <p className="text-[10px] uppercase tracking-wide text-slate-500 dark:text-slate-400 mb-1">
+                  דיבור (תמליל)
+                </p>
+                <p className="text-sm text-slate-900 dark:text-slate-100 leading-relaxed whitespace-pre-wrap" dir="rtl">
+                  {spoken || '—'}
+                </p>
+              </div>
+              <div>
+                <p className="text-[10px] uppercase tracking-wide text-slate-500 dark:text-slate-400 mb-1">
+                  טקסט על המסך
+                </p>
+                <p className="text-sm font-medium text-slate-800 dark:text-slate-200 leading-relaxed" dir="rtl">
+                  {onScreen || '—'}
+                </p>
+              </div>
+            </div>
+          </li>
+        )
+      })}
+    </ul>
+  )
 }
 
 
@@ -92,6 +153,10 @@ export default function BannerWorkspace() {
   const [videoHook,        setVideoHook]        = useState('')
   const [latestRestoreNonce, setLatestRestoreNonce] = useState(0)
   const [skipLatestRestore, setSkipLatestRestore] = useState(readSkipLatestRestoreFlag)
+  const [ugcPanelOpen, setUgcPanelOpen] = useState(false)
+  const [ugcCustomScript, setUgcCustomScript] = useState('')
+  const [ugcPosting, setUgcPosting] = useState(false)
+  const [ugcError, setUgcError] = useState(null)
   // Tracks the taskId for which we've already initialised videoHook from the
   // server, so that subsequent statusPayload updates don't overwrite user edits.
   const hookSyncedForTask = useRef(null)
@@ -103,7 +168,11 @@ export default function BannerWorkspace() {
     taskIdRef.current = taskId
   }, [taskId])
 
-  const terminal  = statusPayload?.status === 'completed' || statusPayload?.status === 'failed'
+  const bannerTerminal =
+    statusPayload?.status === 'completed' || statusPayload?.status === 'failed'
+  const ugcTerminal =
+    statusPayload?.ugc_status === 'completed' || statusPayload?.ugc_status === 'failed'
+  const terminal = bannerTerminal || ugcTerminal
   const isPolling = Boolean(taskId && !terminal)
   const videoRendering = statusPayload?.video_status === 'processing'
   const completed =
@@ -169,6 +238,7 @@ export default function BannerWorkspace() {
     setTaskId(null)
     setStatusPayload(null)
     setSubmitError(null)
+    setUgcError(null)
     setVideoRenderError(null)
     hookSyncedForTask.current = null
     setSseBump((n) => n + 1)
@@ -354,12 +424,51 @@ export default function BannerWorkspace() {
     }
   }, [])
 
+  const handleGenerateUGC = async () => {
+    const trimmed = url.trim()
+    if (!trimmed) {
+      setUgcError('נא להזין כתובת אתר.')
+      return
+    }
+    setUgcError(null)
+    setSubmitError(null)
+    setStatusPayload(null)
+    setTaskId(null)
+    setUgcPosting(true)
+    try {
+      const body = {
+        url: trimmed,
+        provider: 'd-id',
+        avatar_id: UGC_DEFAULT_AVATAR_URL,
+        video_length: '30s',
+        brief: brief.trim() || null,
+      }
+      const script = ugcCustomScript.trim()
+      if (script) body.custom_script = script
+      const { data } = await api.post('/generate-ugc', body)
+      const id = data?.task_id
+      if (!id) throw new Error('לא התקבל מזהה משימה מהשרת')
+      try {
+        sessionStorage.removeItem(SKIP_LATEST_RESTORE_KEY)
+      } catch {
+        /* ignore */
+      }
+      setSkipLatestRestore(false)
+      setTaskId(id)
+    } catch (err) {
+      setUgcError(axiosErrorMessage(err))
+    } finally {
+      setUgcPosting(false)
+    }
+  }
+
   const handleGenerate = async (e) => {
     e.preventDefault()
     const trimmed = url.trim()
     if (!trimmed) { setSubmitError('נא להזין כתובת אתר.'); return }
 
     setSubmitError(null)
+    setUgcError(null)
     setStatusPayload(null)
     setTaskId(null)
     setIsPosting(true)
@@ -386,26 +495,37 @@ export default function BannerWorkspace() {
     }
   }
 
-  const formLocked = isPosting || isPolling
+  const formLocked = isPosting || isPolling || ugcPosting
 
   const statusChip = useMemo(() => {
     const s = statusPayload?.status
     if (!taskId) return null
+    const ugcS = statusPayload?.ugc_status
     const tone =
-      s === 'failed'      ? 'bg-red-500/15 text-red-700 dark:text-red-300 ring-red-500/25'
-      : s === 'completed' ? 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 ring-emerald-500/25'
-      : 'bg-indigo-500/15 text-indigo-700 dark:text-indigo-200 ring-indigo-500/25'
+      s === 'failed' || ugcS === 'failed'
+        ? 'bg-red-500/15 text-red-700 dark:text-red-300 ring-red-500/25'
+        : s === 'completed' || ugcS === 'completed'
+          ? 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 ring-emerald-500/25'
+          : 'bg-indigo-500/15 text-indigo-700 dark:text-indigo-200 ring-indigo-500/25'
     const showSpinner = isPolling || videoRendering
+    const label =
+      ugcS && (s === 'pending' || !bannerTerminal)
+        ? formatUgcStatus(ugcS)
+        : formatStatus(s, { videoRendering })
     const codeHint =
-      s === 'completed' && videoRendering ? `${s} · video:processing` : (s ?? '…')
+      ugcS && (s === 'pending' || !bannerTerminal)
+        ? `ugc:${ugcS ?? '…'}`
+        : s === 'completed' && videoRendering
+          ? `${s} · video:processing`
+          : (s ?? '…')
     return (
       <span className={`inline-flex items-center gap-2 rounded-full px-3 py-1 text-xs font-medium ring-1 ${tone}`}>
         {showSpinner && <Spinner className="!size-3.5 border-indigo-400/40 border-t-indigo-300" />}
-        <span className="opacity-90">{formatStatus(s, { videoRendering })}</span>
+        <span className="opacity-90">{label}</span>
         <span className="font-mono uppercase tracking-wide opacity-70" dir="ltr">({codeHint})</span>
       </span>
     )
-  }, [taskId, statusPayload?.status, isPolling, videoRendering])
+  }, [taskId, statusPayload?.status, statusPayload?.ugc_status, isPolling, videoRendering, bannerTerminal])
 
   const handleResetVideoRender = useCallback(async () => {
     if (!taskId) return
@@ -584,6 +704,63 @@ export default function BannerWorkspace() {
               </button>
             </form>
 
+            <div className="mt-6 border-t border-slate-200 dark:border-slate-800 pt-5 space-y-3">
+              <button
+                type="button"
+                onClick={() => setUgcPanelOpen((o) => !o)}
+                className="w-full rounded-xl border border-violet-300/90 dark:border-violet-600/50 bg-violet-50/90 dark:bg-violet-950/40 px-4 py-2.5 text-sm font-semibold text-violet-900 dark:text-violet-100 hover:bg-violet-100/90 dark:hover:bg-violet-900/50 transition text-right"
+                aria-expanded={ugcPanelOpen}
+              >
+                {ugcPanelOpen ? 'הסתר וידאו אווטאר UGC' : 'וידאו אווטאר UGC (D-ID)'}
+              </button>
+
+              {ugcPanelOpen && (
+                <div className="rounded-xl border border-violet-200/80 dark:border-violet-800/50 bg-violet-50/40 dark:bg-violet-950/20 p-4 space-y-3">
+                  <p className="text-[11px] text-violet-900/80 dark:text-violet-200/80 leading-relaxed">
+                    יוצר סרטון דמות מדברת לפי כתובת האתר (סריקה + תסריט) או לפי תסריט מותאם אישית. ספק: D-ID.
+                  </p>
+                  <div>
+                    <label
+                      htmlFor="bw-ugc-custom-script"
+                      className="block text-xs font-medium text-slate-600 dark:text-slate-300 mb-1.5"
+                    >
+                      תסריט מותאם (Custom Script){' '}
+                      <span className="text-slate-400 font-normal">(אופציונלי — דילוג על תסריט AI)</span>
+                    </label>
+                    <textarea
+                      id="bw-ugc-custom-script"
+                      name="ugc_custom_script"
+                      rows={4}
+                      maxLength={2000}
+                      placeholder="הקלד כאן טקסט לדיבור — אם יישאר ריק, המערכת תייצר תסריט אוטומטית מהאתר."
+                      value={ugcCustomScript}
+                      onChange={(ev) => setUgcCustomScript(ev.target.value)}
+                      disabled={formLocked}
+                      className="w-full resize-y rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2.5 text-sm text-right outline-none focus:border-violet-500 focus:ring-2 focus:ring-violet-500/20 disabled:opacity-60 min-h-[88px] transition"
+                      dir="rtl"
+                    />
+                  </div>
+                  {ugcError && (
+                    <div
+                      role="alert"
+                      className="rounded-xl border border-red-200 dark:border-red-900/50 bg-red-50 dark:bg-red-950/40 px-3 py-2 text-xs text-red-800 dark:text-red-200 text-right"
+                    >
+                      {ugcError}
+                    </div>
+                  )}
+                  <button
+                    type="button"
+                    onClick={handleGenerateUGC}
+                    disabled={formLocked}
+                    className="w-full rounded-xl bg-violet-600 px-4 py-3 text-sm font-semibold text-white shadow-md shadow-violet-900/20 hover:bg-violet-500 disabled:opacity-50 disabled:pointer-events-none transition inline-flex items-center justify-center gap-2"
+                  >
+                    {ugcPosting && <Spinner className="!size-4 border-white/30 border-t-white" />}
+                    {ugcPosting ? 'שולח…' : 'צור וידאו אווטאר'}
+                  </button>
+                </div>
+              )}
+            </div>
+
             <p className="mt-4 text-[10px] text-slate-400 dark:text-slate-500 text-right">
               כתובת API:{' '}
               <code className="rounded bg-slate-100 dark:bg-slate-800 px-1" dir="ltr">
@@ -621,7 +798,10 @@ export default function BannerWorkspace() {
                 </div>
               </div>
               <p className="text-sm text-slate-600 dark:text-slate-300">
-                {formatStatus(statusPayload?.status, { videoRendering })}
+                {statusPayload?.ugc_status &&
+                (statusPayload?.status === 'pending' || !bannerTerminal)
+                  ? formatUgcStatus(statusPayload.ugc_status)
+                  : formatStatus(statusPayload?.status, { videoRendering })}
               </p>
               <p className="text-xs text-slate-500 font-mono break-all" dir="ltr">
                 מזהה משימה: {taskId}
@@ -645,15 +825,70 @@ export default function BannerWorkspace() {
 
               {isPolling && <StatusSkeleton />}
 
-              {statusPayload?.status === 'failed' && (
+              {(statusPayload?.status === 'failed' || statusPayload?.ugc_status === 'failed') && (
                 <div
                   role="alert"
                   className="rounded-2xl border border-red-300 dark:border-red-800 bg-red-50 dark:bg-red-950/50 px-4 py-3 text-sm text-red-900 dark:text-red-100 text-right"
                 >
                   <strong className="font-semibold">משהו השתבש.</strong>
-                  <p className="mt-1">{statusPayload.error || 'שגיאה לא ידועה'}</p>
+                  <p className="mt-1">
+                    {statusPayload?.ugc_status === 'failed'
+                      ? statusPayload.ugc_error || statusPayload.error || 'שגיאה ב-UGC'
+                      : statusPayload.error || 'שגיאה לא ידועה'}
+                  </p>
                 </div>
               )}
+
+              {statusPayload?.ugc_status === 'completed' &&
+                typeof statusPayload?.ugc_raw_video_url === 'string' &&
+                statusPayload.ugc_raw_video_url.trim() && (
+                  <div className="rounded-2xl border border-violet-200 dark:border-violet-800/60 bg-gradient-to-b from-white to-violet-50/40 dark:from-slate-900 dark:to-violet-950/30 p-5 shadow-sm space-y-3">
+                    <h3 className="text-sm font-semibold text-slate-800 dark:text-slate-100">
+                      וידאו אווטאר UGC
+                    </h3>
+                    <div className="rounded-xl overflow-hidden border border-slate-200/80 dark:border-slate-700 bg-black/5 dark:bg-black/40">
+                      <video
+                        key={statusPayload.ugc_raw_video_url}
+                        className="w-full h-auto max-h-[min(70vh,520px)] object-contain mx-auto"
+                        src={statusPayload.ugc_raw_video_url.trim()}
+                        controls
+                        playsInline
+                        preload="metadata"
+                      >
+                        הדפדפן שלך אינו תומך בנגן וידאו.
+                      </video>
+                    </div>
+                    <a
+                      href={statusPayload.ugc_raw_video_url.trim()}
+                      download
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-block text-xs font-medium text-violet-600 dark:text-violet-400 hover:underline"
+                      dir="ltr"
+                    >
+                      הורד וידאו
+                    </a>
+                  </div>
+                )}
+
+              {/* UGC script while banner pipeline not yet completed (e.g. UGC-only or mid-run) */}
+              {!completed &&
+                statusPayload?.ugc_script &&
+                Array.isArray(statusPayload.ugc_script.scenes) &&
+                statusPayload.ugc_script.scenes.length > 0 && (
+                  <details className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm">
+                    <summary className="cursor-pointer select-none px-5 py-3.5 text-sm font-semibold text-slate-700 dark:text-slate-200 list-none flex items-center justify-between gap-2">
+                      <span>תסריט וידאו — UGC Script</span>
+                      <span className="text-slate-400 text-xs font-normal">לחץ לפתיחה</span>
+                    </summary>
+                    <div className="px-5 pb-5 border-t border-slate-100 dark:border-slate-800">
+                      <p className="text-xs text-slate-500 dark:text-slate-400 pt-3 mb-1 leading-relaxed">
+                        תסריט שנוצר לווידאו UGC — דיבור (TTS) וטקסט גרפי לכל סצנה.
+                      </p>
+                      <UgcScriptScenesBody scenes={statusPayload.ugc_script.scenes} />
+                    </div>
+                  </details>
+                )}
 
               {completed && (
                 <div className="space-y-6">
@@ -1034,6 +1269,25 @@ export default function BannerWorkspace() {
                           </dd>
                         </div>
                       </dl>
+
+                      {statusPayload.ugc_script &&
+                        Array.isArray(statusPayload.ugc_script.scenes) &&
+                        statusPayload.ugc_script.scenes.length > 0 && (
+                          <div className="mt-6 pt-6 border-t border-slate-100 dark:border-slate-800">
+                            <details className="rounded-xl border border-slate-200/90 dark:border-slate-700/90 bg-slate-50/50 dark:bg-slate-950/40 overflow-hidden">
+                              <summary className="cursor-pointer select-none px-4 py-3 text-sm font-semibold text-slate-700 dark:text-slate-200 list-none flex items-center justify-between gap-2">
+                                <span>תסריט וידאו — UGC Script</span>
+                                <span className="text-slate-400 text-xs font-normal">לחץ לפתיחה</span>
+                              </summary>
+                              <div className="px-4 pb-4 border-t border-slate-200/80 dark:border-slate-700/80 bg-white/60 dark:bg-slate-900/40">
+                                <p className="text-xs text-slate-500 dark:text-slate-400 pt-3 mb-2 leading-relaxed">
+                                  דיבור (תמליל ל־TTS) וטקסט על המסך לכל סצנה.
+                                </p>
+                                <UgcScriptScenesBody scenes={statusPayload.ugc_script.scenes} />
+                              </div>
+                            </details>
+                          </div>
+                        )}
                     </div>
                   </details>
 

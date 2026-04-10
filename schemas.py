@@ -63,10 +63,33 @@ class GenerateUGCRequest(BaseModel):
         max_length=12000,
         description="Optional campaign goal / target audience",
     )
-    avatar_id: str = Field(..., min_length=1, description="HeyGen avatar ID to use")
+    provider: Literal["heygen_elevenlabs", "d-id"] = Field(
+        default="heygen_elevenlabs",
+        description="Video generation provider to use",
+    )
+    avatar_id: str = Field(
+        ...,
+        min_length=1,
+        description=(
+            "HeyGen Avatar ID (if provider is 'heygen_elevenlabs'), "
+            "or D-ID source image URL/Avatar ID (if provider is 'd-id')"
+        ),
+    )
+    voice_id: str | None = Field(
+        default=None,
+        description=(
+            "Optional: Specific voice ID to use. For D-ID, this would be their voice ID. "
+            "If omitted, defaults are used."
+        ),
+    )
     video_length: Literal["15s", "30s", "50s"] = Field(
         default="30s",
         description="Target duration of the generated UGC video",
+    )
+    custom_script: str | None = Field(
+        default=None,
+        max_length=2000,
+        description="Optional script text; when set, skips AI script generation",
     )
 
 

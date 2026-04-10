@@ -63,16 +63,47 @@ SPA_MIN_MEANINGFUL_PARAS = 3
 _active_drivers: set = set()
 
 
+def _kill_uc_browser_process_tree(pid: int | None) -> None:
+    """Kill only the browser process tree spawned for this driver (undetected-chromedriver sets ``browser_pid``)."""
+    if not pid:
+        return
+    try:
+        if sys.platform == "win32":
+            subprocess.run(
+                ["taskkill", "/F", "/T", "/PID", str(pid)],
+                capture_output=True,
+                timeout=15,
+                creationflags=subprocess.CREATE_NO_WINDOW,
+            )
+        else:
+            os.kill(pid, 9)  # SIGKILL
+    except Exception:
+        pass
+
+
 def quit_all_active_drivers() -> None:
     """Force-quit every Chrome instance known to this process. Safe to call multiple times."""
     for drv in list(_active_drivers):
+        _uc_profile = getattr(drv, "_banner_uc_profile_dir", None)
+        # Capture PIDs before teardown — uc may clear attributes during quit().
+        browser_pid: int | None = getattr(drv, "browser_pid", None)
+        chromedriver_pid: int | None = getattr(drv, "_banner_chromedriver_pid", None)
+
+        # Kill browser first, then chromedriver (undetected-chromedriver often leaves chromedriver.exe up).
+        _kill_uc_browser_process_tree(browser_pid)
+        _kill_uc_browser_process_tree(chromedriver_pid)
+
         try:
-            _uc_profile = getattr(drv, "_banner_uc_profile_dir", None)
             drv.quit()
-            if _uc_profile:
-                shutil.rmtree(_uc_profile, ignore_errors=True)
         except Exception:
             pass
+
+        if _uc_profile:
+            try:
+                shutil.rmtree(_uc_profile, ignore_errors=True)
+            except Exception:
+                pass
+
     _active_drivers.clear()
 
 # Case-insensitive for ASCII; Hebrew phrases matched as literal substrings.
@@ -474,10 +505,16 @@ def build_headless_chrome() -> WebDriver:
     _pfc = os.environ.get("UC_PATCHER_FORCE_CLOSE", "1" if sys.platform == "win32" else "0").strip().lower()
     driver_kwargs["patcher_force_close"] = _pfc not in ("0", "false", "no")
 
+    # Explicitly tell uc.Chrome to launch in headless mode at the driver level,
+    # in addition to the --headless=new ChromeOption.  Some uc versions ignore the
+    # ChromeOption and open a visible window unless headless=True is passed here.
+    driver_kwargs["headless"] = True
+
     # Disable the "Show at startup" checkbox in the real Chrome installation.
     _patch_real_chrome_local_state()
 
-    # Fresh user-data-dir with a pre-seeded profile → Chrome skips the profile picker.
+    # Fresh user-data-dir per run (``mkdtemp`` guarantees uniqueness); never reuse the
+    # default Chrome profile so automation stays isolated from personal browser windows.
     profile_dir = tempfile.mkdtemp(prefix="banner_crawl_uc_")
     _seed_chrome_profile(profile_dir)
     driver_kwargs["user_data_dir"] = profile_dir
@@ -488,6 +525,22 @@ def build_headless_chrome() -> WebDriver:
     except Exception:
         shutil.rmtree(profile_dir, ignore_errors=True)
         raise
+
+    try:
+        svc = getattr(driver, "service", None)
+        proc = getattr(svc, "process", None) if svc is not None else None
+        _cdp = getattr(proc, "pid", None) if proc is not None else None
+        if _cdp:
+            setattr(driver, "_banner_chromedriver_pid", int(_cdp))
+    except Exception:
+        pass
+
+    # If headless failed partially on Windows, move any visible window off-screen.
+    if sys.platform == "win32":
+        try:
+            driver.set_window_position(-3200, -3200)
+        except Exception:
+            pass
 
     driver.set_page_load_timeout(PAGE_LOAD_TIMEOUT_SECONDS)
     driver.set_script_timeout(SCRIPT_TIMEOUT_SECONDS)
@@ -1197,7 +1250,11 @@ def crawl_from_url(
 
     finally:
         if driver is not None:
+            _browser_pid: int | None = getattr(driver, "browser_pid", None)
+            _cd_pid: int | None = getattr(driver, "_banner_chromedriver_pid", None)
             _active_drivers.discard(driver)
+            _kill_uc_browser_process_tree(_browser_pid)
+            _kill_uc_browser_process_tree(_cd_pid)
             try:
                 driver.quit()
             except Exception:

@@ -62,6 +62,11 @@ def banner_task_status_dict(task_id: str, row: BannerTask) -> dict[str, Any]:
         "video_url_2_vertical": row.video_url_2_vertical,
         "video_status": row.video_status,
         "video_render_error": row.video_render_error,
+        "ugc_script": row.ugc_script,
+        "ugc_avatar_id": row.ugc_avatar_id,
+        "ugc_raw_video_url": row.ugc_raw_video_url,
+        "ugc_status": row.ugc_status,
+        "ugc_error": row.ugc_error,
     }
 
 

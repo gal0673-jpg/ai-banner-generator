@@ -1,5 +1,5 @@
 AI BANNER CONTEXT EXPORT
-Generated (UTC): 2026-04-09 14:35:56 UTC
+Generated (UTC): 2026-04-10 10:55:14 UTC
 Project root: C:\laragon\www\python
 Output filename: ai-banner-context.txt
 
@@ -60,7 +60,8 @@ python/
 │   │   ├── 5b8aa1b1152b_baseline_existing_schema.py
 │   │   ├── b09ba5e8cf40_add_vertical_format_columns.py
 │   │   ├── c4f1a2b8d9e0_add_created_at_banner_tasks.py
-│   │   └── d7e3c1a0b2f4_add_video_status_columns.py
+│   │   ├── d7e3c1a0b2f4_add_video_status_columns.py
+│   │   └── e1f2a3b4c5d6_add_ugc_columns_to_banner_tasks.py
 │   ├── env.py
 │   ├── README
 │   └── script.py.mako
@@ -114,9 +115,10 @@ python/
 ├── services
 │   ├── __init__.py
 │   ├── banner_service.py
+│   ├── ugc_service.py
 │   └── video_service.py
 ├── tasks
-│   └── [64 task UUID folders — runtime outputs omitted]
+│   └── [91 task UUID folders — runtime outputs omitted]
 ├── video_engine
 │   ├── public
 │   │   ├── ding.mp3
@@ -155,11 +157,12 @@ python/
 ├── requirements.txt
 ├── schemas.py
 ├── scraped_content.txt
+├── test_ugc.py
 ├── ugc_director.py
 └── worker_tasks.py
 
 ================================================================================
-SECTION: PYTHON FILES (30)
+SECTION: PYTHON FILES (33)
 ================================================================================
 
 
@@ -794,6 +797,63 @@ def downgrade() -> None:
 
 
 ================================================================================
+FILE: alembic/versions/e1f2a3b4c5d6_add_ugc_columns_to_banner_tasks.py
+================================================================================
+
+"""Add UGC pipeline columns to banner_tasks
+
+Adds the five columns required by the HeyGen / ElevenLabs talking-avatar
+pipeline: ugc_script, ugc_avatar_id, ugc_raw_video_url, ugc_status, ugc_error.
+
+Revision ID: e1f2a3b4c5d6
+Revises: d7e3c1a0b2f4
+Create Date: 2026-04-09 00:00:00.000000
+
+"""
+
+from typing import Sequence, Union
+
+import sqlalchemy as sa
+from alembic import op
+
+revision: str = "e1f2a3b4c5d6"
+down_revision: Union[str, Sequence[str], None] = "d7e3c1a0b2f4"
+branch_labels: Union[str, Sequence[str], None] = None
+depends_on: Union[str, Sequence[str], None] = None
+
+
+def upgrade() -> None:
+    op.add_column(
+        "banner_tasks",
+        sa.Column("ugc_script", sa.JSON(), nullable=True),
+    )
+    op.add_column(
+        "banner_tasks",
+        sa.Column("ugc_avatar_id", sa.String(length=256), nullable=True),
+    )
+    op.add_column(
+        "banner_tasks",
+        sa.Column("ugc_raw_video_url", sa.String(length=1024), nullable=True),
+    )
+    op.add_column(
+        "banner_tasks",
+        sa.Column("ugc_status", sa.String(length=64), nullable=True),
+    )
+    op.add_column(
+        "banner_tasks",
+        sa.Column("ugc_error", sa.Text(), nullable=True),
+    )
+
+
+def downgrade() -> None:
+    op.drop_column("banner_tasks", "ugc_error")
+    op.drop_column("banner_tasks", "ugc_status")
+    op.drop_column("banner_tasks", "ugc_raw_video_url")
+    op.drop_column("banner_tasks", "ugc_avatar_id")
+    op.drop_column("banner_tasks", "ugc_script")
+
+
+================================================================================
 FILE: api.py
 ================================================================================
 
@@ -1051,6 +1111,7 @@ celery_app.conf.update(
     task_routes={
         "run_banner_task": {"queue": banner_queue},
         "render_video_task": {"queue": video_queue},
+        "run_ugc_task": {"queue": video_queue},
     },
 )
 
@@ -2779,16 +2840,47 @@ SPA_MIN_MEANINGFUL_PARAS = 3
 _active_drivers: set = set()
 
 
+def _kill_uc_browser_process_tree(pid: int | None) -> None:
+    """Kill only the browser process tree spawned for this driver (undetected-chromedriver sets ``browser_pid``)."""
+    if not pid:
+        return
+    try:
+        if sys.platform == "win32":
+            subprocess.run(
+                ["taskkill", "/F", "/T", "/PID", str(pid)],
+                capture_output=True,
+                timeout=15,
+                creationflags=subprocess.CREATE_NO_WINDOW,
+            )
+        else:
+            os.kill(pid, 9)  # SIGKILL
+    except Exception:
+        pass
+
+
 def quit_all_active_drivers() -> None:
     """Force-quit every Chrome instance known to this process. Safe to call multiple times."""
     for drv in list(_active_drivers):
+        _uc_profile = getattr(drv, "_banner_uc_profile_dir", None)
+        # Capture PIDs before teardown — uc may clear attributes during quit().
+        browser_pid: int | None = getattr(drv, "browser_pid", None)
+        chromedriver_pid: int | None = getattr(drv, "_banner_chromedriver_pid", None)
+
+        # Kill browser first, then chromedriver (undetected-chromedriver often leaves chromedriver.exe up).
+        _kill_uc_browser_process_tree(browser_pid)
+        _kill_uc_browser_process_tree(chromedriver_pid)
+
         try:
-            _uc_profile = getattr(drv, "_banner_uc_profile_dir", None)
             drv.quit()
-            if _uc_profile:
-                shutil.rmtree(_uc_profile, ignore_errors=True)
         except Exception:
             pass
+
+        if _uc_profile:
+            try:
+                shutil.rmtree(_uc_profile, ignore_errors=True)
+            except Exception:
+                pass
+
     _active_drivers.clear()
 
 # Case-insensitive for ASCII; Hebrew phrases matched as literal substrings.
@@ -3190,10 +3282,16 @@ def build_headless_chrome() -> WebDriver:
     _pfc = os.environ.get("UC_PATCHER_FORCE_CLOSE", "1" if sys.platform == "win32" else "0").strip().lower()
     driver_kwargs["patcher_force_close"] = _pfc not in ("0", "false", "no")
 
+    # Explicitly tell uc.Chrome to launch in headless mode at the driver level,
+    # in addition to the --headless=new ChromeOption.  Some uc versions ignore the
+    # ChromeOption and open a visible window unless headless=True is passed here.
+    driver_kwargs["headless"] = True
+
     # Disable the "Show at startup" checkbox in the real Chrome installation.
     _patch_real_chrome_local_state()
 
-    # Fresh user-data-dir with a pre-seeded profile → Chrome skips the profile picker.
+    # Fresh user-data-dir per run (``mkdtemp`` guarantees uniqueness); never reuse the
+    # default Chrome profile so automation stays isolated from personal browser windows.
     profile_dir = tempfile.mkdtemp(prefix="banner_crawl_uc_")
     _seed_chrome_profile(profile_dir)
     driver_kwargs["user_data_dir"] = profile_dir
@@ -3204,6 +3302,22 @@ def build_headless_chrome() -> WebDriver:
     except Exception:
         shutil.rmtree(profile_dir, ignore_errors=True)
         raise
+
+    try:
+        svc = getattr(driver, "service", None)
+        proc = getattr(svc, "process", None) if svc is not None else None
+        _cdp = getattr(proc, "pid", None) if proc is not None else None
+        if _cdp:
+            setattr(driver, "_banner_chromedriver_pid", int(_cdp))
+    except Exception:
+        pass
+
+    # If headless failed partially on Windows, move any visible window off-screen.
+    if sys.platform == "win32":
+        try:
+            driver.set_window_position(-3200, -3200)
+        except Exception:
+            pass
 
     driver.set_page_load_timeout(PAGE_LOAD_TIMEOUT_SECONDS)
     driver.set_script_timeout(SCRIPT_TIMEOUT_SECONDS)
@@ -3913,7 +4027,11 @@ def crawl_from_url(
 
     finally:
         if driver is not None:
+            _browser_pid: int | None = getattr(driver, "browser_pid", None)
+            _cd_pid: int | None = getattr(driver, "_banner_chromedriver_pid", None)
             _active_drivers.discard(driver)
+            _kill_uc_browser_process_tree(_browser_pid)
+            _kill_uc_browser_process_tree(_cd_pid)
             try:
                 driver.quit()
             except Exception:
@@ -4240,7 +4358,7 @@ from starlette.responses import StreamingResponse
 from auth import get_current_user
 from database import SessionLocal, get_db
 from models import BannerTask, User
-from schemas import GenerateRequest, RenderVideoRequest, TaskPatchRequest
+from schemas import GenerateRequest, GenerateUGCRequest, RenderVideoRequest, TaskPatchRequest
 from services.banner_service import (
     banner_task_status_dict,
     merge_canvas_state,
@@ -4248,7 +4366,7 @@ from services.banner_service import (
     rendered_banner_urls_for_task,
 )
 from services.video_service import public_api_base, video_payload_for_engine
-from worker_tasks import persist_video_task_state, render_video_task, run_banner_task
+from worker_tasks import persist_video_task_state, render_video_task, run_banner_task, run_ugc_task
 
 router = APIRouter(tags=["banners"])
 
@@ -4308,6 +4426,82 @@ def generate(
                 "ושה-worker פעיל."
             ),
         ) from exc
+    return {"task_id": tid}
+
+
+@router.post("/generate-ugc")
+def generate_ugc(
+    body: GenerateUGCRequest,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Session = Depends(get_db),
+) -> dict[str, str]:
+    """Create a UGC avatar-video generation task and enqueue it to Celery.
+
+    Returns ``{"task_id": "<uuid>"}`` immediately; callers poll ``/status/{task_id}``
+    and inspect the ``ugc_status`` / ``ugc_raw_video_url`` fields.
+    """
+    url = body.url.strip()
+    if not url:
+        raise HTTPException(status_code=400, detail="url must not be empty")
+
+    brief = (body.brief or "").strip() or None
+    avatar_id = body.avatar_id.strip()
+    if not avatar_id:
+        raise HTTPException(status_code=400, detail="avatar_id must not be empty")
+
+    task_id = uuid.uuid4()
+    row = BannerTask(
+        id=task_id,
+        user_id=current_user.id,
+        status="pending",
+        url=url,
+        brief=brief,
+        ugc_avatar_id=avatar_id,
+        ugc_status="pending",
+        # Banner-pipeline fields are not used for UGC tasks; left null.
+        error=None,
+        headline=None,
+        subhead=None,
+        bullet_points=None,
+        cta=None,
+        video_hook=None,
+        brand_color=None,
+        background_url=None,
+        logo_url=None,
+        rendered_banner_1_url=None,
+        rendered_banner_2_url=None,
+        canvas_state=None,
+        video_url_1=None,
+        video_url_2=None,
+        rendered_banner_1_vertical_url=None,
+        rendered_banner_2_vertical_url=None,
+        video_url_1_vertical=None,
+        video_url_2_vertical=None,
+    )
+    db.add(row)
+    db.commit()
+
+    tid = str(task_id)
+    try:
+        run_ugc_task.apply_async(
+            args=[tid, url, brief, avatar_id, body.video_length],
+            kwargs={"provider": body.provider},
+            queue="video_queue",
+        )
+    except Exception as exc:
+        persist_task(
+            task_id,
+            ugc_status="failed",
+            ugc_error=str(exc),
+        )
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "לא ניתן לשלוח את משימת UGC לתור (Celery). "
+                "ודא ש-Redis רץ וה-worker פעיל."
+            ),
+        ) from exc
+
     return {"task_id": tid}
 
 
@@ -4611,7 +4805,25 @@ class GenerateUGCRequest(BaseModel):
         max_length=12000,
         description="Optional campaign goal / target audience",
     )
-    avatar_id: str = Field(..., min_length=1, description="HeyGen avatar ID to use")
+    provider: Literal["heygen_elevenlabs", "d-id"] = Field(
+        default="heygen_elevenlabs",
+        description="Video generation provider to use",
+    )
+    avatar_id: str = Field(
+        ...,
+        min_length=1,
+        description=(
+            "HeyGen Avatar ID (if provider is 'heygen_elevenlabs'), "
+            "or D-ID source image URL/Avatar ID (if provider is 'd-id')"
+        ),
+    )
+    voice_id: str | None = Field(
+        default=None,
+        description=(
+            "Optional: Specific voice ID to use. For D-ID, this would be their voice ID. "
+            "If omitted, defaults are used."
+        ),
+    )
     video_length: Literal["15s", "30s", "50s"] = Field(
         default="30s",
         description="Target duration of the generated UGC video",
@@ -4713,6 +4925,11 @@ def banner_task_status_dict(task_id: str, row: BannerTask) -> dict[str, Any]:
         "video_url_2_vertical": row.video_url_2_vertical,
         "video_status": row.video_status,
         "video_render_error": row.video_render_error,
+        "ugc_script": row.ugc_script,
+        "ugc_avatar_id": row.ugc_avatar_id,
+        "ugc_raw_video_url": row.ugc_raw_video_url,
+        "ugc_status": row.ugc_status,
+        "ugc_error": row.ugc_error,
     }
 
 
@@ -4735,6 +4952,671 @@ def merge_canvas_state(prev: Any, patch: dict[str, Any] | None) -> dict[str, Any
         if key in patch:
             base[key] = patch[key]
     return base or None
+
+
+================================================================================
+FILE: services/ugc_service.py
+================================================================================
+
+"""ElevenLabs TTS and HeyGen talking-avatar API wrappers for the UGC pipeline.
+
+Public API
+----------
+generate_elevenlabs_audio(text, voice_id) -> bytes
+    Convert text to MP3 via ElevenLabs TTS (``eleven_v3`` + ``language_code: he`` + voice_settings).
+    ``eleven_multilingual_v2`` does not list Hebrew; using it drops non-Latin script and only speaks e.g. brand acronyms.
+
+generate_heygen_avatar_video(avatar_id, audio_bytes) -> str
+    Upload audio, submit a HeyGen /v2/video/generate job, poll to completion,
+    and return the final CDN video URL.
+
+generate_did_avatar_video(source_url, script_text, voice_id) -> str
+    ElevenLabs TTS → POST /audios → POST /talks (static ``source_url`` + ``script.type: audio``),
+    poll ``GET /talks/{id}`` to completion, return ``result_url``. Trial-safe (no /expressives).
+
+dispatch_ugc_generation(provider, script_text, visual_reference) -> str
+    Route to the correct provider pipeline and return the video URL.
+
+All HTTP calls are wrapped with tenacity for transient-failure resilience.
+"""
+
+from __future__ import annotations
+
+import logging
+import os
+import time
+
+import requests
+from tenacity import (
+    retry,
+    retry_if_exception,
+    stop_after_attempt,
+    wait_exponential,
+)
+
+logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# ElevenLabs endpoints
+# ---------------------------------------------------------------------------
+_ELEVENLABS_TTS_URL = "https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
+
+# Production UGC voice ID; TTS uses ``eleven_v3`` (Hebrew-capable) + ``language_code: he`` + voice_settings.
+# Callers may pass any valid ElevenLabs voice_id.
+_ELEVENLABS_DEFAULT_VOICE_ID = "Wuv1s5YTNCjL9mFJTqo4"
+
+# ---------------------------------------------------------------------------
+# HeyGen endpoints
+# ---------------------------------------------------------------------------
+# HeyGen base URLs.
+# IMPORTANT: the asset upload endpoint lives on upload.heygen.com, not api.heygen.com.
+_HEYGEN_ASSET_UPLOAD_URL = "https://upload.heygen.com/v1/asset"
+_HEYGEN_VIDEO_GENERATE_URL = "https://api.heygen.com/v2/video/generate"
+_HEYGEN_VIDEO_STATUS_URL = "https://api.heygen.com/v1/video_status.get"
+
+_POLL_INTERVAL_SECONDS = 10
+_MAX_POLL_ATTEMPTS = 72  # ~12 minutes ceiling; HeyGen can be slow on first renders
+
+
+def _log_heygen_error_response(resp: requests.Response, context: str) -> None:
+    """Print full response body for non-2xx so upstream rejections are visible in worker logs."""
+    if 200 <= resp.status_code < 300:
+        return
+    body = resp.text or ""
+    print(f"[HeyGen] {context} HTTP {resp.status_code} body: {body}")
+
+
+# ---------------------------------------------------------------------------
+# Exceptions
+# ---------------------------------------------------------------------------
+
+
+class UGCServiceError(Exception):
+    """Raised on unrecoverable UGC API failures (after retries are exhausted)."""
+
+
+# ---------------------------------------------------------------------------
+# Tenacity retry helpers
+# ---------------------------------------------------------------------------
+
+_TRANSIENT_HTTP_STATUS = frozenset({408, 429, 500, 502, 503, 504})
+
+
+def _is_transient_http_error(exc: BaseException) -> bool:
+    if isinstance(exc, requests.HTTPError):
+        return exc.response is not None and exc.response.status_code in _TRANSIENT_HTTP_STATUS
+    return isinstance(exc, (requests.ConnectionError, requests.Timeout))
+
+
+_http_retry = retry(
+    reraise=True,
+    stop=stop_after_attempt(4),
+    wait=wait_exponential(multiplier=1, min=2, max=30),
+    retry=retry_if_exception(_is_transient_http_error),
+)
+
+
+# ---------------------------------------------------------------------------
+# ElevenLabs — private request (decorated so tenacity wraps only I/O)
+# ---------------------------------------------------------------------------
+
+
+@_http_retry
+def _elevenlabs_tts_request(text: str, voice_id: str, api_key: str) -> bytes:
+    url = _ELEVENLABS_TTS_URL.format(voice_id=voice_id)
+    headers = {
+        "xi-api-key": api_key,
+        "Content-Type": "application/json",
+        "Accept": "audio/mpeg",
+    }
+    payload = {
+        "text": text,
+        "model_id": "eleven_v3",
+        # eleven_multilingual_v2 has no Hebrew; without this, only Latin fragments (e.g. "TSITE") are spoken.
+        "language_code": "he",
+        "voice_settings": {
+            "stability": 0.50,
+            "similarity_boost": 0.75,
+            "style": 0.30,
+            "use_speaker_boost": True,
+        },
+    }
+    preview = text[:100] if text else ""
+    print(f"[ugc_service] ElevenLabs TTS text preview (first 100 chars): {preview}")
+    resp = requests.post(url, json=payload, headers=headers, timeout=120)
+    resp.raise_for_status()
+    return resp.content
+
+
+# ---------------------------------------------------------------------------
+# ElevenLabs — public API
+# ---------------------------------------------------------------------------
+
+
+def generate_elevenlabs_audio(
+    text: str,
+    voice_id: str = _ELEVENLABS_DEFAULT_VOICE_ID,
+) -> bytes:
+    """Convert *text* to MP3 via ElevenLabs text-to-speech (``eleven_v3``, Hebrew via ``language_code``).
+
+    Args:
+        text:     The spoken text to synthesise (``language_code`` is set to Hebrew for the API).
+        voice_id: ElevenLabs voice ID.  Defaults to the configured UGC voice.
+
+    Returns:
+        Raw MP3 bytes ready to upload to HeyGen or save to disk.
+
+    Raises:
+        UGCServiceError: API key missing, non-transient HTTP error, or all
+                         tenacity retries exhausted.
+    """
+    api_key = os.environ.get("ELEVENLABS_API_KEY", "").strip()
+    if not api_key:
+        raise UGCServiceError("ELEVENLABS_API_KEY is not set in the environment.")
+
+    logger.info(
+        "[ugc_service] Synthesising %d chars via ElevenLabs (voice_id=%s).",
+        len(text),
+        voice_id,
+    )
+
+    try:
+        audio_bytes = _elevenlabs_tts_request(text, voice_id, api_key)
+    except requests.HTTPError as exc:
+        status = exc.response.status_code if exc.response is not None else "?"
+        body = (exc.response.text[:400] if exc.response is not None else "") or ""
+        raise UGCServiceError(
+            f"ElevenLabs TTS request failed with HTTP {status}: {body}"
+        ) from exc
+    except requests.RequestException as exc:
+        raise UGCServiceError(f"ElevenLabs TTS network error: {exc}") from exc
+
+    logger.info(
+        "[ugc_service] ElevenLabs returned %d bytes of audio.", len(audio_bytes)
+    )
+    return audio_bytes
+
+
+# ---------------------------------------------------------------------------
+# HeyGen — private helpers (each decorated so tenacity wraps only the I/O)
+# ---------------------------------------------------------------------------
+
+
+@_http_retry
+def _upload_heygen_audio_asset(audio_bytes: bytes, api_key: str) -> str:
+    """Upload *audio_bytes* (MP3) to HeyGen and return the ``audio_asset_id``.
+
+    Per HeyGen docs (upload.heygen.com/v1/asset):
+      - Host:         upload.heygen.com   (NOT api.heygen.com)
+      - Method:       POST
+      - Auth header:  X-API-KEY
+      - Content-Type: audio/mpeg          (NOT multipart/form-data)
+      - Body:         raw binary bytes    (NOT files= / form fields)
+
+    HeyGen signals success with ``{"code": 100, "data": {"id": "..."}}``.
+    """
+    url = _HEYGEN_ASSET_UPLOAD_URL
+    headers = {
+        "X-API-KEY": api_key,
+        "Content-Type": "audio/mpeg",
+    }
+    print(f"[DEBUG] Full URL: {url}")
+    print(f"[DEBUG] Headers: {{'X-API-KEY': '<redacted>', 'Content-Type': 'audio/mpeg'}}")
+    print(f"[DEBUG] Body: raw bytes, len={len(audio_bytes)}")
+    resp = requests.post(url, headers=headers, data=audio_bytes, timeout=120)
+    if resp.status_code != 200:
+        print(f"[DEBUG] HeyGen asset upload error response: {resp.text}")
+    resp.raise_for_status()
+    data = resp.json()
+
+    if data.get("code") != 100:
+        raise UGCServiceError(f"HeyGen asset upload returned error response: {data}")
+
+    asset_id = data.get("data", {}).get("id")
+    if not asset_id:
+        raise UGCServiceError(
+            f"HeyGen asset upload successful (code=100) but no asset ID in response: {data}"
+        )
+    return str(asset_id)
+
+
+@_http_retry
+def _heygen_request_video(
+    avatar_id: str,
+    audio_asset_id: str,
+    api_key: str,
+) -> str:
+    """Submit a HeyGen /v2/video/generate job and return the ``video_id``.
+
+    The v2 endpoint returns ``{"error": null, "data": {"video_id": "..."}}`` on success —
+    it does NOT include a ``code`` field like the v1 endpoints do.
+    """
+    headers = {
+        "x-api-key": api_key,
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "video_inputs": [
+            {
+                "character": {
+                    "type": "avatar",
+                    "avatar_id": avatar_id,
+                    "avatar_style": "normal",
+                },
+                "voice": {
+                    "type": "audio",
+                    "audio_asset_id": audio_asset_id,
+                },
+            }
+        ],
+        "dimension": {"width": 1080, "height": 1920},
+    }
+    print(f"Calling HeyGen: {_HEYGEN_VIDEO_GENERATE_URL}")
+    resp = requests.post(
+        _HEYGEN_VIDEO_GENERATE_URL, json=payload, headers=headers, timeout=60
+    )
+    _log_heygen_error_response(resp, "POST /v2/video/generate")
+    resp.raise_for_status()
+    data = resp.json()
+
+    # v2 uses {"error": null, "data": {"video_id": "..."}} — no "code" field.
+    # Treat any non-null "error" value as a failure.
+    api_error = data.get("error")
+    if api_error is not None:
+        raise UGCServiceError(
+            f"HeyGen /v2/video/generate returned an error: {api_error} | full response: {data}"
+        )
+
+    video_id = (data.get("data") or {}).get("video_id")
+    if not video_id:
+        raise UGCServiceError(
+            f"HeyGen /v2/video/generate response missing video_id: {data}"
+        )
+    return str(video_id)
+
+
+def _heygen_poll_status(video_id: str, api_key: str) -> str:
+    """Poll HeyGen status until the video is 'completed' or 'failed'.
+
+    Returns the final CDN video URL on success.
+    Raises UGCServiceError on failure or timeout.
+    """
+    headers = {"x-api-key": api_key}
+
+    for attempt in range(1, _MAX_POLL_ATTEMPTS + 1):
+        try:
+            print(f"Calling HeyGen: {_HEYGEN_VIDEO_STATUS_URL}?video_id={video_id}")
+            resp = requests.get(
+                _HEYGEN_VIDEO_STATUS_URL,
+                params={"video_id": video_id},
+                headers=headers,
+                timeout=30,
+            )
+            _log_heygen_error_response(resp, "GET video_status.get")
+            resp.raise_for_status()
+            data = resp.json()
+        except requests.RequestException as exc:
+            logger.warning(
+                "[ugc_service] HeyGen status poll attempt %d/%d failed (%s). Retrying in %ds…",
+                attempt,
+                _MAX_POLL_ATTEMPTS,
+                exc,
+                _POLL_INTERVAL_SECONDS,
+            )
+            time.sleep(_POLL_INTERVAL_SECONDS)
+            continue
+
+        video_data = data.get("data") or {}
+        status = video_data.get("status", "")
+
+        logger.info(
+            "[ugc_service] HeyGen video %s — status=%r (poll %d/%d).",
+            video_id,
+            status,
+            attempt,
+            _MAX_POLL_ATTEMPTS,
+        )
+
+        if status == "completed":
+            video_url = video_data.get("video_url") or video_data.get("url")
+            if not video_url:
+                raise UGCServiceError(
+                    f"HeyGen video {video_id!r} completed but response contains no video_url."
+                    f" Full response: {data}"
+                )
+            return str(video_url)
+
+        if status == "failed":
+            error_msg = (
+                video_data.get("error")
+                or video_data.get("message")
+                or data.get("message")
+                or "unknown error"
+            )
+            raise UGCServiceError(
+                f"HeyGen video generation failed for video_id={video_id!r}: {error_msg}"
+            )
+
+        time.sleep(_POLL_INTERVAL_SECONDS)
+
+    raise UGCServiceError(
+        f"HeyGen video {video_id!r} did not complete within "
+        f"{_MAX_POLL_ATTEMPTS * _POLL_INTERVAL_SECONDS}s ({_MAX_POLL_ATTEMPTS} polls)."
+    )
+
+
+# ---------------------------------------------------------------------------
+# HeyGen — public API
+# ---------------------------------------------------------------------------
+
+
+def generate_heygen_avatar_video(avatar_id: str, audio_bytes: bytes) -> str:
+    """Generate a HeyGen talking-avatar video from a pre-rendered audio track.
+
+    Step A — Upload *audio_bytes* to HeyGen's asset endpoint → ``audio_asset_id``.
+    Step B — POST to /v2/video/generate (avatar + audio asset, green-screen bg) → ``video_id``.
+    Step C — Poll /v1/video_status.get every 10 s until status is 'completed' or 'failed'.
+
+    Args:
+        avatar_id:   HeyGen avatar ID (must be accessible under the caller's API key).
+        audio_bytes: MP3 audio bytes (e.g. from :func:`generate_elevenlabs_audio`).
+
+    Returns:
+        Final CDN URL of the rendered video (``str``).
+
+    Raises:
+        UGCServiceError: API key missing, upload/generate/poll failure.
+    """
+    api_key = os.environ.get("HEYGEN_API_KEY", "").strip()
+    if not api_key:
+        raise UGCServiceError("HEYGEN_API_KEY is not set in the environment.")
+
+    # ── Step A: upload audio ────────────────────────────────────────────────
+    logger.info(
+        "[ugc_service] Uploading %d bytes of audio to HeyGen.", len(audio_bytes)
+    )
+    try:
+        audio_asset_id = _upload_heygen_audio_asset(audio_bytes, api_key)
+    except UGCServiceError:
+        raise  # already descriptive; propagate as-is
+    except requests.HTTPError as exc:
+        status = exc.response.status_code if exc.response is not None else "?"
+        body = (exc.response.text[:400] if exc.response is not None else "") or ""
+        raise UGCServiceError(
+            f"HeyGen asset upload failed with HTTP {status}: {body}"
+        ) from exc
+    except requests.RequestException as exc:
+        raise UGCServiceError(f"HeyGen asset upload network error: {exc}") from exc
+
+    logger.info("[ugc_service] HeyGen audio_asset_id=%s", audio_asset_id)
+    print(
+        f"[DEBUG] generate_heygen_avatar_video: using asset id from upload "
+        f"as voice.audio_asset_id={audio_asset_id!r} for POST /v2/video/generate"
+    )
+
+    # ── Step B: request video generation ───────────────────────────────────
+    logger.info(
+        "[ugc_service] Submitting HeyGen video generate (avatar_id=%s).", avatar_id
+    )
+    try:
+        video_id = _heygen_request_video(avatar_id, audio_asset_id, api_key)
+    except UGCServiceError:
+        raise  # already descriptive; propagate as-is
+    except requests.HTTPError as exc:
+        status = exc.response.status_code if exc.response is not None else "?"
+        body = (exc.response.text[:400] if exc.response is not None else "") or ""
+        raise UGCServiceError(
+            f"HeyGen /v2/video/generate failed with HTTP {status}: {body}"
+        ) from exc
+    except requests.RequestException as exc:
+        raise UGCServiceError(
+            f"HeyGen /v2/video/generate network error: {exc}"
+        ) from exc
+
+    logger.info(
+        "[ugc_service] HeyGen video_id=%s — polling for completion…", video_id
+    )
+
+    # ── Step C: poll until done ─────────────────────────────────────────────
+    video_url = _heygen_poll_status(video_id, api_key)
+    logger.info("[ugc_service] HeyGen video completed: %s", video_url)
+    return video_url
+
+
+# ---------------------------------------------------------------------------
+# D-ID endpoints (standard /talks — static image + uploaded audio; Trial-compatible)
+# ---------------------------------------------------------------------------
+_DID_API_URL = "https://api.d-id.com/talks"
+_DID_AUDIOS_URL = "https://api.d-id.com/audios"
+_DID_POLL_URL = "https://api.d-id.com/talks/{talk_id}"
+
+_DID_POLL_INTERVAL_SECONDS = 5
+_DID_MAX_POLL_ATTEMPTS = 120  # 10-minute ceiling
+
+
+# ---------------------------------------------------------------------------
+# D-ID — private helpers
+# ---------------------------------------------------------------------------
+
+
+@_http_retry
+def _did_upload_audio(audio_bytes: bytes, api_key: str) -> str:
+    """POST MP3/WAV to D-ID /audios; return temporary ``url`` for use in /talks."""
+    headers = {"Authorization": f"Basic {api_key}"}
+    files = {"audio": ("speech.mp3", audio_bytes, "audio/mpeg")}
+    resp = requests.post(_DID_AUDIOS_URL, headers=headers, files=files, timeout=120)
+    resp.raise_for_status()
+    data = resp.json()
+    url = data.get("url")
+    if not url:
+        raise UGCServiceError(f"D-ID /audios response missing 'url': {data}")
+    return str(url)
+
+
+@_http_retry
+def _did_create_talk_with_audio(
+    source_url: str,
+    audio_url: str,
+    api_key: str,
+) -> str:
+    """POST to D-ID /talks with a pre-uploaded audio URL; return the talk_id."""
+    headers = {
+        "Authorization": f"Basic {api_key}",
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "source_url": source_url,
+        "script": {"type": "audio", "audio_url": audio_url},
+    }
+    resp = requests.post(_DID_API_URL, json=payload, headers=headers, timeout=60)
+    resp.raise_for_status()
+    data = resp.json()
+    talk_id = data.get("id")
+    if not talk_id:
+        raise UGCServiceError(f"D-ID /talks response missing 'id': {data}")
+    return str(talk_id)
+
+
+def _did_poll_status(talk_id: str, api_key: str) -> str:
+    """Poll GET /talks/{talk_id} every 5 s until status is 'done'. Return result_url."""
+    url = _DID_POLL_URL.format(talk_id=talk_id)
+    headers = {"Authorization": f"Basic {api_key}"}
+
+    for attempt in range(1, _DID_MAX_POLL_ATTEMPTS + 1):
+        try:
+            resp = requests.get(url, headers=headers, timeout=30)
+            resp.raise_for_status()
+            data = resp.json()
+        except requests.RequestException as exc:
+            logger.warning(
+                "[ugc_service] D-ID poll attempt %d/%d failed (%s). Retrying in %ds…",
+                attempt,
+                _DID_MAX_POLL_ATTEMPTS,
+                exc,
+                _DID_POLL_INTERVAL_SECONDS,
+            )
+            time.sleep(_DID_POLL_INTERVAL_SECONDS)
+            continue
+
+        status = data.get("status", "")
+        logger.info(
+            "[ugc_service] D-ID talk %s — status=%r (poll %d/%d).",
+            talk_id,
+            status,
+            attempt,
+            _DID_MAX_POLL_ATTEMPTS,
+        )
+
+        if status == "done":
+            result_url = data.get("result_url")
+            if not result_url:
+                raise UGCServiceError(
+                    f"D-ID talk {talk_id!r} is 'done' but response contains no result_url."
+                    f" Full response: {data}"
+                )
+            return str(result_url)
+
+        if status == "error":
+            error_msg = data.get("error", {})
+            raise UGCServiceError(
+                f"D-ID talk generation failed for talk_id={talk_id!r}: {error_msg}"
+            )
+
+        if status == "rejected":
+            raise UGCServiceError(
+                f"D-ID talk {talk_id!r} was rejected: {data.get('error', data)}"
+            )
+
+        time.sleep(_DID_POLL_INTERVAL_SECONDS)
+
+    raise UGCServiceError(
+        f"D-ID talk {talk_id!r} did not complete within "
+        f"{_DID_MAX_POLL_ATTEMPTS * _DID_POLL_INTERVAL_SECONDS}s "
+        f"({_DID_MAX_POLL_ATTEMPTS} polls)."
+    )
+
+
+# ---------------------------------------------------------------------------
+# D-ID — public API
+# ---------------------------------------------------------------------------
+
+
+def generate_did_avatar_video(
+    source_url: str,
+    script_text: str,
+    voice_id: str | None = None,
+) -> str:
+    """Animate a static image on D-ID's standard ``/talks`` API (Trial-friendly).
+
+    Flow: ElevenLabs TTS (same stack as HeyGen path) → ``POST /audios`` →
+    ``POST /talks`` with ``script: {type: audio, audio_url}`` → poll
+    ``GET /talks/{id}`` until ``done``.
+
+    Args:
+        source_url:  Public HTTPS URL to a face image (jpg/png) D-ID can fetch.
+        script_text: Spoken text; rendered to audio via ElevenLabs.
+        voice_id:    Optional ElevenLabs voice ID. When ``None``, the default
+                     UGC ElevenLabs voice is used.
+
+    Returns:
+        Final CDN URL of the rendered video (``str``).
+
+    Raises:
+        UGCServiceError: API key missing, upload/talk HTTP failure, talk error,
+                         or polling timeout.
+    """
+    api_key = os.environ.get("D_ID_API_KEY", "").strip()
+    if not api_key:
+        raise UGCServiceError("D_ID_API_KEY is not set in the environment.")
+
+    el_voice_id = voice_id if voice_id else _ELEVENLABS_DEFAULT_VOICE_ID
+    logger.info(
+        "[ugc_service] D-ID path: ElevenLabs TTS (voice=%s) then /audios + /talks "
+        "(source_url=%s, chars=%d).",
+        el_voice_id,
+        source_url,
+        len(script_text),
+    )
+
+    audio_bytes = generate_elevenlabs_audio(script_text, voice_id=el_voice_id)
+
+    try:
+        did_audio_url = _did_upload_audio(audio_bytes, api_key)
+    except requests.HTTPError as exc:
+        status = exc.response.status_code if exc.response is not None else "?"
+        body = (exc.response.text[:400] if exc.response is not None else "") or ""
+        raise UGCServiceError(
+            f"D-ID /audios upload failed with HTTP {status}: {body}"
+        ) from exc
+    except requests.RequestException as exc:
+        raise UGCServiceError(f"D-ID /audios network error: {exc}") from exc
+
+    logger.info("[ugc_service] D-ID audio uploaded; temporary url present (len=%d).", len(did_audio_url))
+
+    try:
+        talk_id = _did_create_talk_with_audio(source_url, did_audio_url, api_key)
+    except requests.HTTPError as exc:
+        status = exc.response.status_code if exc.response is not None else "?"
+        body = (exc.response.text[:400] if exc.response is not None else "") or ""
+        raise UGCServiceError(
+            f"D-ID /talks request failed with HTTP {status}: {body}"
+        ) from exc
+    except requests.RequestException as exc:
+        raise UGCServiceError(f"D-ID /talks network error: {exc}") from exc
+
+    logger.info("[ugc_service] D-ID talk_id=%s — polling GET /talks/{id}…", talk_id)
+    result_url = _did_poll_status(talk_id, api_key)
+    logger.info("[ugc_service] D-ID talk completed: %s", result_url)
+    return result_url
+
+
+# ---------------------------------------------------------------------------
+# Provider dispatcher
+# ---------------------------------------------------------------------------
+
+
+def dispatch_ugc_generation(
+    provider: str,
+    script_text: str,
+    visual_reference: str,
+    voice_id: str | None = None,
+) -> str:
+    """Route UGC video generation to the correct provider pipeline.
+
+    Args:
+        provider:         ``"heygen_elevenlabs"`` or ``"d-id"``.
+        script_text:      The spoken script text.
+        visual_reference: HeyGen avatar ID (heygen_elevenlabs) or D-ID source
+                          image URL / Avatar ID (d-id).
+        voice_id:         Optional ElevenLabs voice ID for both audio-based
+                          providers. Forwarded to ``generate_elevenlabs_audio`` /
+                          ``generate_did_avatar_video`` when supplied.
+
+    Returns:
+        Final CDN video URL (``str``).
+
+    Raises:
+        ValueError:      Unknown provider string.
+        UGCServiceError: Any unrecoverable API failure from the chosen provider.
+    """
+    if provider == "heygen_elevenlabs":
+        logger.info("[ugc_service] dispatch → heygen_elevenlabs pipeline.")
+        el_voice_id = voice_id if voice_id else _ELEVENLABS_DEFAULT_VOICE_ID
+        audio_bytes = generate_elevenlabs_audio(script_text, voice_id=el_voice_id)
+        return generate_heygen_avatar_video(visual_reference, audio_bytes)
+
+    if provider == "d-id":
+        logger.info("[ugc_service] dispatch → d-id pipeline (/audios + /talks audio).")
+        return generate_did_avatar_video(
+            source_url=visual_reference,
+            script_text=script_text,
+            voice_id=voice_id,
+        )
+
+    raise ValueError(
+        f"Unknown UGC provider {provider!r}. "
+        "Expected 'heygen_elevenlabs' or 'd-id'."
+    )
 
 
 ================================================================================
@@ -4861,6 +5743,98 @@ def video_payload_for_engine(
 
 
 ================================================================================
+FILE: test_ugc.py
+================================================================================
+
+import requests
+import time
+import sys
+
+BASE_URL = "http://127.0.0.1:8888"
+EMAIL = "gal0673@gmail.com" # החלף למייל שאיתו אתה מתחבר למערכת
+PASSWORD = "Se1_f0DgD2OkrhfshKGnXmx2junP5VgQ" # החלף לסיסמה שלך!
+
+def test_ugc_generation():
+    print("🔑 מתחבר למערכת...")
+    
+    # שימוש ב-Session שומר אוטומטית את העוגיות (Cookies) של ההתחברות
+    session = requests.Session()
+    
+    # 1. התחברות
+    login_data = {
+        "username": EMAIL,
+        "password": PASSWORD
+    }
+    
+    try:
+        login_res = session.post(f"{BASE_URL}/auth/login", data=login_data)
+        login_res.raise_for_status()
+        print("✅ התחברות בוצעה בהצלחה!")
+    except Exception as e:
+        print(f"❌ שגיאת התחברות (בדוק אימייל וסיסמה): {e}")
+        if 'login_res' in locals(): print(login_res.text)
+        sys.exit(1)
+
+    print("\n🚀 מתחיל טסט יצירת סרטון UGC...")
+    
+    # 2. שליחת בקשה לייצור
+    # D-ID מורידים את התמונה מה-URL שלך — חייב להחזיר HTTP 200 ותמונה אמיתית.
+    # הקישור Example_of_a_portrait.jpg בוויקימדיה מחזיר 404 (הקובץ לא קיים), ואז D-ID: "Unsupported file url".
+    # alice.jpg הוא נכס רשמי של D-ID (פורטרט נשי) — יציב לבדיקות.
+    payload = {
+        "url": "https://www.tsite.co.il",
+        "brief": "תדגיש שהמערכת מהירה מאוד וקלה לשימוש ללא תוספים.",
+        "provider": "d-id",
+        "avatar_id": "https://d-id-public-bucket.s3.us-west-2.amazonaws.com/alice.jpg",
+        "video_length": "15s",
+    }
+    
+    try:
+        # שים לב שאנחנו משתמשים ב-session.post ולא ב-requests.post
+        res = session.post(f"{BASE_URL}/generate-ugc", json=payload)
+        res.raise_for_status()
+        task_id = res.json().get("task_id")
+        print(f"✅ משימה נוצרה בהצלחה! Task ID: {task_id}")
+    except Exception as e:
+        print(f"❌ שגיאה ביצירת המשימה: {e}")
+        if 'res' in locals(): print(res.text)
+        sys.exit(1)
+
+    # 3. דגימה (Polling) של הסטטוס
+    print("⏳ ממתין לסיום התהליך (זה עשוי לקחת 2-4 דקות)...")
+    while True:
+        try:
+            status_res = session.get(f"{BASE_URL}/status/{task_id}")
+            status_res.raise_for_status()
+            data = status_res.json()
+            
+            ugc_status = data.get("ugc_status")
+            print(f"[{time.strftime('%H:%M:%S')}] סטטוס נוכחי: {ugc_status}")
+            
+            if ugc_status == "completed":
+                print("\n🎉 הסרטון מוכן!!!")
+                print("==================================================")
+                print("וידאו גלמי:")
+                print(data.get("ugc_raw_video_url"))
+                print("==================================================")
+                print("תסריט ה-AI שנוצר:")
+                print(data.get("ugc_script"))
+                break
+            elif ugc_status == "failed" or data.get("status") == "failed":
+                print(f"\n❌ המשימה נכשלה!")
+                print(f"שגיאה: {data.get('ugc_error') or data.get('error')}")
+                break
+                
+        except Exception as e:
+            print(f"⚠️ שגיאה בבדיקת הסטטוס: {e}")
+            
+        time.sleep(10)
+
+if __name__ == "__main__":
+    test_ugc_generation()
+
+
+================================================================================
 FILE: ugc_director.py
 ================================================================================
 
@@ -4918,8 +5892,8 @@ UGC_DIRECTOR_SYSTEM = """\
 You are an elite UGC (User-Generated Content) commercial director specialising in TikTok and \
 Instagram Reels ads for the Israeli market. You have an instinctive feel for the scroll-stopping \
 hook, the emotionally resonant benefit reveal, and the urgency-driven CTA — all in native, \
-street-level Hebrew that feels like it was written by a real Israeli content creator, never by a \
-machine.
+street-level Hebrew that sounds like it came from a real Israeli creator filming on their phone, \
+never from an AI or a corporate marketing department.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
  INPUTS
@@ -4939,15 +5913,48 @@ weave its specifics (numbers, offers, audience pain points) into the script.
 If the brief is absent or empty, rely solely on the scraped website content.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ VOICE & TONE — CRITICAL
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+The spoken_text fields are fed to a HeyGen avatar via a TTS (text-to-speech) engine.
+Natural-sounding Hebrew lip-sync depends entirely on how the text is written.
+You MUST follow these rules or the video will sound robotic:
+
+① CONVERSATIONAL ISRAELI OPENER — start the hook with an authentic, casual Israeli opener such as:
+   "תקשיבו...", "מכירים את זה ש...?", "רגע, זה אמיתי?", "אני חייב לספר לכם משהו...",
+   "אתם לא הולכים להאמין", "אוקיי, שנייה..."
+   Choose whichever fits the brand. Never open with a stiff formal sentence.
+
+② SENTENCE FRAGMENTS & PUNCHY BURSTS — break long sentences into very short, punchy fragments.
+   Each fragment should feel like a separate breath or beat:
+   ✓ GOOD: "המחיר? ... מצחיק. ... כי אתם שווים הרבה יותר."
+   ✗ BAD:  "המחיר הוא זול מאוד ומתאים לכל אחד."
+
+③ FORCED PAUSES VIA PUNCTUATION — use commas and ellipses deliberately to create breathing room
+   for the TTS engine. This is what makes the avatar sound human, not robotic:
+   – Use "..." (three dots) for a longer, dramatic pause — before a reveal, twist, or CTA.
+   – Use "," for a brief natural breath mid-sentence.
+   – Use "." to end a thought with finality.
+   Never write a sentence longer than 12 words without at least one pause marker.
+
+④ VARIED PACING — alternate between fast staccato beats and slower emotional moments:
+   – Fast (hook/excitement): short words, 2-4 word bursts, lots of commas.
+   – Slow (trust/emotion): slightly longer phrases, ellipses before key words.
+
+⑤ NO FORMAL LANGUAGE — avoid formal or literary Hebrew constructions. Write exactly how a
+   25-35 year old Israeli would speak naturally in a WhatsApp voice note:
+   ✓ Casual: "באמת, אין דבר כזה בשוק"
+   ✗ Formal: "מוצר זה הינו ייחודי בשוקהישראלי"
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
  SCRIPT CRAFT RULES
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 • Language: ALL spoken_text and on_screen_text must be in natural, conversational, punchy Hebrew. \
   No English words unless they are a universally known brand name or tech term that Israelis \
   themselves use (e.g., "אפליקציה", "קאשבק"). Never Anglicise unnecessarily.
 • spoken_text is the exact transcript sent to a TTS voice engine. Rules:
-    – Natural speech rhythm — short bursts, pauses implied by punctuation (comma, dash, ellipsis).
+    – Apply ALL five voice & tone rules above without exception.
     – No emojis, no asterisks, no markdown, no hashtags, no parenthetical stage directions.
-    – Pure spoken Hebrew text only.
+    – Pure spoken Hebrew text only — punctuation (, . ...) is the only allowed formatting.
 • on_screen_text is the graphic overlay. Rules:
     – Maximum 3-4 Hebrew words, OR an empty string "" if no overlay fits that scene.
     – Never repeat the spoken_text verbatim — it should amplify or contrast it.
@@ -4958,11 +5965,13 @@ If the brief is absent or empty, rely solely on the scraped website content.
     – "avatar_with_cta"    → Avatar with a prominent CTA button overlay. \
                               Use for the final scene only.
 • Structure every script with this arc:
-    1. Hook (scene 1)     → "full_avatar" — one explosive sentence that stops the scroll. \
+    1. Hook (scene 1)     → "full_avatar" — one explosive opener that stops the scroll. \
+                            Must begin with a casual Israeli opener (rule ①). \
                             Lead with a bold question, surprising stat, or relatable pain point.
     2. Body (middle)      → "avatar_with_bullets" — one key benefit per scene. \
-                            Each scene is self-contained and punchy.
-    3. CTA (last scene)   → "avatar_with_cta" — clear imperative action + urgency or value.
+                            Each scene is self-contained, punchy, and uses pause markers.
+    3. CTA (last scene)   → "avatar_with_cta" — clear imperative + urgency, with a dramatic \
+                            ellipsis before the action word (e.g., "אז מה אתם מחכים... כנסו עכשיו!").
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
  OUTPUT FORMAT — STRICT JSON
@@ -5187,6 +6196,7 @@ from __future__ import annotations
 
 import atexit
 import json
+import logging
 import os
 import re
 import signal
@@ -5204,6 +6214,8 @@ from main import crawl_from_url, quit_all_active_drivers, run_agency_banner_pipe
 from models import BannerTask
 from services.banner_service import TASKS_DIR, persist_task, rendered_banner_urls_for_task
 from services.video_service import video_engine_render_url, video_payload_for_engine
+
+logger = logging.getLogger(__name__)
 
 # ── Chrome leak-prevention: guarantee cleanup on any exit path ────────────────
 #
@@ -5513,6 +6525,151 @@ def render_video_task(
     public_base: str,
 ) -> None:
     execute_video_render_worker(task_id, design_type, aspect_ratio, public_base)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# UGC video pipeline task
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+@celery_app.task(
+    bind=True,
+    base=BannerGenerationTask,
+    name="run_ugc_task",
+    queue="video_queue",
+)
+def run_ugc_task(
+    self: BannerGenerationTask,
+    task_id: str,
+    url: str,
+    brief: str | None,
+    avatar_id: str,
+    video_length: str,
+    provider: str = "heygen_elevenlabs",
+) -> None:
+    """End-to-end UGC video pipeline.
+
+    1. Crawl *url* → scraped_content.txt
+    2. Generate Hebrew script via GPT-4o (ugc_director)
+    3 & 4. Dispatch video generation to the chosen provider:
+           - "heygen_elevenlabs": ElevenLabs TTS → HeyGen avatar video
+           - "d-id":             D-ID all-in-one (TTS + video in a single call)
+    5. Persist final URL and mark ugc_status='completed'
+
+    All errors set ugc_status='failed' and ugc_error before re-raising as
+    BannerPipelineFatalError so the base class does not trigger banner-status
+    retries and the on_failure handler skips its status='failed' write.
+    """
+    from services.ugc_service import (
+        UGCServiceError,
+        dispatch_ugc_generation,
+    )
+    import ugc_director
+
+    task_uuid = uuid.UUID(task_id)
+    work_dir = TASKS_DIR / task_id
+    work_dir.mkdir(parents=True, exist_ok=True)
+
+    logger.info(
+        "[run_ugc_task] task_id=%s  url=%s  avatar=%s  length=%s  provider=%s",
+        task_id, url, avatar_id, video_length, provider,
+    )
+
+    try:
+        # ── Step 1: crawl ────────────────────────────────────────────────────
+        try:
+            crawl_from_url(url, work_dir=work_dir, campaign_brief=brief)
+        except SoftTimeLimitExceeded:
+            persist_task(
+                task_uuid,
+                ugc_status="failed",
+                ugc_error="Crawl timed out (Celery soft time limit exceeded).",
+            )
+            raise
+
+        scraped_path = work_dir / "scraped_content.txt"
+        if not scraped_path.is_file():
+            msg = "scraped_content.txt not found after crawl."
+            persist_task(task_uuid, ugc_status="failed", ugc_error=msg)
+            raise BannerPipelineFatalError(f"[run_ugc_task] {msg}")
+
+        scraped_text = scraped_path.read_text(encoding="utf-8").strip()
+        if not scraped_text:
+            msg = "scraped_content.txt is empty after crawl."
+            persist_task(task_uuid, ugc_status="failed", ugc_error=msg)
+            raise BannerPipelineFatalError(f"[run_ugc_task] {msg}")
+
+        persist_task(task_uuid, ugc_status="scraped")
+        logger.info("[run_ugc_task] task_id=%s  crawl complete (%d chars).", task_id, len(scraped_text))
+
+        # ── Step 2: generate UGC script ──────────────────────────────────────
+        persist_task(task_uuid, ugc_status="generating_script")
+        logger.info("[run_ugc_task] task_id=%s  generating UGC script…", task_id)
+
+        try:
+            ugc_script = ugc_director.generate_ugc_script(
+                scraped_text=scraped_text,
+                brief=brief,
+                video_length=video_length,
+            )
+        except Exception as exc:
+            msg = f"UGC script generation failed: {exc}"
+            logger.error("[run_ugc_task] task_id=%s  %s", task_id, msg)
+            persist_task(task_uuid, ugc_status="failed", ugc_error=msg)
+            raise BannerPipelineFatalError(f"[run_ugc_task] {msg}") from exc
+
+        persist_task(task_uuid, ugc_script=ugc_script)
+        logger.info(
+            "[run_ugc_task] task_id=%s  script saved (%d scenes).",
+            task_id,
+            len(ugc_script.get("scenes", [])),
+        )
+
+        # ── Steps 3 & 4: build script text, then dispatch to provider ────────
+        scenes = ugc_script.get("scenes") or []
+        combined_spoken_text = " ".join(
+            scene.get("spoken_text", "").strip() for scene in scenes
+        ).strip()
+
+        if not combined_spoken_text:
+            msg = "UGC script has no spoken text in any scene."
+            persist_task(task_uuid, ugc_status="failed", ugc_error=msg)
+            raise BannerPipelineFatalError(f"[run_ugc_task] {msg}")
+
+        persist_task(task_uuid, ugc_status="generating_video")
+        logger.info(
+            "[run_ugc_task] task_id=%s  dispatching %d chars to provider=%r…",
+            task_id,
+            len(combined_spoken_text),
+            provider,
+        )
+
+        try:
+            video_url = dispatch_ugc_generation(
+                provider=provider,
+                script_text=combined_spoken_text,
+                visual_reference=avatar_id,
+            )
+        except (UGCServiceError, ValueError) as exc:
+            msg = f"Video generation failed ({provider}): {exc}"
+            logger.error("[run_ugc_task] task_id=%s  %s", task_id, msg)
+            persist_task(task_uuid, ugc_status="failed", ugc_error=msg)
+            raise BannerPipelineFatalError(f"[run_ugc_task] {msg}") from exc
+
+        # ── Step 5: persist completed state ──────────────────────────────────
+        persist_task(
+            task_uuid,
+            ugc_raw_video_url=video_url,
+            ugc_status="completed",
+            ugc_error=None,
+        )
+        logger.info(
+            "[run_ugc_task] task_id=%s  COMPLETED. video_url=%s",
+            task_id,
+            video_url,
+        )
+    finally:
+        _emergency_chrome_cleanup()
 
 
 ================================================================================
@@ -8194,6 +9351,50 @@ function readSkipLatestRestoreFlag() {
   }
 }
 
+/** Renders UGC video script scenes (spoken + on-screen copy). */
+function UgcScriptScenesBody({ scenes }) {
+  if (!Array.isArray(scenes) || scenes.length === 0) return null
+  return (
+    <ul className="space-y-4 pt-2">
+      {scenes.map((scene, i) => {
+        const num = scene?.scene_number ?? i + 1
+        const spoken = typeof scene?.spoken_text === 'string' ? scene.spoken_text.trim() : ''
+        const onScreen = typeof scene?.on_screen_text === 'string' ? scene.on_screen_text.trim() : ''
+        return (
+          <li
+            key={`ugc-scene-${num}-${i}`}
+            className="rounded-xl border border-slate-200/90 dark:border-slate-700/90 bg-slate-50/80 dark:bg-slate-950/50 p-4 text-right"
+          >
+            <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
+              <span className="inline-flex items-center rounded-full bg-indigo-100 dark:bg-indigo-950/80 px-2.5 py-0.5 text-[11px] font-semibold text-indigo-800 dark:text-indigo-200 ring-1 ring-indigo-200/80 dark:ring-indigo-800/60">
+                סצנה {num}
+              </span>
+            </div>
+            <div className="space-y-3">
+              <div>
+                <p className="text-[10px] uppercase tracking-wide text-slate-500 dark:text-slate-400 mb-1">
+                  דיבור (תמליל)
+                </p>
+                <p className="text-sm text-slate-900 dark:text-slate-100 leading-relaxed whitespace-pre-wrap" dir="rtl">
+                  {spoken || '—'}
+                </p>
+              </div>
+              <div>
+                <p className="text-[10px] uppercase tracking-wide text-slate-500 dark:text-slate-400 mb-1">
+                  טקסט על המסך
+                </p>
+                <p className="text-sm font-medium text-slate-800 dark:text-slate-200 leading-relaxed" dir="rtl">
+                  {onScreen || '—'}
+                </p>
+              </div>
+            </div>
+          </li>
+        )
+      })}
+    </ul>
+  )
+}
+
 
 // ─── Main workspace ───────────────────────────────────────────────────────────
 
@@ -8779,6 +9980,25 @@ export default function BannerWorkspace() {
                 </div>
               )}
 
+              {/* UGC script while banner pipeline not yet completed (e.g. UGC-only or mid-run) */}
+              {!completed &&
+                statusPayload?.ugc_script &&
+                Array.isArray(statusPayload.ugc_script.scenes) &&
+                statusPayload.ugc_script.scenes.length > 0 && (
+                  <details className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm">
+                    <summary className="cursor-pointer select-none px-5 py-3.5 text-sm font-semibold text-slate-700 dark:text-slate-200 list-none flex items-center justify-between gap-2">
+                      <span>תסריט וידאו — UGC Script</span>
+                      <span className="text-slate-400 text-xs font-normal">לחץ לפתיחה</span>
+                    </summary>
+                    <div className="px-5 pb-5 border-t border-slate-100 dark:border-slate-800">
+                      <p className="text-xs text-slate-500 dark:text-slate-400 pt-3 mb-1 leading-relaxed">
+                        תסריט שנוצר לווידאו UGC — דיבור (TTS) וטקסט גרפי לכל סצנה.
+                      </p>
+                      <UgcScriptScenesBody scenes={statusPayload.ugc_script.scenes} />
+                    </div>
+                  </details>
+                )}
+
               {completed && (
                 <div className="space-y-6">
 
@@ -9158,6 +10378,25 @@ export default function BannerWorkspace() {
                           </dd>
                         </div>
                       </dl>
+
+                      {statusPayload.ugc_script &&
+                        Array.isArray(statusPayload.ugc_script.scenes) &&
+                        statusPayload.ugc_script.scenes.length > 0 && (
+                          <div className="mt-6 pt-6 border-t border-slate-100 dark:border-slate-800">
+                            <details className="rounded-xl border border-slate-200/90 dark:border-slate-700/90 bg-slate-50/50 dark:bg-slate-950/40 overflow-hidden">
+                              <summary className="cursor-pointer select-none px-4 py-3 text-sm font-semibold text-slate-700 dark:text-slate-200 list-none flex items-center justify-between gap-2">
+                                <span>תסריט וידאו — UGC Script</span>
+                                <span className="text-slate-400 text-xs font-normal">לחץ לפתיחה</span>
+                              </summary>
+                              <div className="px-4 pb-4 border-t border-slate-200/80 dark:border-slate-700/80 bg-white/60 dark:bg-slate-900/40">
+                                <p className="text-xs text-slate-500 dark:text-slate-400 pt-3 mb-2 leading-relaxed">
+                                  דיבור (תמליל ל־TTS) וטקסט על המסך לכל סצנה.
+                                </p>
+                                <UgcScriptScenesBody scenes={statusPayload.ugc_script.scenes} />
+                              </div>
+                            </details>
+                          </div>
+                        )}
                     </div>
                   </details>
 

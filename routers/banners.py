@@ -102,6 +102,7 @@ def generate_ugc(
         raise HTTPException(status_code=400, detail="url must not be empty")
 
     brief = (body.brief or "").strip() or None
+    custom_script = (body.custom_script or "").strip() or None
     avatar_id = body.avatar_id.strip()
     if not avatar_id:
         raise HTTPException(status_code=400, detail="avatar_id must not be empty")
@@ -142,6 +143,7 @@ def generate_ugc(
     try:
         run_ugc_task.apply_async(
             args=[tid, url, brief, avatar_id, body.video_length],
+            kwargs={"provider": body.provider, "custom_script": custom_script},
             queue="video_queue",
         )
     except Exception as exc:

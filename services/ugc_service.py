@@ -3,18 +3,25 @@
 Public API
 ----------
 generate_elevenlabs_audio(text, voice_id) -> bytes
-    Convert text to MP3 via ElevenLabs v1 text-to-speech.
+    Convert text to MP3 via ElevenLabs TTS (``eleven_v3`` + ``language_code: he`` + voice_settings).
+    ``eleven_multilingual_v2`` does not list Hebrew; using it drops non-Latin script and only speaks e.g. brand acronyms.
 
 generate_heygen_avatar_video(avatar_id, audio_bytes) -> str
     Upload audio, submit a HeyGen /v2/video/generate job, poll to completion,
     and return the final CDN video URL.
+
+generate_did_avatar_video(source_url, script_text, voice_id) -> str
+    ElevenLabs TTS → POST /audios → POST /talks (static ``source_url`` + ``script.type: audio``),
+    poll ``GET /talks/{id}`` to completion, return ``result_url``. Trial-safe (no /expressives).
+
+dispatch_ugc_generation(provider, script_text, visual_reference) -> str
+    Route to the correct provider pipeline and return the video URL.
 
 All HTTP calls are wrapped with tenacity for transient-failure resilience.
 """
 
 from __future__ import annotations
 
-import io
 import logging
 import os
 import time
@@ -34,19 +41,29 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 _ELEVENLABS_TTS_URL = "https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
 
-# Default: "Daniel" — ElevenLabs multilingual v2 voice with strong Hebrew support.
+# Production UGC voice ID; TTS uses ``eleven_v3`` (Hebrew-capable) + ``language_code: he`` + voice_settings.
 # Callers may pass any valid ElevenLabs voice_id.
-_ELEVENLABS_DEFAULT_VOICE_ID = "onwK4e9ZLuTAKqWW03F9"
+_ELEVENLABS_DEFAULT_VOICE_ID = "Wuv1s5YTNCjL9mFJTqo4"
 
 # ---------------------------------------------------------------------------
 # HeyGen endpoints
 # ---------------------------------------------------------------------------
+# HeyGen base URLs.
+# IMPORTANT: the asset upload endpoint lives on upload.heygen.com, not api.heygen.com.
 _HEYGEN_ASSET_UPLOAD_URL = "https://upload.heygen.com/v1/asset"
 _HEYGEN_VIDEO_GENERATE_URL = "https://api.heygen.com/v2/video/generate"
 _HEYGEN_VIDEO_STATUS_URL = "https://api.heygen.com/v1/video_status.get"
 
 _POLL_INTERVAL_SECONDS = 10
 _MAX_POLL_ATTEMPTS = 72  # ~12 minutes ceiling; HeyGen can be slow on first renders
+
+
+def _log_heygen_error_response(resp: requests.Response, context: str) -> None:
+    """Print full response body for non-2xx so upstream rejections are visible in worker logs."""
+    if 200 <= resp.status_code < 300:
+        return
+    body = resp.text or ""
+    print(f"[HeyGen] {context} HTTP {resp.status_code} body: {body}")
 
 
 # ---------------------------------------------------------------------------
@@ -94,7 +111,9 @@ def _elevenlabs_tts_request(text: str, voice_id: str, api_key: str) -> bytes:
     }
     payload = {
         "text": text,
-        "model_id": "eleven_multilingual_v2",
+        "model_id": "eleven_v3",
+        # eleven_multilingual_v2 has no Hebrew; without this, only Latin fragments (e.g. "TSITE") are spoken.
+        "language_code": "he",
         "voice_settings": {
             "stability": 0.50,
             "similarity_boost": 0.75,
@@ -102,6 +121,8 @@ def _elevenlabs_tts_request(text: str, voice_id: str, api_key: str) -> bytes:
             "use_speaker_boost": True,
         },
     }
+    preview = text[:100] if text else ""
+    print(f"[ugc_service] ElevenLabs TTS text preview (first 100 chars): {preview}")
     resp = requests.post(url, json=payload, headers=headers, timeout=120)
     resp.raise_for_status()
     return resp.content
@@ -116,13 +137,11 @@ def generate_elevenlabs_audio(
     text: str,
     voice_id: str = _ELEVENLABS_DEFAULT_VOICE_ID,
 ) -> bytes:
-    """Convert *text* to MP3 via ElevenLabs v1 text-to-speech.
+    """Convert *text* to MP3 via ElevenLabs text-to-speech (``eleven_v3``, Hebrew via ``language_code``).
 
     Args:
-        text:     The spoken text to synthesise.  Hebrew and other languages
-                  are handled by ``eleven_multilingual_v2``.
-        voice_id: ElevenLabs voice ID.  Defaults to a multilingual voice with
-                  strong Hebrew support.
+        text:     The spoken text to synthesise (``language_code`` is set to Hebrew for the API).
+        voice_id: ElevenLabs voice ID.  Defaults to the configured UGC voice.
 
     Returns:
         Raw MP3 bytes ready to upload to HeyGen or save to disk.
@@ -164,26 +183,39 @@ def generate_elevenlabs_audio(
 
 
 @_http_retry
-def _heygen_upload_asset(audio_bytes: bytes, api_key: str) -> str:
-    """Upload *audio_bytes* (MP3) to HeyGen and return the ``audio_asset_id``."""
-    headers = {"X-Api-Key": api_key}
-    files = {"file": ("audio.mp3", io.BytesIO(audio_bytes), "audio/mpeg")}
-    resp = requests.post(
-        _HEYGEN_ASSET_UPLOAD_URL, headers=headers, files=files, timeout=120
-    )
+def _upload_heygen_audio_asset(audio_bytes: bytes, api_key: str) -> str:
+    """Upload *audio_bytes* (MP3) to HeyGen and return the ``audio_asset_id``.
+
+    Per HeyGen docs (upload.heygen.com/v1/asset):
+      - Host:         upload.heygen.com   (NOT api.heygen.com)
+      - Method:       POST
+      - Auth header:  X-API-KEY
+      - Content-Type: audio/mpeg          (NOT multipart/form-data)
+      - Body:         raw binary bytes    (NOT files= / form fields)
+
+    HeyGen signals success with ``{"code": 100, "data": {"id": "..."}}``.
+    """
+    url = _HEYGEN_ASSET_UPLOAD_URL
+    headers = {
+        "X-API-KEY": api_key,
+        "Content-Type": "audio/mpeg",
+    }
+    print(f"[DEBUG] Full URL: {url}")
+    print(f"[DEBUG] Headers: {{'X-API-KEY': '<redacted>', 'Content-Type': 'audio/mpeg'}}")
+    print(f"[DEBUG] Body: raw bytes, len={len(audio_bytes)}")
+    resp = requests.post(url, headers=headers, data=audio_bytes, timeout=120)
+    if resp.status_code != 200:
+        print(f"[DEBUG] HeyGen asset upload error response: {resp.text}")
     resp.raise_for_status()
     data = resp.json()
 
-    # Accept several key aliases HeyGen has used across API versions.
-    asset_id = (
-        data.get("data", {}).get("id")
-        or data.get("data", {}).get("asset_id")
-        or data.get("asset_id")
-        or data.get("id")
-    )
+    if data.get("code") != 100:
+        raise UGCServiceError(f"HeyGen asset upload returned error response: {data}")
+
+    asset_id = data.get("data", {}).get("id")
     if not asset_id:
         raise UGCServiceError(
-            f"HeyGen asset upload succeeded but returned no asset ID. Response: {data}"
+            f"HeyGen asset upload successful (code=100) but no asset ID in response: {data}"
         )
     return str(asset_id)
 
@@ -194,9 +226,13 @@ def _heygen_request_video(
     audio_asset_id: str,
     api_key: str,
 ) -> str:
-    """Submit a HeyGen /v2/video/generate job and return the ``video_id``."""
+    """Submit a HeyGen /v2/video/generate job and return the ``video_id``.
+
+    The v2 endpoint returns ``{"error": null, "data": {"video_id": "..."}}`` on success —
+    it does NOT include a ``code`` field like the v1 endpoints do.
+    """
     headers = {
-        "X-Api-Key": api_key,
+        "x-api-key": api_key,
         "Content-Type": "application/json",
     }
     payload = {
@@ -211,30 +247,30 @@ def _heygen_request_video(
                     "type": "audio",
                     "audio_asset_id": audio_asset_id,
                 },
-                "background": {
-                    # Solid green screen; use "color" type since HeyGen only
-                    # supports transparent backgrounds in their Studio product.
-                    "type": "color",
-                    "value": "#00FF00",
-                },
             }
         ],
-        "dimension": {"width": 1280, "height": 720},
-        "test": False,
+        "dimension": {"width": 1080, "height": 1920},
     }
+    print(f"Calling HeyGen: {_HEYGEN_VIDEO_GENERATE_URL}")
     resp = requests.post(
         _HEYGEN_VIDEO_GENERATE_URL, json=payload, headers=headers, timeout=60
     )
+    _log_heygen_error_response(resp, "POST /v2/video/generate")
     resp.raise_for_status()
     data = resp.json()
 
-    video_id = (
-        data.get("data", {}).get("video_id")
-        or data.get("video_id")
-    )
+    # v2 uses {"error": null, "data": {"video_id": "..."}} — no "code" field.
+    # Treat any non-null "error" value as a failure.
+    api_error = data.get("error")
+    if api_error is not None:
+        raise UGCServiceError(
+            f"HeyGen /v2/video/generate returned an error: {api_error} | full response: {data}"
+        )
+
+    video_id = (data.get("data") or {}).get("video_id")
     if not video_id:
         raise UGCServiceError(
-            f"HeyGen /v2/video/generate succeeded but returned no video_id. Response: {data}"
+            f"HeyGen /v2/video/generate response missing video_id: {data}"
         )
     return str(video_id)
 
@@ -245,16 +281,18 @@ def _heygen_poll_status(video_id: str, api_key: str) -> str:
     Returns the final CDN video URL on success.
     Raises UGCServiceError on failure or timeout.
     """
-    headers = {"X-Api-Key": api_key}
+    headers = {"x-api-key": api_key}
 
     for attempt in range(1, _MAX_POLL_ATTEMPTS + 1):
         try:
+            print(f"Calling HeyGen: {_HEYGEN_VIDEO_STATUS_URL}?video_id={video_id}")
             resp = requests.get(
                 _HEYGEN_VIDEO_STATUS_URL,
                 params={"video_id": video_id},
                 headers=headers,
                 timeout=30,
             )
+            _log_heygen_error_response(resp, "GET video_status.get")
             resp.raise_for_status()
             data = resp.json()
         except requests.RequestException as exc:
@@ -338,7 +376,9 @@ def generate_heygen_avatar_video(avatar_id: str, audio_bytes: bytes) -> str:
         "[ugc_service] Uploading %d bytes of audio to HeyGen.", len(audio_bytes)
     )
     try:
-        audio_asset_id = _heygen_upload_asset(audio_bytes, api_key)
+        audio_asset_id = _upload_heygen_audio_asset(audio_bytes, api_key)
+    except UGCServiceError:
+        raise  # already descriptive; propagate as-is
     except requests.HTTPError as exc:
         status = exc.response.status_code if exc.response is not None else "?"
         body = (exc.response.text[:400] if exc.response is not None else "") or ""
@@ -349,6 +389,10 @@ def generate_heygen_avatar_video(avatar_id: str, audio_bytes: bytes) -> str:
         raise UGCServiceError(f"HeyGen asset upload network error: {exc}") from exc
 
     logger.info("[ugc_service] HeyGen audio_asset_id=%s", audio_asset_id)
+    print(
+        f"[DEBUG] generate_heygen_avatar_video: using asset id from upload "
+        f"as voice.audio_asset_id={audio_asset_id!r} for POST /v2/video/generate"
+    )
 
     # ── Step B: request video generation ───────────────────────────────────
     logger.info(
@@ -356,6 +400,8 @@ def generate_heygen_avatar_video(avatar_id: str, audio_bytes: bytes) -> str:
     )
     try:
         video_id = _heygen_request_video(avatar_id, audio_asset_id, api_key)
+    except UGCServiceError:
+        raise  # already descriptive; propagate as-is
     except requests.HTTPError as exc:
         status = exc.response.status_code if exc.response is not None else "?"
         body = (exc.response.text[:400] if exc.response is not None else "") or ""
@@ -375,3 +421,239 @@ def generate_heygen_avatar_video(avatar_id: str, audio_bytes: bytes) -> str:
     video_url = _heygen_poll_status(video_id, api_key)
     logger.info("[ugc_service] HeyGen video completed: %s", video_url)
     return video_url
+
+
+# ---------------------------------------------------------------------------
+# D-ID endpoints (standard /talks — static image + uploaded audio; Trial-compatible)
+# ---------------------------------------------------------------------------
+_DID_API_URL = "https://api.d-id.com/talks"
+_DID_AUDIOS_URL = "https://api.d-id.com/audios"
+_DID_POLL_URL = "https://api.d-id.com/talks/{talk_id}"
+
+_DID_POLL_INTERVAL_SECONDS = 5
+_DID_MAX_POLL_ATTEMPTS = 120  # 10-minute ceiling
+
+
+# ---------------------------------------------------------------------------
+# D-ID — private helpers
+# ---------------------------------------------------------------------------
+
+
+@_http_retry
+def _did_upload_audio(audio_bytes: bytes, api_key: str) -> str:
+    """POST MP3/WAV to D-ID /audios; return temporary ``url`` for use in /talks."""
+    headers = {"Authorization": f"Basic {api_key}"}
+    files = {"audio": ("speech.mp3", audio_bytes, "audio/mpeg")}
+    resp = requests.post(_DID_AUDIOS_URL, headers=headers, files=files, timeout=120)
+    resp.raise_for_status()
+    data = resp.json()
+    url = data.get("url")
+    if not url:
+        raise UGCServiceError(f"D-ID /audios response missing 'url': {data}")
+    return str(url)
+
+
+@_http_retry
+def _did_create_talk_with_audio(
+    source_url: str,
+    audio_url: str,
+    api_key: str,
+) -> str:
+    """POST to D-ID /talks with a pre-uploaded audio URL; return the talk_id."""
+    headers = {
+        "Authorization": f"Basic {api_key}",
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "source_url": source_url,
+        "script": {"type": "audio", "audio_url": audio_url},
+    }
+    resp = requests.post(_DID_API_URL, json=payload, headers=headers, timeout=60)
+    resp.raise_for_status()
+    data = resp.json()
+    talk_id = data.get("id")
+    if not talk_id:
+        raise UGCServiceError(f"D-ID /talks response missing 'id': {data}")
+    return str(talk_id)
+
+
+def _did_poll_status(talk_id: str, api_key: str) -> str:
+    """Poll GET /talks/{talk_id} every 5 s until status is 'done'. Return result_url."""
+    url = _DID_POLL_URL.format(talk_id=talk_id)
+    headers = {"Authorization": f"Basic {api_key}"}
+
+    for attempt in range(1, _DID_MAX_POLL_ATTEMPTS + 1):
+        try:
+            resp = requests.get(url, headers=headers, timeout=30)
+            resp.raise_for_status()
+            data = resp.json()
+        except requests.RequestException as exc:
+            logger.warning(
+                "[ugc_service] D-ID poll attempt %d/%d failed (%s). Retrying in %ds…",
+                attempt,
+                _DID_MAX_POLL_ATTEMPTS,
+                exc,
+                _DID_POLL_INTERVAL_SECONDS,
+            )
+            time.sleep(_DID_POLL_INTERVAL_SECONDS)
+            continue
+
+        status = data.get("status", "")
+        logger.info(
+            "[ugc_service] D-ID talk %s — status=%r (poll %d/%d).",
+            talk_id,
+            status,
+            attempt,
+            _DID_MAX_POLL_ATTEMPTS,
+        )
+
+        if status == "done":
+            result_url = data.get("result_url")
+            if not result_url:
+                raise UGCServiceError(
+                    f"D-ID talk {talk_id!r} is 'done' but response contains no result_url."
+                    f" Full response: {data}"
+                )
+            return str(result_url)
+
+        if status == "error":
+            error_msg = data.get("error", {})
+            raise UGCServiceError(
+                f"D-ID talk generation failed for talk_id={talk_id!r}: {error_msg}"
+            )
+
+        if status == "rejected":
+            raise UGCServiceError(
+                f"D-ID talk {talk_id!r} was rejected: {data.get('error', data)}"
+            )
+
+        time.sleep(_DID_POLL_INTERVAL_SECONDS)
+
+    raise UGCServiceError(
+        f"D-ID talk {talk_id!r} did not complete within "
+        f"{_DID_MAX_POLL_ATTEMPTS * _DID_POLL_INTERVAL_SECONDS}s "
+        f"({_DID_MAX_POLL_ATTEMPTS} polls)."
+    )
+
+
+# ---------------------------------------------------------------------------
+# D-ID — public API
+# ---------------------------------------------------------------------------
+
+
+def generate_did_avatar_video(
+    source_url: str,
+    script_text: str,
+    voice_id: str | None = None,
+) -> str:
+    """Animate a static image on D-ID's standard ``/talks`` API (Trial-friendly).
+
+    Flow: ElevenLabs TTS (same stack as HeyGen path) → ``POST /audios`` →
+    ``POST /talks`` with ``script: {type: audio, audio_url}`` → poll
+    ``GET /talks/{id}`` until ``done``.
+
+    Args:
+        source_url:  Public HTTPS URL to a face image (jpg/png) D-ID can fetch.
+        script_text: Spoken text; rendered to audio via ElevenLabs.
+        voice_id:    Optional ElevenLabs voice ID. When ``None``, the default
+                     UGC ElevenLabs voice is used.
+
+    Returns:
+        Final CDN URL of the rendered video (``str``).
+
+    Raises:
+        UGCServiceError: API key missing, upload/talk HTTP failure, talk error,
+                         or polling timeout.
+    """
+    api_key = os.environ.get("D_ID_API_KEY", "").strip()
+    if not api_key:
+        raise UGCServiceError("D_ID_API_KEY is not set in the environment.")
+
+    el_voice_id = voice_id if voice_id else _ELEVENLABS_DEFAULT_VOICE_ID
+    logger.info(
+        "[ugc_service] D-ID path: ElevenLabs TTS (voice=%s) then /audios + /talks "
+        "(source_url=%s, chars=%d).",
+        el_voice_id,
+        source_url,
+        len(script_text),
+    )
+
+    audio_bytes = generate_elevenlabs_audio(script_text, voice_id=el_voice_id)
+
+    try:
+        did_audio_url = _did_upload_audio(audio_bytes, api_key)
+    except requests.HTTPError as exc:
+        status = exc.response.status_code if exc.response is not None else "?"
+        body = (exc.response.text[:400] if exc.response is not None else "") or ""
+        raise UGCServiceError(
+            f"D-ID /audios upload failed with HTTP {status}: {body}"
+        ) from exc
+    except requests.RequestException as exc:
+        raise UGCServiceError(f"D-ID /audios network error: {exc}") from exc
+
+    logger.info("[ugc_service] D-ID audio uploaded; temporary url present (len=%d).", len(did_audio_url))
+
+    try:
+        talk_id = _did_create_talk_with_audio(source_url, did_audio_url, api_key)
+    except requests.HTTPError as exc:
+        status = exc.response.status_code if exc.response is not None else "?"
+        body = (exc.response.text[:400] if exc.response is not None else "") or ""
+        raise UGCServiceError(
+            f"D-ID /talks request failed with HTTP {status}: {body}"
+        ) from exc
+    except requests.RequestException as exc:
+        raise UGCServiceError(f"D-ID /talks network error: {exc}") from exc
+
+    logger.info("[ugc_service] D-ID talk_id=%s — polling GET /talks/{id}…", talk_id)
+    result_url = _did_poll_status(talk_id, api_key)
+    logger.info("[ugc_service] D-ID talk completed: %s", result_url)
+    return result_url
+
+
+# ---------------------------------------------------------------------------
+# Provider dispatcher
+# ---------------------------------------------------------------------------
+
+
+def dispatch_ugc_generation(
+    provider: str,
+    script_text: str,
+    visual_reference: str,
+    voice_id: str | None = None,
+) -> str:
+    """Route UGC video generation to the correct provider pipeline.
+
+    Args:
+        provider:         ``"heygen_elevenlabs"`` or ``"d-id"``.
+        script_text:      The spoken script text.
+        visual_reference: HeyGen avatar ID (heygen_elevenlabs) or D-ID source
+                          image URL / Avatar ID (d-id).
+        voice_id:         Optional ElevenLabs voice ID for both audio-based
+                          providers. Forwarded to ``generate_elevenlabs_audio`` /
+                          ``generate_did_avatar_video`` when supplied.
+
+    Returns:
+        Final CDN video URL (``str``).
+
+    Raises:
+        ValueError:      Unknown provider string.
+        UGCServiceError: Any unrecoverable API failure from the chosen provider.
+    """
+    if provider == "heygen_elevenlabs":
+        logger.info("[ugc_service] dispatch → heygen_elevenlabs pipeline.")
+        el_voice_id = voice_id if voice_id else _ELEVENLABS_DEFAULT_VOICE_ID
+        audio_bytes = generate_elevenlabs_audio(script_text, voice_id=el_voice_id)
+        return generate_heygen_avatar_video(visual_reference, audio_bytes)
+
+    if provider == "d-id":
+        logger.info("[ugc_service] dispatch → d-id pipeline (/audios + /talks audio).")
+        return generate_did_avatar_video(
+            source_url=visual_reference,
+            script_text=script_text,
+            voice_id=voice_id,
+        )
+
+    raise ValueError(
+        f"Unknown UGC provider {provider!r}. "
+        "Expected 'heygen_elevenlabs' or 'd-id'."
+    )
