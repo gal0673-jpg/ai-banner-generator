@@ -52,6 +52,7 @@ def banner_task_status_dict(task_id: str, row: BannerTask) -> dict[str, Any]:
         "brand_color": row.brand_color,
         "background_url": row.background_url,
         "logo_url": row.logo_url,
+        "product_image_url": getattr(row, "product_image_url", None),
         "rendered_banner_1_url": row.rendered_banner_1_url or fs1,
         "rendered_banner_2_url": row.rendered_banner_2_url or fs2,
         "canvas_state": row.canvas_state,
@@ -72,6 +73,7 @@ def banner_task_status_dict(task_id: str, row: BannerTask) -> dict[str, Any]:
         "ugc_website_display": getattr(row, "ugc_website_display", None),
         "ugc_status": row.ugc_status,
         "ugc_error": row.ugc_error,
+        "ugc_speed_factor": getattr(row, "ugc_speed_factor", None),
     }
 
 

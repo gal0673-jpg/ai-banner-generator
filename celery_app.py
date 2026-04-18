@@ -50,6 +50,7 @@ celery_app.conf.update(
         "render_video_task": {"queue": video_queue},
         "run_ugc_task": {"queue": video_queue},
         "run_avatar_studio_task": {"queue": video_queue},
+        "re_render_ugc_task": {"queue": video_queue},
     },
 )
 

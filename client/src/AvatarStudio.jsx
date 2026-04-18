@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import api, { API_BASE_URL, API_BASE_URL_DISPLAY } from './api.js'
 import { useAuth } from './AuthContext.jsx'
@@ -119,6 +119,10 @@ export default function AvatarStudio() {
   const [websiteUrl, setWebsiteUrl] = useState('')
   const [logoUrl, setLogoUrl] = useState('')
   const [productImageUrl, setProductImageUrl] = useState('')
+  const logoFileRef = useRef(null)
+  const productFileRef = useRef(null)
+  const [logoUploading, setLogoUploading] = useState(false)
+  const [productUploading, setProductUploading] = useState(false)
 
   const [taskId, setTaskId] = useState(null)
   const [statusPayload, setStatusPayload] = useState(null)
@@ -167,6 +171,41 @@ export default function AvatarStudio() {
       sse.close()
     }
   }, [taskId, sseBump])
+
+  const uploadTempAsset = async (file, kind) => {
+    const setBusy = kind === 'logo' ? setLogoUploading : setProductUploading
+    const setUrl = kind === 'logo' ? setLogoUrl : setProductImageUrl
+    setSubmitError(null)
+    setBusy(true)
+    try {
+      const fd = new FormData()
+      fd.append('file', file)
+      const base = (API_BASE_URL || '').replace(/\/$/, '')
+      const res = await fetch(`${base}/upload-temp-asset`, {
+        method: 'POST',
+        body: fd,
+        credentials: 'include',
+      })
+      let data = {}
+      try {
+        data = await res.json()
+      } catch {
+        /* ignore */
+      }
+      if (!res.ok) {
+        const d = data?.detail
+        if (typeof d === 'string') throw new Error(d)
+        if (Array.isArray(d)) throw new Error(d.map((x) => x.msg || JSON.stringify(x)).join(' '))
+        throw new Error(res.statusText || 'ההעלאה נכשלה')
+      }
+      const u = typeof data?.url === 'string' ? data.url.trim() : ''
+      if (u) setUrl(u)
+    } catch (err) {
+      setSubmitError(axiosErrorMessage(err))
+    } finally {
+      setBusy(false)
+    }
+  }
 
   const handleSubmit = async (e) => {
     e.preventDefault()
@@ -466,34 +505,78 @@ export default function AvatarStudio() {
                 כתובת תמונת לוגו{' '}
                 <span className="text-slate-400 font-normal">(אופציונלי)</span>
               </label>
-              <input
-                type="text"
-                value={logoUrl}
-                onChange={(ev) => setLogoUrl(ev.target.value)}
-                disabled={formLocked}
-                placeholder="https://... קישור ישיר לתמונה"
-                className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2.5 text-sm outline-none disabled:opacity-60"
-                dir="ltr"
-                autoComplete="off"
-                maxLength={1024}
-              />
+              <div className="flex flex-wrap items-stretch gap-2">
+                <input
+                  type="text"
+                  value={logoUrl}
+                  onChange={(ev) => setLogoUrl(ev.target.value)}
+                  disabled={formLocked}
+                  placeholder="https://... קישור ישיר לתמונה"
+                  className="min-w-0 flex-1 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2.5 text-sm outline-none disabled:opacity-60"
+                  dir="ltr"
+                  autoComplete="off"
+                  maxLength={1024}
+                />
+                <input
+                  ref={logoFileRef}
+                  type="file"
+                  accept="image/*"
+                  className="hidden"
+                  onChange={(ev) => {
+                    const f = ev.target.files?.[0]
+                    if (f) void uploadTempAsset(f, 'logo')
+                    ev.target.value = ''
+                  }}
+                />
+                <button
+                  type="button"
+                  onClick={() => logoFileRef.current?.click()}
+                  disabled={formLocked || logoUploading}
+                  className="shrink-0 inline-flex items-center justify-center gap-2 rounded-xl border border-slate-200 dark:border-slate-600 bg-slate-50 dark:bg-slate-800 px-3 py-2.5 text-sm font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-700 disabled:opacity-50 min-w-[5.5rem]"
+                >
+                  {logoUploading ? <Spinner className="!size-4" /> : null}
+                  <span>{logoUploading ? 'מעלה…' : 'העלאה'}</span>
+                </button>
+              </div>
             </div>
 
             <div>
               <label className="block text-xs font-medium text-slate-600 dark:text-slate-300 mb-1.5">
                 תמונת מוצר (אופציונלי - תופיע במרכז ובסוף)
               </label>
-              <input
-                type="text"
-                value={productImageUrl}
-                onChange={(ev) => setProductImageUrl(ev.target.value)}
-                disabled={formLocked}
-                placeholder="https://... קישור ישיר לתמונת מוצר"
-                className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2.5 text-sm outline-none disabled:opacity-60"
-                dir="ltr"
-                autoComplete="off"
-                maxLength={1024}
-              />
+              <div className="flex flex-wrap items-stretch gap-2">
+                <input
+                  type="text"
+                  value={productImageUrl}
+                  onChange={(ev) => setProductImageUrl(ev.target.value)}
+                  disabled={formLocked}
+                  placeholder="https://... קישור ישיר לתמונת מוצר"
+                  className="min-w-0 flex-1 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2.5 text-sm outline-none disabled:opacity-60"
+                  dir="ltr"
+                  autoComplete="off"
+                  maxLength={1024}
+                />
+                <input
+                  ref={productFileRef}
+                  type="file"
+                  accept="image/*"
+                  className="hidden"
+                  onChange={(ev) => {
+                    const f = ev.target.files?.[0]
+                    if (f) void uploadTempAsset(f, 'product')
+                    ev.target.value = ''
+                  }}
+                />
+                <button
+                  type="button"
+                  onClick={() => productFileRef.current?.click()}
+                  disabled={formLocked || productUploading}
+                  className="shrink-0 inline-flex items-center justify-center gap-2 rounded-xl border border-slate-200 dark:border-slate-600 bg-slate-50 dark:bg-slate-800 px-3 py-2.5 text-sm font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-700 disabled:opacity-50 min-w-[5.5rem]"
+                >
+                  {productUploading ? <Spinner className="!size-4" /> : null}
+                  <span>{productUploading ? 'מעלה…' : 'העלאה'}</span>
+                </button>
+              </div>
             </div>
 
             {submitError && (

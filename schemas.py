@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class RegisterRequest(BaseModel):
@@ -182,6 +182,23 @@ class GenerateAvatarStudioRequest(BaseModel):
         if self.script_source == "spoken_only" and not (self.spoken_script or "").strip():
             raise ValueError("spoken_script is required when script_source is 'spoken_only'")
         return self
+
+
+class UgcReRenderRequest(BaseModel):
+    """Optional fields for POST /tasks/{task_id}/ugc/re-render (omit keys you do not change)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    ugc_script: dict[str, Any] | None = None
+    brand_color: str | None = Field(default=None, max_length=32)
+    logo_url: str | None = Field(default=None, max_length=1024)
+    product_image_url: str | None = Field(default=None, max_length=1024)
+    speed_factor: float | None = Field(
+        default=None,
+        ge=0.5,
+        le=2.0,
+        description="FFmpeg playback rate for composite (1.0 = normal). Stored on the task row.",
+    )
 
 
 class TaskPatchRequest(BaseModel):

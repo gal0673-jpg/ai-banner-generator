@@ -31,6 +31,7 @@ def _finalize_ugc_with_composite(
     task_id: str,
     video_url: str,
     ugc_script: dict | None = None,
+    speed_factor: float = 1.0,
 ) -> None:
     """Persist provider URL, run optional FFmpeg polish, then drive Remotion caption render.
 
@@ -62,6 +63,7 @@ def _finalize_ugc_with_composite(
         task_id=task_id,
         source_video_url=video_url,
         work_dir=work_dir,
+        speed_factor=speed_factor,
     )
     if composited:
         logger.info("[_finalize_ugc] task_id=%s  FFmpeg composite OK → %s", task_id, composited)
@@ -161,14 +163,18 @@ def _finalize_ugc_with_composite(
     website_display: str | None = None
     logo_url: str | None = None
     product_image_url: str | None = None
+    brand_color: str | None = None
     with SessionLocal() as db:
         db_row = db.get(BannerTask, task_uuid)
         if db_row is not None:
             w = getattr(db_row, "ugc_website_display", None) or ""
             website_display = w.strip() or None
-            logo_url = getattr(db_row, "logo_url", None)
+            lu = getattr(db_row, "logo_url", None)
+            logo_url = (str(lu).strip() or None) if lu else None
             pi = getattr(db_row, "product_image_url", None) or ""
             product_image_url = pi.strip() or None
+            bc = (getattr(db_row, "brand_color", None) or "").strip()
+            brand_color = bc or None
 
     logger.info(
         "[_finalize_ugc] task_id=%s  calling Remotion /render-ugc  "
@@ -187,6 +193,7 @@ def _finalize_ugc_with_composite(
         website_display=website_display,
         logo_url=logo_url,
         product_image_url=product_image_url,
+        brand_color=brand_color,
     )
 
     if final_url:
@@ -693,6 +700,44 @@ def run_ugc_task(
         )
     finally:
         _emergency_chrome_cleanup()
+
+
+@celery_app.task(
+    bind=True,
+    base=BannerGenerationTask,
+    name="re_render_ugc_task",
+    queue="video_queue",
+)
+def re_render_ugc_task(self: BannerGenerationTask, task_id: str) -> None:
+    """Re-run FFmpeg composite + Remotion from ``ugc_raw_video_url`` (no HeyGen/D-ID)."""
+    task_uuid = uuid.UUID(task_id)
+    with SessionLocal() as db:
+        row = db.get(BannerTask, task_uuid)
+    if row is None:
+        logger.warning("[re_render_ugc_task] unknown task_id=%s", task_id)
+        return
+    raw = (row.ugc_raw_video_url or "").strip()
+    if not raw:
+        persist_task(
+            task_uuid,
+            ugc_status="failed",
+            ugc_error="re_render_ugc_task: ugc_raw_video_url is missing.",
+        )
+        return
+    sf = float(row.ugc_speed_factor) if row.ugc_speed_factor is not None else 1.0
+    logger.info(
+        "[re_render_ugc_task] task_id=%s  speed_factor=%s  scenes=%d",
+        task_id,
+        sf,
+        len((row.ugc_script or {}).get("scenes") or []),
+    )
+    _finalize_ugc_with_composite(
+        task_uuid,
+        task_id,
+        raw,
+        ugc_script=row.ugc_script,
+        speed_factor=sf,
+    )
 
 
 # ─────────────────────────────────────────────────────────────────────────────

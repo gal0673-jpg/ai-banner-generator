@@ -68,8 +68,13 @@ def try_composite_pip_blur(
     task_id: str,
     source_video_url: str,
     work_dir: Path,
+    speed_factor: float = 1.0,
 ) -> tuple[str | None, str | None]:
     """Download provider MP4, run blur-bg PiP composite, write ``ugc_composited.mp4``.
+
+    Args:
+        speed_factor: Playback rate for video+audio (1.0 = unchanged). Clamped to 0.5–2.0
+            for FFmpeg ``atempo`` compatibility.
 
     Returns:
         ``(relative_url, note)`` — relative_url like ``/task-files/<id>/ugc_composited.mp4``,
@@ -107,12 +112,26 @@ def try_composite_pip_blur(
     # Foreground: `decrease` → fits the full video within 1080×1920 without any
     # cropping, then centred exactly in the middle of the canvas.  This preserves
     # the avatar's head/forehead regardless of the source aspect ratio.
+    #
+    # speed_factor: playback rate (e.g. 1.15 = 15% faster).  PTS/speed_factor compresses
+    # the video timeline; atempo matches audio (FFmpeg atempo supports 0.5–2.0 per stage).
+    sf = float(speed_factor)
+    if sf <= 0 or sf != sf:  # NaN
+        sf = 1.0
+    else:
+        sf = min(2.0, max(0.5, sf))
+    use_speed = abs(sf - 1.0) > 1e-3
+    overlay_out = (
+        f"[bg_blurred][fg_scaled]overlay=(W-w)/2:(H-h)/2:shortest=1,setpts=PTS/{sf}[outv]"
+        if use_speed
+        else "[bg_blurred][fg_scaled]overlay=(W-w)/2:(H-h)/2:shortest=1[outv]"
+    )
     fc = (
         "[0:v]scale=1080:1920:force_original_aspect_ratio=increase,"
         "crop=1080:1920,setsar=1,split=2[bg][fg_orig];"
         "[bg]gblur=sigma=25[bg_blurred];"
         "[fg_orig]scale=1080:1920:force_original_aspect_ratio=decrease[fg_scaled];"
-        "[bg_blurred][fg_scaled]overlay=(W-w)/2:(H-h)/2:shortest=1[outv]"
+        + overlay_out
     )
 
     def _run_ffmpeg(with_audio: bool) -> subprocess.CompletedProcess[str]:
@@ -140,7 +159,11 @@ def try_composite_pip_blur(
             "+faststart",
         ]
         if with_audio:
-            c.extend(["-map", "0:a?", "-c:a", "aac", "-b:a", "192k"])
+            audio_chain: list[str] = ["-map", "0:a?"]
+            if use_speed:
+                audio_chain.extend(["-filter:a", f"atempo={sf}"])
+            audio_chain.extend(["-c:a", "aac", "-b:a", "192k"])
+            c.extend(audio_chain)
         else:
             c.append("-an")
         c.append(str(out_path))
@@ -231,6 +254,7 @@ def call_video_engine_render_ugc(
     website_display: str | None = None,
     logo_url: str | None = None,
     product_image_url: str | None = None,
+    brand_color: str | None = None,
 ) -> tuple[str | None, str | None]:
     """POST to the Node.js video engine's /render-ugc endpoint.
 
@@ -264,6 +288,8 @@ def call_video_engine_render_ugc(
         payload["logo_url"] = logo_url
     if product_image_url:
         payload["product_image_url"] = product_image_url
+    if brand_color:
+        payload["brand_color"] = brand_color
 
     logger.info(
         "[ugc_render] task_id=%s  POSTing to %s  scenes=%d  duration=%ss",

@@ -1,5 +1,5 @@
 AI BANNER CONTEXT EXPORT
-Generated (UTC): 2026-04-18 07:18:07 UTC
+Generated (UTC): 2026-04-18 19:35:53 UTC
 Project root: C:\laragon\www\python
 Output filename: ai-banner-context.txt
 
@@ -130,7 +130,7 @@ python/
 │   ├── url_display.py
 │   └── video_service.py
 ├── tasks
-│   └── [137 task UUID folders — runtime outputs omitted]
+│   └── [139 task UUID folders — runtime outputs omitted]
 ├── video_engine
 │   ├── public
 │   │   ├── bgm.mp3
@@ -5992,7 +5992,7 @@ def _heygen_request_video(
         character: dict = {
             "type": "talking_photo",
             "talking_photo_id": visual_id,
-            "talking_photo_style": "circle",
+            "talking_photo_style": "normal",
         }
     else:
         character = {

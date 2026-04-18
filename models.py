@@ -5,7 +5,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, String, Text, Uuid
+from sqlalchemy import JSON, Boolean, DateTime, Float, ForeignKey, String, Text, Uuid
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from database import Base
@@ -90,5 +90,7 @@ class BannerTask(Base):
     ugc_website_display: Mapped[str | None] = mapped_column(Text, nullable=True)
     ugc_status: Mapped[str | None] = mapped_column(String(64), nullable=True)
     ugc_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    #: Last FFmpeg / Remotion playback rate for UGC composite (1.0 = normal); optional.
+    ugc_speed_factor: Mapped[float | None] = mapped_column(Float, nullable=True)
 
     user: Mapped["User"] = relationship("User", back_populates="tasks")

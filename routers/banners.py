@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import uuid
+from pathlib import Path
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 from starlette.responses import StreamingResponse
@@ -15,18 +17,38 @@ from starlette.responses import StreamingResponse
 from auth import get_current_user
 from database import SessionLocal, get_db
 from models import BannerTask, User
-from schemas import GenerateRequest, GenerateUGCRequest, RenderVideoRequest, TaskPatchRequest
+from schemas import (
+    GenerateRequest,
+    GenerateUGCRequest,
+    RenderVideoRequest,
+    TaskPatchRequest,
+    UgcReRenderRequest,
+)
 from services.banner_service import (
+    TASKS_DIR,
     banner_task_status_dict,
+    ensure_tasks_dir,
     merge_canvas_state,
     persist_task,
     rendered_banner_urls_for_task,
 )
 from services.url_display import normalize_website_display
 from services.video_service import public_api_base, video_payload_for_engine
-from worker_tasks import persist_video_task_state, render_video_task, run_banner_task, run_ugc_task
+from worker_tasks import (
+    persist_video_task_state,
+    re_render_ugc_task,
+    render_video_task,
+    run_banner_task,
+    run_ugc_task,
+)
 
 router = APIRouter(tags=["banners"])
+
+_BRAND_HEX = re.compile(r"^#[0-9A-Fa-f]{6}$")
+_MAX_TEMP_UPLOAD_BYTES = 20 * 1024 * 1024
+_ALLOWED_TEMP_SUFFIXES = frozenset(
+    {".png", ".jpg", ".jpeg", ".webp", ".gif", ".svg", ".avif", ".mp4", ".webm", ".mov"}
+)
 
 
 @router.post("/generate")
@@ -173,6 +195,102 @@ def generate_ugc(
         ) from exc
 
     return {"task_id": tid}
+
+
+@router.post("/upload-temp-asset")
+async def upload_temp_asset(
+    _current_user: Annotated[User, Depends(get_current_user)],
+    file: UploadFile = File(...),
+) -> dict[str, str]:
+    """Save a generic asset under ``tasks/temp/`` for use as logo/product URL (local dev)."""
+    ensure_tasks_dir()
+    temp_dir = TASKS_DIR / "temp"
+    temp_dir.mkdir(parents=True, exist_ok=True)
+
+    raw_name = (file.filename or "upload").replace("\\", "/").split("/")[-1]
+    suffix = Path(raw_name).suffix.lower()
+    if suffix not in _ALLOWED_TEMP_SUFFIXES:
+        suffix = ""
+
+    body = await file.read()
+    if len(body) > _MAX_TEMP_UPLOAD_BYTES:
+        raise HTTPException(status_code=413, detail="File too large (max 20MB).")
+    if not body:
+        raise HTTPException(status_code=400, detail="Empty file.")
+
+    name = f"{uuid.uuid4().hex}{suffix if suffix else '.bin'}"
+    dest = temp_dir / name
+    dest.write_bytes(body)
+
+    return {"url": f"/task-files/temp/{name}"}
+
+
+@router.post("/tasks/{task_id}/ugc/re-render")
+def ugc_re_render(
+    task_id: str,
+    body: UgcReRenderRequest,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Session = Depends(get_db),
+) -> dict[str, str]:
+    """Re-run FFmpeg composite + Remotion using ``ugc_raw_video_url`` (no provider re-gen)."""
+    try:
+        tid = uuid.UUID(task_id)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Unknown task_id") from None
+
+    row = db.get(BannerTask, tid)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Unknown task_id")
+    if not current_user.is_superuser and row.user_id != current_user.id:
+        raise HTTPException(status_code=404, detail="Unknown task_id")
+
+    raw = (row.ugc_raw_video_url or "").strip()
+    if not raw:
+        raise HTTPException(
+            status_code=400,
+            detail="No ugc_raw_video_url on this task; nothing to re-render from.",
+        )
+    if row.ugc_status == "rendering_captions":
+        raise HTTPException(
+            status_code=409,
+            detail="A caption render is already in progress for this task.",
+        )
+
+    patch = body.model_dump(exclude_unset=True)
+    if "ugc_script" in patch:
+        row.ugc_script = patch["ugc_script"]
+    if "brand_color" in patch:
+        bc = patch["brand_color"]
+        if bc is None or (isinstance(bc, str) and not str(bc).strip()):
+            row.brand_color = None
+        else:
+            s = str(bc).strip()
+            if not _BRAND_HEX.match(s):
+                raise HTTPException(status_code=400, detail="brand_color must be #RRGGBB hex.")
+            row.brand_color = s.upper()
+    if "logo_url" in patch:
+        lu = patch["logo_url"]
+        row.logo_url = (str(lu).strip() or None) if lu is not None else None
+    if "product_image_url" in patch:
+        pi = patch["product_image_url"]
+        row.product_image_url = (str(pi).strip() or None) if pi is not None else None
+    if "speed_factor" in patch:
+        row.ugc_speed_factor = patch["speed_factor"]
+
+    row.ugc_status = "rendering_captions"
+    row.ugc_error = None
+    db.commit()
+
+    try:
+        re_render_ugc_task.apply_async(args=[task_id], queue="video_queue")
+    except Exception as exc:
+        persist_task(tid, ugc_status="failed", ugc_error=f"Could not queue UGC re-render: {exc}")
+        raise HTTPException(
+            status_code=503,
+            detail="לא ניתן לשלוח את עריכת ה-UGC לתור (Celery). ודא ש-Redis רץ וה-worker פעיל.",
+        ) from exc
+
+    return {"status": "queued", "task_id": task_id}
 
 
 @router.get("/banners/latest")
