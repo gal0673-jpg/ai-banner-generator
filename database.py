@@ -17,6 +17,9 @@ if not DATABASE_URL:
 _connect_args: dict = {}
 if "mysql" in DATABASE_URL or "pymysql" in DATABASE_URL:
     _connect_args["connect_timeout"] = 10
+    # Prevent a wedged DB/socket from blocking every HTTP request indefinitely (e.g. login).
+    _connect_args["read_timeout"] = 25
+    _connect_args["write_timeout"] = 25
 
 engine = create_engine(
     DATABASE_URL,
