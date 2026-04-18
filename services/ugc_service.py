@@ -246,7 +246,7 @@ def _heygen_request_video(
         character: dict = {
             "type": "talking_photo",
             "talking_photo_id": visual_id,
-            "talking_photo_style": "circle",
+            "talking_photo_style": "normal",
         }
     else:
         character = {
