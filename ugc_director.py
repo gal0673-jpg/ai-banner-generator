@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -267,6 +268,108 @@ def _validate_script(data: dict, expected_duration: int) -> None:
             "[ugc_director] The last scene must use visual_layout 'avatar_with_cta'."
         )
 
+
+def _validate_script_studio_spoken_only(data: dict, expected_duration: int) -> None:
+    """Validate a multi-scene spoken_only script (avatar studio, no CTA arc required)."""
+    if not isinstance(data.get("estimated_duration_seconds"), int):
+        raise ValueError(
+            "[ugc_director] 'estimated_duration_seconds' must be an integer; "
+            f"got {data.get('estimated_duration_seconds')!r}."
+        )
+    if data["estimated_duration_seconds"] != expected_duration:
+        raise ValueError(
+            f"[ugc_director] 'estimated_duration_seconds' must be {expected_duration}; "
+            f"got {data['estimated_duration_seconds']}."
+        )
+    scenes = data.get("scenes")
+    if not isinstance(scenes, list) or len(scenes) == 0:
+        raise ValueError("[ugc_director] studio spoken_only expects at least one scene.")
+    for i, scene in enumerate(scenes):
+        idx = i + 1
+        for field in ("scene_number", "spoken_text", "on_screen_text", "visual_layout"):
+            if field not in scene:
+                raise ValueError(
+                    f"[ugc_director] Scene {idx} is missing required field {field!r}."
+                )
+        if scene["scene_number"] != idx:
+            raise ValueError(
+                f"[ugc_director] Scene at position {idx} has scene_number "
+                f"{scene['scene_number']}; expected {idx}."
+            )
+        if scene["visual_layout"] != "full_avatar":
+            raise ValueError(
+                f"[ugc_director] studio spoken_only scene {idx} must use visual_layout 'full_avatar'."
+            )
+        if not isinstance(scene["spoken_text"], str) or not scene["spoken_text"].strip():
+            raise ValueError(
+                f"[ugc_director] Scene {idx} 'spoken_text' must be a non-empty string."
+            )
+        if not isinstance(scene["on_screen_text"], str):
+            raise ValueError(
+                f"[ugc_director] Scene {idx} 'on_screen_text' must be a string."
+            )
+
+
+def _chunk_spoken_text(text: str, max_words: int = 6) -> list[str]:
+    """Split *text* into short caption chunks without any AI processing.
+
+    Strategy (pure Python / regex, no external calls):
+    1. Split at clause boundaries — after ``.``, ``!``, ``?``, or ``,`` followed
+       by whitespace.  Each piece keeps its trailing punctuation so the TTS
+       engine receives the correct prosody cues.
+    2. Any resulting piece that is still longer than *max_words* words is further
+       chopped into word-count chunks of at most *max_words*.
+    3. If the entire input contains no split points the whole text is returned as
+       a single-element list so the pipeline always gets at least one scene.
+    """
+    raw_parts = re.split(r'(?<=[.!?,])\s+', text.strip())
+    chunks: list[str] = []
+    for part in raw_parts:
+        part = part.strip()
+        if not part:
+            continue
+        words = part.split()
+        if len(words) <= max_words:
+            chunks.append(part)
+        else:
+            for i in range(0, len(words), max_words):
+                sub = " ".join(words[i : i + max_words])
+                if sub:
+                    chunks.append(sub)
+    return chunks if chunks else [text.strip()]
+
+
+def build_studio_spoken_only_script(spoken_text: str, video_length: str) -> dict:
+    """Build a multi-scene validated dict for TTS (avatar studio, no GPT).
+
+    The spoken text is auto-chunked into short phrases so each scene drives a
+    single Remotion caption card.  No AI or external API is involved — the
+    splitting is done purely with regex / Python string manipulation.
+    """
+    if video_length not in _DURATION_MAP:
+        raise ValueError(
+            f"[ugc_director] video_length must be one of {list(_DURATION_MAP)}; "
+            f"got {video_length!r}."
+        )
+    target_seconds = _DURATION_MAP[video_length]
+    chunks = _chunk_spoken_text(spoken_text.strip())
+    scenes = [
+        {
+            "scene_number": i + 1,
+            "spoken_text": chunk,
+            "on_screen_text": chunk,
+            "visual_layout": "full_avatar",
+        }
+        for i, chunk in enumerate(chunks)
+    ]
+    data = {
+        "estimated_duration_seconds": target_seconds,
+        "scenes": scenes,
+    }
+    _validate_script_studio_spoken_only(data, target_seconds)
+    return data
+
+
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
@@ -342,5 +445,71 @@ def generate_ugc_script(
     print(
         f"[ugc_director] OK — {len(data['scenes'])} scene(s) validated for "
         f"{data['estimated_duration_seconds']}s UGC video."
+    )
+    return data
+
+
+def generate_avatar_studio_script(
+    creative_brief: str,
+    director_notes: str | None,
+    video_length: str,
+) -> dict:
+    """
+    Hebrew UGC screenplay from creative brief only (no website crawl).
+
+    director_notes guides structure; must not appear verbatim as stage directions in spoken_text.
+    """
+    if video_length not in _DURATION_MAP:
+        raise ValueError(
+            f"[ugc_director] video_length must be one of {list(_DURATION_MAP)}; "
+            f"got {video_length!r}."
+        )
+
+    target_seconds = _DURATION_MAP[video_length]
+    scene_guidance = _SCENE_GUIDANCE[video_length]
+
+    notes_block = (
+        director_notes.strip()
+        if director_notes and director_notes.strip()
+        else "(None — infer hook, body, and CTA structure from the creative brief alone.)"
+    )
+
+    user_content = (
+        "NO SCRAPED WEBSITE TEXT IS AVAILABLE. "
+        "Build the entire script ONLY from the CREATIVE BRIEF and DIRECTOR NOTES below.\n\n"
+        f"TARGET VIDEO LENGTH: {video_length} ({target_seconds} seconds). "
+        f"Use exactly {scene_guidance}\n\n"
+        f"CREATIVE BRIEF:\n{creative_brief.strip()}\n\n"
+        f"DIRECTOR / STRUCTURE NOTES (for planning the arc only — output Hebrew spoken_text "
+        f"that sounds natural; never speak labels, English directions, or markdown aloud):\n"
+        f"{notes_block}\n"
+    )
+
+    api_key = os.environ.get("OPENAI_API_KEY")
+    if not api_key:
+        raise RuntimeError(
+            "[ugc_director] ERROR: OPENAI_API_KEY environment variable is not set."
+        )
+
+    print(
+        f"[ugc_director] Avatar studio: requesting {video_length} script from GPT-4o "
+        f"({target_seconds}s, {scene_guidance})"
+    )
+
+    client = OpenAI(api_key=api_key)
+    raw = _call_gpt(client, user_content)
+
+    print("[ugc_director] Avatar studio: parsing and validating JSON response…")
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(
+            f"[ugc_director] ERROR: GPT-4o returned invalid JSON — {exc}"
+        ) from exc
+
+    _validate_script(data, target_seconds)
+
+    print(
+        f"[ugc_director] Avatar studio OK — {len(data['scenes'])} scene(s) validated."
     )
     return data

@@ -46,6 +46,8 @@ class BannerTask(Base):
         DateTime(timezone=True), default=_utc_now, nullable=False
     )
     status: Mapped[str] = mapped_column(String(64), nullable=False)
+    #: banner | ugc_legacy (crawl + UGC) | avatar_studio (prompt-only avatar)
+    task_kind: Mapped[str] = mapped_column(String(32), nullable=False, default="banner")
     url: Mapped[str] = mapped_column(Text, nullable=False)
     brief: Mapped[str | None] = mapped_column(Text, nullable=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -57,6 +59,7 @@ class BannerTask(Base):
     brand_color: Mapped[str | None] = mapped_column(String(32), nullable=True)
     background_url: Mapped[str | None] = mapped_column(String(1024), nullable=True)
     logo_url: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    product_image_url: Mapped[str | None] = mapped_column(String(1024), nullable=True)
     rendered_banner_1_url: Mapped[str | None] = mapped_column(String(1024), nullable=True)
     rendered_banner_2_url: Mapped[str | None] = mapped_column(String(1024), nullable=True)
     canvas_state: Mapped[dict | None] = mapped_column(JSON, nullable=True)
@@ -77,6 +80,14 @@ class BannerTask(Base):
     ugc_script: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     ugc_avatar_id: Mapped[str | None] = mapped_column(String(256), nullable=True)
     ugc_raw_video_url: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    #: Local /task-files/... MP4 after optional FFmpeg polish (blur-bg PiP); null if skipped/failed.
+    ugc_composited_video_url: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    #: Non-fatal composite message (e.g. ffmpeg missing, fallback to raw only).
+    ugc_composite_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    #: Final Remotion-rendered MP4 with animated Hebrew captions from the video engine; null if skipped/failed.
+    ugc_final_video_url: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    #: Normalized site URL for Remotion overlay (no https/www), e.g. ``example.co.il``; optional.
+    ugc_website_display: Mapped[str | None] = mapped_column(Text, nullable=True)
     ugc_status: Mapped[str | None] = mapped_column(String(64), nullable=True)
     ugc_error: Mapped[str | None] = mapped_column(Text, nullable=True)
 

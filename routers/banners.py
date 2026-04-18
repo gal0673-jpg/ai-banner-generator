@@ -22,6 +22,7 @@ from services.banner_service import (
     persist_task,
     rendered_banner_urls_for_task,
 )
+from services.url_display import normalize_website_display
 from services.video_service import public_api_base, video_payload_for_engine
 from worker_tasks import persist_video_task_state, render_video_task, run_banner_task, run_ugc_task
 
@@ -45,6 +46,7 @@ def generate(
         id=task_id,
         user_id=current_user.id,
         status="pending",
+        task_kind="banner",
         url=url,
         brief=brief,
         error=None,
@@ -103,18 +105,23 @@ def generate_ugc(
 
     brief = (body.brief or "").strip() or None
     custom_script = (body.custom_script or "").strip() or None
+    voice_id = (body.voice_id or "").strip() or None
     avatar_id = body.avatar_id.strip()
     if not avatar_id:
         raise HTTPException(status_code=400, detail="avatar_id must not be empty")
+
+    website_disp = normalize_website_display(body.website_url)
 
     task_id = uuid.uuid4()
     row = BannerTask(
         id=task_id,
         user_id=current_user.id,
         status="pending",
+        task_kind="ugc_legacy",
         url=url,
         brief=brief,
         ugc_avatar_id=avatar_id,
+        ugc_website_display=website_disp,
         ugc_status="pending",
         # Banner-pipeline fields are not used for UGC tasks; left null.
         error=None,
@@ -143,7 +150,12 @@ def generate_ugc(
     try:
         run_ugc_task.apply_async(
             args=[tid, url, brief, avatar_id, body.video_length],
-            kwargs={"provider": body.provider, "custom_script": custom_script},
+            kwargs={
+                "provider": body.provider,
+                "custom_script": custom_script,
+                "voice_id": voice_id,
+                "heygen_character_type": body.heygen_character_type,
+            },
             queue="video_queue",
         )
     except Exception as exc:
@@ -172,6 +184,7 @@ def get_latest_banner(
     stmt = (
         select(BannerTask)
         .where(BannerTask.user_id == current_user.id)
+        .where(BannerTask.task_kind == "banner")
         .order_by(BannerTask.created_at.desc())
         .limit(1)
     )

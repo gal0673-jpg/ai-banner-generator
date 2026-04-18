@@ -1,4 +1,5 @@
 import { Navigate, Route, Routes, useLocation } from 'react-router-dom'
+import AvatarStudio from './AvatarStudio.jsx'
 import BannerWorkspace from './BannerWorkspace.jsx'
 import { useAuth } from './AuthContext.jsx'
 import Login from './Login.jsx'
@@ -32,6 +33,14 @@ export default function App() {
           element={
             <ProtectedRoute>
               <BannerWorkspace />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/avatar-studio"
+          element={
+            <ProtectedRoute>
+              <AvatarStudio />
             </ProtectedRoute>
           }
         />

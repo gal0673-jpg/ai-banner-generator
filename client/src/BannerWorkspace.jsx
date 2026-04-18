@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
 import api, { API_BASE_URL, API_BASE_URL_DISPLAY } from './api.js'
 import { useAuth } from './AuthContext.jsx'
 import BannerCanvas from './BannerCanvas.jsx'
@@ -56,6 +56,15 @@ const SKIP_LATEST_RESTORE_KEY = 'banner_workspace_skip_latest_restore'
 /** D-ID sample portrait; stable for tests (see test_ugc.py). */
 const UGC_DEFAULT_AVATAR_URL =
   'https://d-id-public-bucket.s3.us-west-2.amazonaws.com/alice.jpg'
+
+/** Default ElevenLabs voice used server-side when voice_id is omitted ([`services/ugc_service.py`]). */
+const UGC_DEFAULT_VOICE_ID_HINT = 'Wuv1s5YTNCjL9mFJTqo4'
+
+function ugcPlaybackUrl(payload) {
+  const c = typeof payload?.ugc_composited_video_url === 'string' ? payload.ugc_composited_video_url.trim() : ''
+  const r = typeof payload?.ugc_raw_video_url === 'string' ? payload.ugc_raw_video_url.trim() : ''
+  return c || r || ''
+}
 
 function formatUgcStatus(ugcStatus) {
   if (!ugcStatus) return 'מתחיל…'
@@ -154,7 +163,12 @@ export default function BannerWorkspace() {
   const [latestRestoreNonce, setLatestRestoreNonce] = useState(0)
   const [skipLatestRestore, setSkipLatestRestore] = useState(readSkipLatestRestoreFlag)
   const [ugcPanelOpen, setUgcPanelOpen] = useState(false)
+  const [ugcProvider, setUgcProvider] = useState('d-id')
+  const [ugcHeygenCharacterType, setUgcHeygenCharacterType] = useState('avatar')
+  const [ugcAvatarId, setUgcAvatarId] = useState(UGC_DEFAULT_AVATAR_URL)
+  const [ugcVoiceId, setUgcVoiceId] = useState('')
   const [ugcCustomScript, setUgcCustomScript] = useState('')
+  const [ugcWebsiteUrl, setUgcWebsiteUrl] = useState('')
   const [ugcPosting, setUgcPosting] = useState(false)
   const [ugcError, setUgcError] = useState(null)
   // Tracks the taskId for which we've already initialised videoHook from the
@@ -430,6 +444,11 @@ export default function BannerWorkspace() {
       setUgcError('נא להזין כתובת אתר.')
       return
     }
+    const avatarRef = ugcAvatarId.trim()
+    if (!avatarRef) {
+      setUgcError('נא להזין מזהה אווטאר HeyGen או כתובת URL לתמונת פנים (D-ID).')
+      return
+    }
     setUgcError(null)
     setSubmitError(null)
     setStatusPayload(null)
@@ -438,13 +457,20 @@ export default function BannerWorkspace() {
     try {
       const body = {
         url: trimmed,
-        provider: 'd-id',
-        avatar_id: UGC_DEFAULT_AVATAR_URL,
+        provider: ugcProvider,
+        avatar_id: avatarRef,
         video_length: '30s',
         brief: brief.trim() || null,
       }
       const script = ugcCustomScript.trim()
       if (script) body.custom_script = script
+      const vid = ugcVoiceId.trim()
+      if (vid) body.voice_id = vid
+      if (ugcProvider === 'heygen_elevenlabs') {
+        body.heygen_character_type = ugcHeygenCharacterType
+      }
+      const wu = ugcWebsiteUrl.trim()
+      if (wu) body.website_url = wu
       const { data } = await api.post('/generate-ugc', body)
       const id = data?.task_id
       if (!id) throw new Error('לא התקבל מזהה משימה מהשרת')
@@ -561,6 +587,12 @@ export default function BannerWorkspace() {
                 {user.email}
               </span>
             )}
+            <Link
+              to="/avatar-studio"
+              className="rounded-lg border border-violet-300/80 dark:border-violet-600/50 bg-violet-50 dark:bg-violet-950/40 px-3 py-2 text-sm font-medium text-violet-800 dark:text-violet-200 hover:bg-violet-100 dark:hover:bg-violet-900/50 transition"
+            >
+              סטודיו אווטאר
+            </Link>
             {isPrimaryAdmin && (
               <button
                 type="button"
@@ -711,14 +743,151 @@ export default function BannerWorkspace() {
                 className="w-full rounded-xl border border-violet-300/90 dark:border-violet-600/50 bg-violet-50/90 dark:bg-violet-950/40 px-4 py-2.5 text-sm font-semibold text-violet-900 dark:text-violet-100 hover:bg-violet-100/90 dark:hover:bg-violet-900/50 transition text-right"
                 aria-expanded={ugcPanelOpen}
               >
-                {ugcPanelOpen ? 'הסתר וידאו אווטאר UGC' : 'וידאו אווטאר UGC (D-ID)'}
+                {ugcPanelOpen ? 'הסתר אווטאר' : 'וידאו אווטאר'}
               </button>
 
               {ugcPanelOpen && (
                 <div className="rounded-xl border border-violet-200/80 dark:border-violet-800/50 bg-violet-50/40 dark:bg-violet-950/20 p-4 space-y-3">
-                  <p className="text-[11px] text-violet-900/80 dark:text-violet-200/80 leading-relaxed">
-                    יוצר סרטון דמות מדברת לפי כתובת האתר (סריקה + תסריט) או לפי תסריט מותאם אישית. ספק: D-ID.
+                  <div className="rounded-xl border-2 border-violet-500/60 dark:border-violet-400/40 bg-white dark:bg-slate-900/90 p-4 shadow-sm space-y-3">
+                    <p className="text-sm font-bold text-violet-950 dark:text-violet-100 text-right">
+                      סטודיו אווטאר מלא (מומלץ)
+                    </p>
+                    <p className="text-[11px] text-slate-600 dark:text-slate-300 leading-relaxed text-right">
+                      דף נפרד: <strong className="text-slate-800 dark:text-slate-100">בריף שיווקי</strong>,{' '}
+                      <strong className="text-slate-800 dark:text-slate-100">הערות בימוי</strong> שלא נקראות בקול, תסריט
+                      מובנה מ-AI או טקסט דיבור בלבד — <strong className="text-slate-800 dark:text-slate-100">בלי סריקת אתר</strong>.
+                    </p>
+                    <Link
+                      to="/avatar-studio"
+                      className="flex w-full items-center justify-center gap-2 rounded-xl bg-violet-600 px-4 py-3 text-sm font-bold text-white shadow-md shadow-violet-900/25 hover:bg-violet-500 transition"
+                    >
+                      פתח סטודיו אווטאר
+                    </Link>
+                  </div>
+
+                  <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400 border-t border-violet-200/60 dark:border-violet-800/40 pt-3 text-right">
+                    מסלול ישן — UGC עם סריקת כתובת האתר מהטופס למעלה
                   </p>
+                  <p className="text-[11px] text-violet-900/80 dark:text-violet-200/80 leading-relaxed">
+                    דורש URL + סריקה. תסריט מותאם (אופציונלי) הוא טקסט דיבור אחד — בלי שדות בימוי נפרדים. השוואת D-ID / HeyGen.
+                  </p>
+                  <div>
+                    <label
+                      htmlFor="bw-ugc-provider"
+                      className="block text-xs font-medium text-slate-600 dark:text-slate-300 mb-1.5"
+                    >
+                      ספק וידאו
+                    </label>
+                    <select
+                      id="bw-ugc-provider"
+                      value={ugcProvider}
+                      onChange={(ev) => {
+                        const v = ev.target.value
+                        setUgcProvider(v)
+                        if (v === 'heygen_elevenlabs' && ugcAvatarId.trim() === UGC_DEFAULT_AVATAR_URL) {
+                          setUgcAvatarId('')
+                        }
+                        if (v === 'd-id' && !ugcAvatarId.trim()) {
+                          setUgcAvatarId(UGC_DEFAULT_AVATAR_URL)
+                        }
+                      }}
+                      disabled={formLocked}
+                      className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2.5 text-sm text-right outline-none focus:border-violet-500 focus:ring-2 focus:ring-violet-500/20 disabled:opacity-60 transition"
+                    >
+                      <option value="d-id">D-ID (תמונת פורטרט + אודיו)</option>
+                      <option value="heygen_elevenlabs">HeyGen + ElevenLabs</option>
+                    </select>
+                  </div>
+                  {ugcProvider === 'heygen_elevenlabs' && (
+                    <div>
+                      <label
+                        htmlFor="bw-ugc-heygen-type"
+                        className="block text-xs font-medium text-slate-600 dark:text-slate-300 mb-1.5"
+                      >
+                        סוג מזהה HeyGen
+                      </label>
+                      <select
+                        id="bw-ugc-heygen-type"
+                        value={ugcHeygenCharacterType}
+                        onChange={(ev) => setUgcHeygenCharacterType(ev.target.value)}
+                        disabled={formLocked}
+                        className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2.5 text-sm text-right outline-none focus:border-violet-500 focus:ring-2 focus:ring-violet-500/20 disabled:opacity-60 transition"
+                      >
+                        <option value="avatar">אווטאר סטודיו (avatar_id)</option>
+                        <option value="talking_photo">תמונה מדברת (talking_photo_id)</option>
+                      </select>
+                    </div>
+                  )}
+                  <div>
+                    <label
+                      htmlFor="bw-ugc-avatar"
+                      className="block text-xs font-medium text-slate-600 dark:text-slate-300 mb-1.5"
+                    >
+                      אווטאר / תמונת מקור
+                    </label>
+                    <input
+                      id="bw-ugc-avatar"
+                      type="text"
+                      value={ugcAvatarId}
+                      onChange={(ev) => setUgcAvatarId(ev.target.value)}
+                      disabled={formLocked}
+                      placeholder={
+                        ugcProvider === 'd-id'
+                          ? 'https://… תמונת פנים ציבורית (HTTPS)'
+                          : ugcHeygenCharacterType === 'talking_photo'
+                            ? 'talking_photo_id (List Avatars V2)'
+                            : 'avatar_id מ-HeyGen'
+                      }
+                      className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2.5 text-sm outline-none focus:border-violet-500 focus:ring-2 focus:ring-violet-500/20 disabled:opacity-60 transition"
+                      dir="ltr"
+                    />
+                    <p className="mt-1 text-[10px] text-slate-500 dark:text-slate-400 leading-relaxed">
+                      D-ID: URL לתמונה. HeyGen: בחר למעלה avatar או talking_photo לפי סוג המזהה מהדשבורד.
+                    </p>
+                  </div>
+                  <div>
+                    <label
+                      htmlFor="bw-ugc-voice"
+                      className="block text-xs font-medium text-slate-600 dark:text-slate-300 mb-1.5"
+                    >
+                      מזהה קול ElevenLabs{' '}
+                      <span className="text-slate-400 font-normal">(אופציונלי)</span>
+                    </label>
+                    <input
+                      id="bw-ugc-voice"
+                      type="text"
+                      value={ugcVoiceId}
+                      onChange={(ev) => setUgcVoiceId(ev.target.value)}
+                      disabled={formLocked}
+                      placeholder={`ריק = ברירת מחדל (${UGC_DEFAULT_VOICE_ID_HINT})`}
+                      className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2.5 text-sm outline-none focus:border-violet-500 focus:ring-2 focus:ring-violet-500/20 disabled:opacity-60 transition"
+                      dir="ltr"
+                      autoComplete="off"
+                    />
+                  </div>
+                  <div>
+                    <label
+                      htmlFor="bw-ugc-website"
+                      className="block text-xs font-medium text-slate-600 dark:text-slate-300 mb-1.5"
+                    >
+                      כתובת לאתר בווידאו{' '}
+                      <span className="text-slate-400 font-normal">
+                        (אופציונלי — בלי https/www, מוצג בפינה ואז במרכז בסוף)
+                      </span>
+                    </label>
+                    <input
+                      id="bw-ugc-website"
+                      type="text"
+                      value={ugcWebsiteUrl}
+                      onChange={(ev) => setUgcWebsiteUrl(ev.target.value)}
+                      disabled={formLocked}
+                      placeholder="למשל: example.co.il או https://www.example.co.il"
+                      className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2.5 text-sm outline-none focus:border-violet-500 focus:ring-2 focus:ring-violet-500/20 disabled:opacity-60 transition"
+                      dir="ltr"
+                      autoComplete="off"
+                      maxLength={512}
+                    />
+                  </div>
                   <div>
                     <label
                       htmlFor="bw-ugc-custom-script"
@@ -839,18 +1008,30 @@ export default function BannerWorkspace() {
                 </div>
               )}
 
-              {statusPayload?.ugc_status === 'completed' &&
-                typeof statusPayload?.ugc_raw_video_url === 'string' &&
-                statusPayload.ugc_raw_video_url.trim() && (
+              {statusPayload?.ugc_status === 'completed' && ugcPlaybackUrl(statusPayload) && (
                   <div className="rounded-2xl border border-violet-200 dark:border-violet-800/60 bg-gradient-to-b from-white to-violet-50/40 dark:from-slate-900 dark:to-violet-950/30 p-5 shadow-sm space-y-3">
                     <h3 className="text-sm font-semibold text-slate-800 dark:text-slate-100">
                       וידאו אווטאר UGC
                     </h3>
-                    <div className="rounded-xl overflow-hidden border border-slate-200/80 dark:border-slate-700 bg-black/5 dark:bg-black/40">
+                    {statusPayload?.ugc_composite_note?.trim() && (
+                      <div
+                        role="alert"
+                        className="rounded-xl border border-amber-300 dark:border-amber-600/60 bg-amber-50 dark:bg-amber-950/40 px-3 py-2.5 flex gap-2 items-start"
+                        dir="ltr"
+                      >
+                        <span className="text-amber-500 mt-px shrink-0" aria-hidden>⚠</span>
+                        <p className="text-[11px] text-amber-900 dark:text-amber-200 leading-relaxed">
+                          {statusPayload.ugc_composite_note.trim()}
+                        </p>
+                      </div>
+                    )}
+                    {/* 9:16 letterbox container — keeps vertical frame even for raw horizontal video */}
+                    <div className="relative mx-auto w-full max-w-[280px] bg-black rounded-xl overflow-hidden"
+                         style={{ aspectRatio: '9 / 16' }}>
                       <video
-                        key={statusPayload.ugc_raw_video_url}
-                        className="w-full h-auto max-h-[min(70vh,520px)] object-contain mx-auto"
-                        src={statusPayload.ugc_raw_video_url.trim()}
+                        key={ugcPlaybackUrl(statusPayload)}
+                        className="absolute inset-0 w-full h-full object-contain"
+                        src={ugcPlaybackUrl(statusPayload)}
                         controls
                         playsInline
                         preload="metadata"
@@ -858,16 +1039,32 @@ export default function BannerWorkspace() {
                         הדפדפן שלך אינו תומך בנגן וידאו.
                       </video>
                     </div>
-                    <a
-                      href={statusPayload.ugc_raw_video_url.trim()}
-                      download
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="inline-block text-xs font-medium text-violet-600 dark:text-violet-400 hover:underline"
-                      dir="ltr"
-                    >
-                      הורד וידאו
-                    </a>
+                    <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs">
+                      <a
+                        href={ugcPlaybackUrl(statusPayload)}
+                        download
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-block font-medium text-violet-600 dark:text-violet-400 hover:underline"
+                        dir="ltr"
+                      >
+                        הורד וידאו
+                      </a>
+                      {statusPayload?.ugc_composited_video_url?.trim() &&
+                        statusPayload?.ugc_raw_video_url?.trim() &&
+                        statusPayload.ugc_composited_video_url.trim() !==
+                          statusPayload.ugc_raw_video_url.trim() && (
+                          <a
+                            href={statusPayload.ugc_raw_video_url.trim()}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-slate-500 dark:text-slate-400 hover:underline"
+                            dir="ltr"
+                          >
+                            מקור מהספק
+                          </a>
+                        )}
+                    </div>
                   </div>
                 )}
 

@@ -3,7 +3,7 @@ import express from "express";
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
-import { buildBannerInputProps, renderBannerVideo } from "./render.js";
+import { buildBannerInputProps, renderBannerVideo, buildUgcInputProps, renderUgcVideo } from "./render.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -19,6 +19,12 @@ const MAX_CONCURRENT_RENDERS = Number(process.env.MAX_CONCURRENT_RENDERS) || 2;
 const MAX_QUEUE_DEPTH = Number(process.env.MAX_QUEUE_DEPTH) || 10;
 /** Hard wall-clock deadline for a single renderMedia call (milliseconds). */
 const RENDER_TIMEOUT_MS = Number(process.env.RENDER_TIMEOUT_MS) || 3 * 60 * 1000;
+/**
+ * Separate deadline for UGC renders: long clips + 2× OffthreadVideo (blur-bg layer)
+ * decode is much slower than a banner render.
+ * Defaults to 25 min; override via UGC_RENDER_TIMEOUT_MS in .env.
+ */
+const UGC_RENDER_TIMEOUT_MS = Number(process.env.UGC_RENDER_TIMEOUT_MS) || 25 * 60 * 1000;
 
 // ── Output-file cleanup config ─────────────────────────────────────────────
 const CLEANUP_INTERVAL_MS =
@@ -340,11 +346,158 @@ app.post("/render", async (req, res) => {
   }
 });
 
+// ── UGC render ─────────────────────────────────────────────────────────────
+
+function validateUgcRenderPayload(body) {
+  const errors = [];
+
+  if (body === null || typeof body !== "object" || Array.isArray(body)) {
+    return { ok: false, errors: ["Body must be a JSON object"] };
+  }
+
+  const rawVideoUrl = body.raw_video_url;
+  if (!rawVideoUrl || typeof rawVideoUrl !== "string" || !rawVideoUrl.trim()) {
+    errors.push("Missing required field: raw_video_url (non-empty string)");
+  }
+
+  const ugcScript = body.ugc_script;
+  if (!ugcScript || typeof ugcScript !== "object" || Array.isArray(ugcScript)) {
+    errors.push("Missing required field: ugc_script (must be an object)");
+  } else {
+    if (!Array.isArray(ugcScript.scenes) || ugcScript.scenes.length === 0) {
+      errors.push("ugc_script.scenes must be a non-empty array");
+    }
+    if (
+      typeof ugcScript.estimated_duration_seconds !== "number" ||
+      ugcScript.estimated_duration_seconds <= 0
+    ) {
+      errors.push("ugc_script.estimated_duration_seconds must be a positive number");
+    }
+  }
+
+  if (
+    body.bgm_url !== undefined &&
+    body.bgm_url !== null &&
+    body.bgm_url !== "" &&
+    typeof body.bgm_url !== "string"
+  ) {
+    errors.push("bgm_url must be a string when provided");
+  }
+
+  if (
+    body.website_display !== undefined &&
+    body.website_display !== null &&
+    body.website_display !== "" &&
+    typeof body.website_display !== "string"
+  ) {
+    errors.push("website_display must be a string when provided");
+  }
+  if (typeof body.website_display === "string" && body.website_display.length > 512) {
+    errors.push("website_display must be at most 512 characters");
+  }
+
+  if (
+    body.logo_url !== undefined &&
+    body.logo_url !== null &&
+    body.logo_url !== "" &&
+    typeof body.logo_url !== "string"
+  ) {
+    errors.push("logo_url must be a string when provided");
+  }
+  if (typeof body.logo_url === "string" && body.logo_url.length > 1024) {
+    errors.push("logo_url must be at most 1024 characters");
+  }
+
+  if (
+    body.product_image_url !== undefined &&
+    body.product_image_url !== null &&
+    body.product_image_url !== "" &&
+    typeof body.product_image_url !== "string"
+  ) {
+    errors.push("product_image_url must be a string when provided");
+  }
+  if (typeof body.product_image_url === "string" && body.product_image_url.length > 1024) {
+    errors.push("product_image_url must be at most 1024 characters");
+  }
+
+  if (
+    body.task_id !== undefined &&
+    body.task_id !== null &&
+    (typeof body.task_id !== "string" || !body.task_id.trim())
+  ) {
+    errors.push("task_id must be a non-empty string when provided");
+  }
+
+  return { ok: errors.length === 0, errors };
+}
+
+app.post("/render-ugc", async (req, res) => {
+  console.log("[/render-ugc] incoming body:", JSON.stringify(req.body));
+
+  const { ok, errors } = validateUgcRenderPayload(req.body);
+  if (!ok) {
+    return res.status(400).json({ error: "Validation failed", details: errors });
+  }
+
+  if (renderLimiter.pending >= MAX_QUEUE_DEPTH) {
+    console.warn(
+      `[/render-ugc] queue full (active=${renderLimiter.active} pending=${renderLimiter.pending}) — rejecting request`,
+    );
+    return res.status(503).json({
+      error: "Render queue is full. Please try again later.",
+      details: `Queue depth limit of ${MAX_QUEUE_DEPTH} reached.`,
+    });
+  }
+
+  const inputProps = buildUgcInputProps(req.body);
+
+  console.log(
+    `[/render-ugc] queued — active=${renderLimiter.active} pending=${renderLimiter.pending + 1}`,
+    {
+      scenes: inputProps.ugc_script?.scenes?.length ?? 0,
+      duration: inputProps.ugc_script?.estimated_duration_seconds ?? "?",
+    },
+  );
+
+  try {
+    const { fileName, outputPath, videoUrl } = await renderLimiter.run(() =>
+      withTimeout(
+        renderUgcVideo(inputProps, { publicBaseUrl: PUBLIC_BASE_URL }),
+        UGC_RENDER_TIMEOUT_MS,
+        "Remotion renderMedia",
+      ),
+    );
+
+    if (!videoUrl) {
+      const msg = "Render completed but videoUrl was empty";
+      console.error("[/render-ugc]", msg, { fileName, outputPath });
+      return res.status(500).json({ error: msg });
+    }
+
+    console.log("[/render-ugc] success", { videoUrl, fileName });
+    return res.status(200).json({ success: true, videoUrl, fileName, outputPath });
+  } catch (err) {
+    const isTimeout =
+      err instanceof Error && err.message.startsWith("Remotion renderMedia timed out");
+    console.error(
+      `[/render-ugc] ${isTimeout ? "TIMEOUT" : "render failed"}:`,
+      err instanceof Error ? err.message : String(err),
+    );
+    if (!isTimeout && err instanceof Error && err.stack) {
+      console.error(err.stack);
+    }
+    const status = isTimeout ? 504 : 500;
+    const description = err instanceof Error ? err.message : String(err);
+    return res.status(status).json({ error: description });
+  }
+});
+
 app.listen(PORT, "0.0.0.0", () => {
   console.log(`video_engine listening on http://0.0.0.0:${PORT}`);
   console.log(`Public video base: ${PUBLIC_BASE_URL} (set VIDEO_ENGINE_PUBLIC_URL to override)`);
   console.log(
-    `Render concurrency: max=${MAX_CONCURRENT_RENDERS} queueDepth=${MAX_QUEUE_DEPTH} timeout=${RENDER_TIMEOUT_MS / 1000}s`,
+    `Render concurrency: max=${MAX_CONCURRENT_RENDERS} queueDepth=${MAX_QUEUE_DEPTH} ` +
+    `timeout_banner=${RENDER_TIMEOUT_MS / 1000}s timeout_ugc=${UGC_RENDER_TIMEOUT_MS / 1000}s`,
   );
   console.log(
     `Output cleanup: every ${CLEANUP_INTERVAL_MS / 3600_000}h, files older than ${MAX_OUTPUT_AGE_MS / 3600_000}h`,

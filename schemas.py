@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 class RegisterRequest(BaseModel):
@@ -91,6 +91,97 @@ class GenerateUGCRequest(BaseModel):
         max_length=2000,
         description="Optional script text; when set, skips AI script generation",
     )
+    heygen_character_type: Literal["avatar", "talking_photo"] = Field(
+        default="avatar",
+        description=(
+            "HeyGen only: 'avatar' for studio/instant avatar_id, "
+            "'talking_photo' for photo avatar talking_photo_id (List Avatars V2). Ignored for d-id."
+        ),
+    )
+    website_url: str | None = Field(
+        default=None,
+        max_length=512,
+        description=(
+            "Optional URL shown on the final UGC video (top-left, then animated to center at end). "
+            "Stored without https:// and www."
+        ),
+    )
+
+
+class GenerateAvatarStudioRequest(BaseModel):
+    """Avatar marketing video without website crawl — prompts only."""
+
+    script_source: Literal["from_brief_ai", "spoken_only"] = Field(
+        ...,
+        description="from_brief_ai: GPT builds scenes from brief + director notes; "
+        "spoken_only: use spoken_script as the only dialogue (no GPT).",
+    )
+    creative_brief: str | None = Field(
+        default=None,
+        max_length=12000,
+        description="Goals, product, audience, offer — used when script_source is from_brief_ai",
+    )
+    director_notes: str | None = Field(
+        default=None,
+        max_length=8000,
+        description="Hook/pacing/CTA structure — guides GPT only; not read aloud by TTS",
+    )
+    spoken_script: str | None = Field(
+        default=None,
+        max_length=12000,
+        description="Hebrew dialogue only — required when script_source is spoken_only",
+    )
+    provider: Literal["heygen_elevenlabs", "d-id"] = Field(
+        default="heygen_elevenlabs",
+        description="Video generation provider",
+    )
+    avatar_id: str = Field(
+        ...,
+        min_length=1,
+        description="HeyGen avatar ID or D-ID source image URL",
+    )
+    voice_id: str | None = Field(default=None, description="Optional ElevenLabs voice ID")
+    video_length: Literal["15s", "30s", "50s"] = Field(
+        default="30s",
+        description="Target video length for AI script pacing",
+    )
+    heygen_character_type: Literal["avatar", "talking_photo"] = Field(
+        default="avatar",
+        description=(
+            "HeyGen only: 'avatar' vs 'talking_photo' id kind for /v2/video/generate. Ignored for d-id."
+        ),
+    )
+    website_url: str | None = Field(
+        default=None,
+        max_length=512,
+        description="Optional URL for on-video overlay (no https/www in render).",
+    )
+    logo_url: str | None = Field(
+        default=None,
+        max_length=1024,
+        description="Optional direct image URL for the brand logo shown at the end card.",
+    )
+    product_image_url: str | None = Field(
+        default=None,
+        max_length=1024,
+        description="Optional product image URL for Remotion (center / end card).",
+    )
+
+    @field_validator("creative_brief", "director_notes", "spoken_script", mode="before")
+    @classmethod
+    def empty_str_to_none(cls, v: Any) -> Any:
+        if v is None:
+            return None
+        s = str(v).strip()
+        return s or None
+
+    @model_validator(mode="after")
+    def require_brief_or_spoken(self) -> "GenerateAvatarStudioRequest":
+        if self.script_source == "from_brief_ai" and not (self.creative_brief or "").strip():
+            raise ValueError("creative_brief is required when script_source is 'from_brief_ai'")
+        if self.script_source == "spoken_only" and not (self.spoken_script or "").strip():
+            raise ValueError("spoken_script is required when script_source is 'spoken_only'")
+        return self
 
 
 class TaskPatchRequest(BaseModel):

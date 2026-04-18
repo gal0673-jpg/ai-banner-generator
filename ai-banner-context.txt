@@ -1,5 +1,5 @@
 AI BANNER CONTEXT EXPORT
-Generated (UTC): 2026-04-10 10:55:14 UTC
+Generated (UTC): 2026-04-18 07:18:07 UTC
 Project root: C:\laragon\www\python
 Output filename: ai-banner-context.txt
 
@@ -61,7 +61,12 @@ python/
 │   │   ├── b09ba5e8cf40_add_vertical_format_columns.py
 │   │   ├── c4f1a2b8d9e0_add_created_at_banner_tasks.py
 │   │   ├── d7e3c1a0b2f4_add_video_status_columns.py
-│   │   └── e1f2a3b4c5d6_add_ugc_columns_to_banner_tasks.py
+│   │   ├── e1f2a3b4c5d6_add_ugc_columns_to_banner_tasks.py
+│   │   ├── f8a0b1c2d3e4_add_task_kind_to_banner_tasks.py
+│   │   ├── g9b1c2d3e4f5_add_ugc_composite_columns.py
+│   │   ├── h0c2d3e4f5g6_add_ugc_final_video_url.py
+│   │   ├── i1d2e3f4a5b6_add_ugc_website_display.py
+│   │   └── j2e3f4a5b6c7_add_product_image_url_to_banner_tasks.py
 │   ├── env.py
 │   ├── README
 │   └── script.py.mako
@@ -88,6 +93,7 @@ python/
 │   │   ├── App.css
 │   │   ├── App.jsx
 │   │   ├── AuthContext.jsx
+│   │   ├── AvatarStudio.jsx
 │   │   ├── BannerCanvas.css
 │   │   ├── BannerCanvas.jsx
 │   │   ├── BannerCanvas2.css
@@ -107,20 +113,27 @@ python/
 │   ├── package.json
 │   ├── README.md
 │   └── vite.config.js
+├── docs
+│   ├── ugc-compositing-design.md
+│   └── ugc-provider-evaluation.md
 ├── routers
 │   ├── __init__.py
 │   ├── admin.py
 │   ├── auth.py
+│   ├── avatar_studio.py
 │   └── banners.py
 ├── services
 │   ├── __init__.py
 │   ├── banner_service.py
+│   ├── ugc_composite_service.py
 │   ├── ugc_service.py
+│   ├── url_display.py
 │   └── video_service.py
 ├── tasks
-│   └── [91 task UUID folders — runtime outputs omitted]
+│   └── [137 task UUID folders — runtime outputs omitted]
 ├── video_engine
 │   ├── public
+│   │   ├── bgm.mp3
 │   │   ├── ding.mp3
 │   │   └── whoosh.mp3
 │   ├── Composition1.jsx
@@ -131,6 +144,7 @@ python/
 │   ├── package.json
 │   ├── render.js
 │   ├── Root.jsx
+│   ├── UgcComposition.jsx
 │   └── UnifiedComposition.jsx
 ├── .env
 ├── .gitignore
@@ -162,7 +176,7 @@ python/
 └── worker_tasks.py
 
 ================================================================================
-SECTION: PYTHON FILES (33)
+SECTION: PYTHON FILES (41)
 ================================================================================
 
 
@@ -854,6 +868,187 @@ def downgrade() -> None:
 
 
 ================================================================================
+FILE: alembic/versions/f8a0b1c2d3e4_add_task_kind_to_banner_tasks.py
+================================================================================
+
+"""Add task_kind to banner_tasks for banner vs UGC vs avatar studio
+
+Revision ID: f8a0b1c2d3e4
+Revises: e1f2a3b4c5d6
+Create Date: 2026-04-10
+
+"""
+
+from typing import Sequence, Union
+
+import sqlalchemy as sa
+from alembic import op
+
+revision: str = "f8a0b1c2d3e4"
+down_revision: Union[str, Sequence[str], None] = "e1f2a3b4c5d6"
+branch_labels: Union[str, Sequence[str], None] = None
+depends_on: Union[str, Sequence[str], None] = None
+
+
+def upgrade() -> None:
+    op.add_column(
+        "banner_tasks",
+        sa.Column(
+            "task_kind",
+            sa.String(length=32),
+            nullable=False,
+            server_default="banner",
+        ),
+    )
+
+
+def downgrade() -> None:
+    op.drop_column("banner_tasks", "task_kind")
+
+
+================================================================================
+FILE: alembic/versions/g9b1c2d3e4f5_add_ugc_composite_columns.py
+================================================================================
+
+"""Add ugc_composited_video_url and ugc_composite_note for FFmpeg post-step.
+
+Revision ID: g9b1c2d3e4f5
+Revises: f8a0b1c2d3e4
+Create Date: 2026-04-10
+
+"""
+
+from typing import Sequence, Union
+
+import sqlalchemy as sa
+from alembic import op
+
+revision: str = "g9b1c2d3e4f5"
+down_revision: Union[str, Sequence[str], None] = "f8a0b1c2d3e4"
+branch_labels: Union[str, Sequence[str], None] = None
+depends_on: Union[str, Sequence[str], None] = None
+
+
+def upgrade() -> None:
+    op.add_column(
+        "banner_tasks",
+        sa.Column("ugc_composited_video_url", sa.String(length=1024), nullable=True),
+    )
+    op.add_column(
+        "banner_tasks",
+        sa.Column("ugc_composite_note", sa.Text(), nullable=True),
+    )
+
+
+def downgrade() -> None:
+    op.drop_column("banner_tasks", "ugc_composite_note")
+    op.drop_column("banner_tasks", "ugc_composited_video_url")
+
+
+================================================================================
+FILE: alembic/versions/h0c2d3e4f5g6_add_ugc_final_video_url.py
+================================================================================
+
+"""Add ugc_final_video_url for Remotion-rendered caption video.
+
+Revision ID: h0c2d3e4f5g6
+Revises: g9b1c2d3e4f5
+Create Date: 2026-04-11
+
+"""
+
+from typing import Sequence, Union
+
+import sqlalchemy as sa
+from alembic import op
+
+revision: str = "h0c2d3e4f5g6"
+down_revision: Union[str, Sequence[str], None] = "g9b1c2d3e4f5"
+branch_labels: Union[str, Sequence[str], None] = None
+depends_on: Union[str, Sequence[str], None] = None
+
+
+def upgrade() -> None:
+    op.add_column(
+        "banner_tasks",
+        sa.Column("ugc_final_video_url", sa.String(length=1024), nullable=True),
+    )
+
+
+def downgrade() -> None:
+    op.drop_column("banner_tasks", "ugc_final_video_url")
+
+
+================================================================================
+FILE: alembic/versions/i1d2e3f4a5b6_add_ugc_website_display.py
+================================================================================
+
+"""Add ugc_website_display for on-video URL overlay (Remotion).
+
+Revision ID: i1d2e3f4a5b6
+Revises: h0c2d3e4f5g6
+Create Date: 2026-04-11
+
+"""
+
+from typing import Sequence, Union
+
+import sqlalchemy as sa
+from alembic import op
+
+revision: str = "i1d2e3f4a5b6"
+down_revision: Union[str, Sequence[str], None] = "h0c2d3e4f5g6"
+branch_labels: Union[str, Sequence[str], None] = None
+depends_on: Union[str, Sequence[str], None] = None
+
+
+def upgrade() -> None:
+    # TEXT avoids MySQL 65KB row-size limit (many VARCHAR(1024) columns on this table).
+    op.add_column(
+        "banner_tasks",
+        sa.Column("ugc_website_display", sa.Text(), nullable=True),
+    )
+
+
+def downgrade() -> None:
+    op.drop_column("banner_tasks", "ugc_website_display")
+
+
+================================================================================
+FILE: alembic/versions/j2e3f4a5b6c7_add_product_image_url_to_banner_tasks.py
+================================================================================
+
+"""Add product_image_url to banner_tasks (Avatar Studio / Remotion).
+
+Revision ID: j2e3f4a5b6c7
+Revises: i1d2e3f4a5b6
+Create Date: 2026-04-17
+
+"""
+
+from typing import Sequence, Union
+
+import sqlalchemy as sa
+from alembic import op
+
+revision: str = "j2e3f4a5b6c7"
+down_revision: Union[str, Sequence[str], None] = "i1d2e3f4a5b6"
+branch_labels: Union[str, Sequence[str], None] = None
+depends_on: Union[str, Sequence[str], None] = None
+
+
+def upgrade() -> None:
+    op.add_column(
+        "banner_tasks",
+        sa.Column("product_image_url", sa.String(length=1024), nullable=True),
+    )
+
+
+def downgrade() -> None:
+    op.drop_column("banner_tasks", "product_image_url")
+
+
+================================================================================
 FILE: api.py
 ================================================================================
 
@@ -887,6 +1082,7 @@ from database import Base, SessionLocal, engine  # noqa: E402
 from models import User  # noqa: E402
 from routers import admin as admin_router  # noqa: E402
 from routers import auth as auth_router  # noqa: E402
+from routers import avatar_studio as avatar_studio_router  # noqa: E402
 from routers import banners as banners_router  # noqa: E402
 from services.banner_service import TASKS_DIR, ensure_tasks_dir  # noqa: E402
 
@@ -941,8 +1137,22 @@ app.add_middleware(
 
 app.mount("/task-files", StaticFiles(directory=str(TASKS_DIR)), name="task_files")
 
+
+@app.get("/")
+def api_root() -> dict[str, str]:
+    """Opening :8888 in a browser hits ``/``; the UI lives on Vite (e.g. :5173)."""
+    return {
+        "service": "banner-generator-api",
+        "docs": "/docs",
+        "redoc": "/redoc",
+        "ui": "http://127.0.0.1:5173",
+        "message": "This port serves the JSON API only. Use /docs or the React dev server.",
+    }
+
+
 app.include_router(auth_router.router)
 app.include_router(banners_router.router)
+app.include_router(avatar_studio_router.router)
 app.include_router(admin_router.router)
 
 
@@ -1112,6 +1322,7 @@ celery_app.conf.update(
         "run_banner_task": {"queue": banner_queue},
         "render_video_task": {"queue": video_queue},
         "run_ugc_task": {"queue": video_queue},
+        "run_avatar_studio_task": {"queue": video_queue},
     },
 )
 
@@ -4131,6 +4342,8 @@ class BannerTask(Base):
         DateTime(timezone=True), default=_utc_now, nullable=False
     )
     status: Mapped[str] = mapped_column(String(64), nullable=False)
+    #: banner | ugc_legacy (crawl + UGC) | avatar_studio (prompt-only avatar)
+    task_kind: Mapped[str] = mapped_column(String(32), nullable=False, default="banner")
     url: Mapped[str] = mapped_column(Text, nullable=False)
     brief: Mapped[str | None] = mapped_column(Text, nullable=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -4142,6 +4355,7 @@ class BannerTask(Base):
     brand_color: Mapped[str | None] = mapped_column(String(32), nullable=True)
     background_url: Mapped[str | None] = mapped_column(String(1024), nullable=True)
     logo_url: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    product_image_url: Mapped[str | None] = mapped_column(String(1024), nullable=True)
     rendered_banner_1_url: Mapped[str | None] = mapped_column(String(1024), nullable=True)
     rendered_banner_2_url: Mapped[str | None] = mapped_column(String(1024), nullable=True)
     canvas_state: Mapped[dict | None] = mapped_column(JSON, nullable=True)
@@ -4162,6 +4376,14 @@ class BannerTask(Base):
     ugc_script: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     ugc_avatar_id: Mapped[str | None] = mapped_column(String(256), nullable=True)
     ugc_raw_video_url: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    #: Local /task-files/... MP4 after optional FFmpeg polish (blur-bg PiP); null if skipped/failed.
+    ugc_composited_video_url: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    #: Non-fatal composite message (e.g. ffmpeg missing, fallback to raw only).
+    ugc_composite_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    #: Final Remotion-rendered MP4 with animated Hebrew captions from the video engine; null if skipped/failed.
+    ugc_final_video_url: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    #: Normalized site URL for Remotion overlay (no https/www), e.g. ``example.co.il``; optional.
+    ugc_website_display: Mapped[str | None] = mapped_column(Text, nullable=True)
     ugc_status: Mapped[str | None] = mapped_column(String(64), nullable=True)
     ugc_error: Mapped[str | None] = mapped_column(Text, nullable=True)
 
@@ -4338,6 +4560,123 @@ def logout_user(response: Response) -> dict[str, str]:
 
 
 ================================================================================
+FILE: routers/avatar_studio.py
+================================================================================
+
+"""Avatar studio: marketing talking-head videos from prompts only (no site crawl)."""
+
+from __future__ import annotations
+
+import uuid
+from typing import Annotated
+
+from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy.orm import Session
+
+from auth import get_current_user
+from database import get_db
+from models import BannerTask, User
+from schemas import GenerateAvatarStudioRequest
+from services.banner_service import persist_task
+from services.url_display import normalize_website_display
+from worker_tasks import run_avatar_studio_task
+
+router = APIRouter(tags=["avatar-studio"])
+
+# Stored on BannerTask.url (required non-null) — not used for crawling in this flow.
+AVATAR_STUDIO_URL_PLACEHOLDER = "https://avatar-studio.internal/no-crawl"
+
+
+@router.post("/avatar-studio/generate")
+def generate_avatar_studio(
+    body: GenerateAvatarStudioRequest,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Session = Depends(get_db),
+) -> dict[str, str]:
+    """Enqueue avatar studio job. Poll ``/status/{task_id}`` for ``ugc_*`` fields."""
+    avatar_id = body.avatar_id.strip()
+    if not avatar_id:
+        raise HTTPException(status_code=400, detail="avatar_id must not be empty")
+
+    voice_id = (body.voice_id or "").strip() or None
+
+    summary_brief: str | None = None
+    if body.script_source == "from_brief_ai":
+        summary_brief = (body.creative_brief or "").strip() or None
+    else:
+        summary_brief = (body.spoken_script or "").strip() or None
+    if summary_brief and len(summary_brief) > 12000:
+        summary_brief = summary_brief[:12000]
+
+    website_disp = normalize_website_display(body.website_url)
+
+    task_id = uuid.uuid4()
+    row = BannerTask(
+        id=task_id,
+        user_id=current_user.id,
+        status="pending",
+        task_kind="avatar_studio",
+        url=AVATAR_STUDIO_URL_PLACEHOLDER,
+        brief=summary_brief,
+        ugc_avatar_id=avatar_id,
+        ugc_website_display=website_disp,
+        ugc_status="pending",
+        error=None,
+        headline=None,
+        subhead=None,
+        bullet_points=None,
+        cta=None,
+        video_hook=None,
+        brand_color=None,
+        background_url=None,
+        logo_url=body.logo_url,
+        product_image_url=body.product_image_url,
+        rendered_banner_1_url=None,
+        rendered_banner_2_url=None,
+        canvas_state=None,
+        video_url_1=None,
+        video_url_2=None,
+        rendered_banner_1_vertical_url=None,
+        rendered_banner_2_vertical_url=None,
+        video_url_1_vertical=None,
+        video_url_2_vertical=None,
+    )
+    db.add(row)
+    db.commit()
+
+    tid = str(task_id)
+    try:
+        run_avatar_studio_task.apply_async(
+            args=[tid, avatar_id, body.video_length],
+            kwargs={
+                "provider": body.provider,
+                "voice_id": voice_id,
+                "script_source": body.script_source,
+                "creative_brief": body.creative_brief,
+                "director_notes": body.director_notes,
+                "spoken_script": body.spoken_script,
+                "heygen_character_type": body.heygen_character_type,
+            },
+            queue="video_queue",
+        )
+    except Exception as exc:
+        persist_task(
+            task_id,
+            ugc_status="failed",
+            ugc_error=str(exc),
+        )
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "לא ניתן לשלוח את משימת סטודיו האווטאר לתור (Celery). "
+                "ודא ש-Redis רץ וה-worker פעיל."
+            ),
+        ) from exc
+
+    return {"task_id": tid}
+
+
+================================================================================
 FILE: routers/banners.py
 ================================================================================
 
@@ -4365,6 +4704,7 @@ from services.banner_service import (
     persist_task,
     rendered_banner_urls_for_task,
 )
+from services.url_display import normalize_website_display
 from services.video_service import public_api_base, video_payload_for_engine
 from worker_tasks import persist_video_task_state, render_video_task, run_banner_task, run_ugc_task
 
@@ -4388,6 +4728,7 @@ def generate(
         id=task_id,
         user_id=current_user.id,
         status="pending",
+        task_kind="banner",
         url=url,
         brief=brief,
         error=None,
@@ -4445,18 +4786,24 @@ def generate_ugc(
         raise HTTPException(status_code=400, detail="url must not be empty")
 
     brief = (body.brief or "").strip() or None
+    custom_script = (body.custom_script or "").strip() or None
+    voice_id = (body.voice_id or "").strip() or None
     avatar_id = body.avatar_id.strip()
     if not avatar_id:
         raise HTTPException(status_code=400, detail="avatar_id must not be empty")
+
+    website_disp = normalize_website_display(body.website_url)
 
     task_id = uuid.uuid4()
     row = BannerTask(
         id=task_id,
         user_id=current_user.id,
         status="pending",
+        task_kind="ugc_legacy",
         url=url,
         brief=brief,
         ugc_avatar_id=avatar_id,
+        ugc_website_display=website_disp,
         ugc_status="pending",
         # Banner-pipeline fields are not used for UGC tasks; left null.
         error=None,
@@ -4485,7 +4832,12 @@ def generate_ugc(
     try:
         run_ugc_task.apply_async(
             args=[tid, url, brief, avatar_id, body.video_length],
-            kwargs={"provider": body.provider},
+            kwargs={
+                "provider": body.provider,
+                "custom_script": custom_script,
+                "voice_id": voice_id,
+                "heygen_character_type": body.heygen_character_type,
+            },
             queue="video_queue",
         )
     except Exception as exc:
@@ -4514,6 +4866,7 @@ def get_latest_banner(
     stmt = (
         select(BannerTask)
         .where(BannerTask.user_id == current_user.id)
+        .where(BannerTask.task_kind == "banner")
         .order_by(BannerTask.created_at.desc())
         .limit(1)
     )
@@ -4746,7 +5099,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 class RegisterRequest(BaseModel):
@@ -4828,6 +5181,102 @@ class GenerateUGCRequest(BaseModel):
         default="30s",
         description="Target duration of the generated UGC video",
     )
+    custom_script: str | None = Field(
+        default=None,
+        max_length=2000,
+        description="Optional script text; when set, skips AI script generation",
+    )
+    heygen_character_type: Literal["avatar", "talking_photo"] = Field(
+        default="avatar",
+        description=(
+            "HeyGen only: 'avatar' for studio/instant avatar_id, "
+            "'talking_photo' for photo avatar talking_photo_id (List Avatars V2). Ignored for d-id."
+        ),
+    )
+    website_url: str | None = Field(
+        default=None,
+        max_length=512,
+        description=(
+            "Optional URL shown on the final UGC video (top-left, then animated to center at end). "
+            "Stored without https:// and www."
+        ),
+    )
+
+
+class GenerateAvatarStudioRequest(BaseModel):
+    """Avatar marketing video without website crawl — prompts only."""
+
+    script_source: Literal["from_brief_ai", "spoken_only"] = Field(
+        ...,
+        description="from_brief_ai: GPT builds scenes from brief + director notes; "
+        "spoken_only: use spoken_script as the only dialogue (no GPT).",
+    )
+    creative_brief: str | None = Field(
+        default=None,
+        max_length=12000,
+        description="Goals, product, audience, offer — used when script_source is from_brief_ai",
+    )
+    director_notes: str | None = Field(
+        default=None,
+        max_length=8000,
+        description="Hook/pacing/CTA structure — guides GPT only; not read aloud by TTS",
+    )
+    spoken_script: str | None = Field(
+        default=None,
+        max_length=12000,
+        description="Hebrew dialogue only — required when script_source is spoken_only",
+    )
+    provider: Literal["heygen_elevenlabs", "d-id"] = Field(
+        default="heygen_elevenlabs",
+        description="Video generation provider",
+    )
+    avatar_id: str = Field(
+        ...,
+        min_length=1,
+        description="HeyGen avatar ID or D-ID source image URL",
+    )
+    voice_id: str | None = Field(default=None, description="Optional ElevenLabs voice ID")
+    video_length: Literal["15s", "30s", "50s"] = Field(
+        default="30s",
+        description="Target video length for AI script pacing",
+    )
+    heygen_character_type: Literal["avatar", "talking_photo"] = Field(
+        default="avatar",
+        description=(
+            "HeyGen only: 'avatar' vs 'talking_photo' id kind for /v2/video/generate. Ignored for d-id."
+        ),
+    )
+    website_url: str | None = Field(
+        default=None,
+        max_length=512,
+        description="Optional URL for on-video overlay (no https/www in render).",
+    )
+    logo_url: str | None = Field(
+        default=None,
+        max_length=1024,
+        description="Optional direct image URL for the brand logo shown at the end card.",
+    )
+    product_image_url: str | None = Field(
+        default=None,
+        max_length=1024,
+        description="Optional product image URL for Remotion (center / end card).",
+    )
+
+    @field_validator("creative_brief", "director_notes", "spoken_script", mode="before")
+    @classmethod
+    def empty_str_to_none(cls, v: Any) -> Any:
+        if v is None:
+            return None
+        s = str(v).strip()
+        return s or None
+
+    @model_validator(mode="after")
+    def require_brief_or_spoken(self) -> "GenerateAvatarStudioRequest":
+        if self.script_source == "from_brief_ai" and not (self.creative_brief or "").strip():
+            raise ValueError("creative_brief is required when script_source is 'from_brief_ai'")
+        if self.script_source == "spoken_only" and not (self.spoken_script or "").strip():
+            raise ValueError("spoken_script is required when script_source is 'spoken_only'")
+        return self
 
 
 class TaskPatchRequest(BaseModel):
@@ -4902,6 +5351,7 @@ def banner_task_status_dict(task_id: str, row: BannerTask) -> dict[str, Any]:
     status_val: TaskStatus = row.status  # type: ignore[assignment]
     return {
         "task_id": task_id,
+        "task_kind": getattr(row, "task_kind", None) or "banner",
         "url": row.url,
         "brief": row.brief,
         "status": status_val,
@@ -4928,6 +5378,10 @@ def banner_task_status_dict(task_id: str, row: BannerTask) -> dict[str, Any]:
         "ugc_script": row.ugc_script,
         "ugc_avatar_id": row.ugc_avatar_id,
         "ugc_raw_video_url": row.ugc_raw_video_url,
+        "ugc_composited_video_url": row.ugc_composited_video_url,
+        "ugc_composite_note": row.ugc_composite_note,
+        "ugc_final_video_url": getattr(row, "ugc_final_video_url", None),
+        "ugc_website_display": getattr(row, "ugc_website_display", None),
         "ugc_status": row.ugc_status,
         "ugc_error": row.ugc_error,
     }
@@ -4955,6 +5409,338 @@ def merge_canvas_state(prev: Any, patch: dict[str, Any] | None) -> dict[str, Any
 
 
 ================================================================================
+FILE: services/ugc_composite_service.py
+================================================================================
+
+"""Optional FFmpeg post-step + Remotion caption render for the UGC pipeline.
+
+Triggered from Celery after HeyGen/D-ID returns a CDN URL.
+
+FFmpeg step (try_composite_pip_blur):
+  Converts the raw horizontal video to a 9:16 vertical format with a blurred
+  background.  On failure, callers keep ``ugc_raw_video_url`` only.
+
+Remotion step (call_video_engine_render_ugc):
+  Sends the raw CDN video + ugc_script to the Node.js video engine's /render-ugc
+  endpoint.  Remotion overlays animated Hebrew captions and returns a final MP4 URL
+  stored in ``ugc_final_video_url``.  On failure the pipeline falls back gracefully.
+
+Env:
+  UGC_FFMPEG_COMPOSITE      — set to ``0`` / ``false`` / ``no`` to disable FFmpeg step
+                               (default: enabled when ffmpeg exists).
+  UGC_FFMPEG_BINARY         — override executable name/path (default: ``ffmpeg``).
+  VIDEO_ENGINE_URL          — base URL of the Remotion video engine
+                               (default: ``http://127.0.0.1:9000``).
+  VIDEO_ENGINE_RENDER_UGC_TIMEOUT — HTTP timeout in seconds for /render-ugc
+                               (default: 600; set to 960 in .env for blur-bg renders).
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import os
+import shutil
+import subprocess
+from pathlib import Path
+
+import requests
+
+logger = logging.getLogger(__name__)
+
+_COMPOSITED_FILENAME = "ugc_composited.mp4"
+_DOWNLOAD_FILENAME = "ugc_provider_source.mp4"
+
+
+def _ffmpeg_binary() -> str:
+    return os.environ.get("UGC_FFMPEG_BINARY", "ffmpeg").strip() or "ffmpeg"
+
+
+def composite_enabled() -> bool:
+    if os.environ.get("UGC_FFMPEG_COMPOSITE", "1").strip().lower() in (
+        "0",
+        "false",
+        "no",
+        "off",
+    ):
+        return False
+    return shutil.which(_ffmpeg_binary()) is not None
+
+
+def _download_video(url: str, dest: Path, timeout: int = 180) -> None:
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    with requests.get(url, stream=True, timeout=timeout) as r:
+        r.raise_for_status()
+        with dest.open("wb") as f:
+            for chunk in r.iter_content(chunk_size=1024 * 256):
+                if chunk:
+                    f.write(chunk)
+
+
+def try_composite_pip_blur(
+    *,
+    task_id: str,
+    source_video_url: str,
+    work_dir: Path,
+) -> tuple[str | None, str | None]:
+    """Download provider MP4, run blur-bg PiP composite, write ``ugc_composited.mp4``.
+
+    Returns:
+        ``(relative_url, note)`` — relative_url like ``/task-files/<id>/ugc_composited.mp4``,
+        or ``(None, note)`` when skipped/failed (note explains why; may be None).
+    """
+    if not composite_enabled():
+        bin_name = _ffmpeg_binary()
+        if shutil.which(bin_name) is None:
+            return None, (
+                "FFmpeg is not installed on the server. Showing raw horizontal video. "
+                "To get the vertical 9:16 blurred-background effect, please install FFmpeg "
+                f"and set UGC_FFMPEG_BINARY to its full path (e.g. C:/laragon/ffpm/bin/ffmpeg.exe). "
+                f"[looked for: {bin_name!r}]"
+            )
+        return None, "UGC composite disabled (UGC_FFMPEG_COMPOSITE)."
+
+    ffmpeg = _ffmpeg_binary()
+    out_path = work_dir / _COMPOSITED_FILENAME
+    dl_path = work_dir / _DOWNLOAD_FILENAME
+
+    try:
+        logger.info(
+            "[ugc_composite] task_id=%s downloading provider video…", task_id
+        )
+        _download_video(source_video_url, dl_path)
+    except requests.RequestException as exc:
+        msg = f"UGC composite skipped: download failed ({exc})."
+        logger.warning("[ugc_composite] task_id=%s %s", task_id, msg)
+        return None, msg
+
+    # COVER-mode blur-bg composite (works for both portrait AND landscape sources).
+    #
+    # Background: `increase` + `crop` → cover-fills 1080×1920 without letterbox bars.
+    #
+    # Foreground: `decrease` → fits the full video within 1080×1920 without any
+    # cropping, then centred exactly in the middle of the canvas.  This preserves
+    # the avatar's head/forehead regardless of the source aspect ratio.
+    fc = (
+        "[0:v]scale=1080:1920:force_original_aspect_ratio=increase,"
+        "crop=1080:1920,setsar=1,split=2[bg][fg_orig];"
+        "[bg]gblur=sigma=25[bg_blurred];"
+        "[fg_orig]scale=1080:1920:force_original_aspect_ratio=decrease[fg_scaled];"
+        "[bg_blurred][fg_scaled]overlay=(W-w)/2:(H-h)/2:shortest=1[outv]"
+    )
+
+    def _run_ffmpeg(with_audio: bool) -> subprocess.CompletedProcess[str]:
+        c = [
+            ffmpeg,
+            "-y",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-i",
+            str(dl_path),
+            "-filter_complex",
+            fc,
+            "-map",
+            "[outv]",
+            "-c:v",
+            "libx264",
+            "-pix_fmt",
+            "yuv420p",
+            "-crf",
+            "20",
+            "-preset",
+            "fast",
+            "-movflags",
+            "+faststart",
+        ]
+        if with_audio:
+            c.extend(["-map", "0:a?", "-c:a", "aac", "-b:a", "192k"])
+        else:
+            c.append("-an")
+        c.append(str(out_path))
+        return subprocess.run(
+            c,
+            capture_output=True,
+            text=True,
+            timeout=600,
+            check=False,
+        )
+
+    try:
+        proc = _run_ffmpeg(with_audio=True)
+        if proc.returncode != 0:
+            err_txt = (proc.stderr or proc.stdout or "").lower()
+            if "matches no streams" in err_txt or "could not find" in err_txt:
+                proc = _run_ffmpeg(with_audio=False)
+    except subprocess.TimeoutExpired:
+        msg = "UGC composite failed: ffmpeg timeout (600s)."
+        logger.error("[ugc_composite] task_id=%s %s", task_id, msg)
+        return None, msg
+    except OSError as exc:
+        msg = f"UGC composite failed: could not run ffmpeg ({exc})."
+        logger.error("[ugc_composite] task_id=%s %s", task_id, msg)
+        return None, msg
+
+    if proc.returncode != 0:
+        err = (proc.stderr or proc.stdout or "").strip()[:800]
+        msg = f"UGC composite failed (ffmpeg exit {proc.returncode}): {err or 'no stderr'}"
+        logger.error("[ugc_composite] task_id=%s %s", task_id, msg)
+        return None, msg
+
+    if not out_path.is_file() or out_path.stat().st_size < 1024:
+        msg = "UGC composite failed: output file missing or too small."
+        logger.error("[ugc_composite] task_id=%s %s", task_id, msg)
+        return None, msg
+
+    rel = f"/task-files/{task_id}/{_COMPOSITED_FILENAME}"
+    logger.info("[ugc_composite] task_id=%s OK → %s", task_id, rel)
+    return rel, None
+
+
+def get_video_duration_seconds(path: Path) -> float | None:
+    """Return the exact duration (seconds) of a local video file via ffprobe.
+
+    Derives the ffprobe binary from ``UGC_FFMPEG_BINARY`` by substituting
+    ``ffmpeg`` → ``ffprobe`` in the filename.  Returns ``None`` on any failure so
+    callers can fall back to the AI-estimated duration without crashing.
+    """
+    ffmpeg_bin = _ffmpeg_binary()
+    ffprobe_bin = ffmpeg_bin.replace("ffmpeg.exe", "ffprobe.exe")
+    if ffprobe_bin == ffmpeg_bin:
+        ffprobe_bin = ffmpeg_bin.replace("ffmpeg", "ffprobe")
+    if not (shutil.which(ffprobe_bin) or Path(ffprobe_bin).is_file()):
+        return None
+    try:
+        proc = subprocess.run(
+            [
+                ffprobe_bin,
+                "-v", "error",
+                "-show_entries", "format=duration",
+                "-of", "default=noprint_wrappers=1:nokey=1",
+                str(path),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+        return float(proc.stdout.strip())
+    except Exception:
+        return None
+
+
+# ── Remotion caption render ───────────────────────────────────────────────────
+
+def _video_engine_render_ugc_url() -> str:
+    base = os.environ.get("VIDEO_ENGINE_URL", "http://127.0.0.1:9000").rstrip("/")
+    return f"{base}/render-ugc"
+
+
+def call_video_engine_render_ugc(
+    *,
+    task_id: str,
+    raw_video_url: str,
+    ugc_script: dict,
+    bgm_url: str = "",
+    website_display: str | None = None,
+    logo_url: str | None = None,
+    product_image_url: str | None = None,
+) -> tuple[str | None, str | None]:
+    """POST to the Node.js video engine's /render-ugc endpoint.
+
+    Remotion overlays animated Hebrew captions (from ``ugc_script.scenes[].on_screen_text``)
+    onto the avatar video and returns a finished MP4.
+
+    Args:
+        task_id:       Used for sub-directory organisation inside the video engine.
+        raw_video_url: Publicly reachable URL of the HeyGen/D-ID source video.
+        ugc_script:    Validated script dict (``estimated_duration_seconds`` + ``scenes``).
+        bgm_url:       Optional background music URL (passed through to Remotion).
+
+    Returns:
+        ``(video_url, None)`` on success — ``video_url`` is the absolute URL returned by
+        the video engine.
+        ``(None, error_message)`` on any failure so callers can fall back gracefully.
+    """
+    endpoint = _video_engine_render_ugc_url()
+    timeout = int(os.environ.get("VIDEO_ENGINE_RENDER_UGC_TIMEOUT", "600"))
+
+    payload: dict = {
+        "task_id": task_id,
+        "raw_video_url": raw_video_url,
+        "ugc_script": ugc_script,
+    }
+    if bgm_url:
+        payload["bgm_url"] = bgm_url
+    if website_display:
+        payload["website_display"] = website_display
+    if logo_url:
+        payload["logo_url"] = logo_url
+    if product_image_url:
+        payload["product_image_url"] = product_image_url
+
+    logger.info(
+        "[ugc_render] task_id=%s  POSTing to %s  scenes=%d  duration=%ss",
+        task_id,
+        endpoint,
+        len(ugc_script.get("scenes") or []),
+        ugc_script.get("estimated_duration_seconds", "?"),
+    )
+
+    try:
+        resp = requests.post(endpoint, json=payload, timeout=timeout)
+    except requests.ConnectionError as exc:
+        msg = f"Video engine unreachable ({endpoint}): {exc}"
+        logger.warning("[ugc_render] task_id=%s  %s", task_id, msg)
+        return None, msg
+    except requests.Timeout:
+        msg = f"Video engine timed out after {timeout}s ({endpoint})."
+        logger.warning("[ugc_render] task_id=%s  %s", task_id, msg)
+        return None, msg
+    except requests.RequestException as exc:
+        msg = f"Video engine request failed: {exc}"
+        logger.warning("[ugc_render] task_id=%s  %s", task_id, msg)
+        return None, msg
+
+    if resp.status_code >= 400:
+        # Try to surface the structured error detail from the Node response.
+        detail = resp.text[:500] if resp.text else resp.reason
+        try:
+            err_json = resp.json()
+            if isinstance(err_json, dict):
+                raw_d = err_json.get("details") or err_json.get("error") or detail
+                detail = " ".join(str(x) for x in raw_d) if isinstance(raw_d, list) else str(raw_d)
+        except (json.JSONDecodeError, ValueError):
+            pass
+        msg = f"Video engine returned HTTP {resp.status_code}: {detail}"
+        logger.warning("[ugc_render] task_id=%s  %s", task_id, msg)
+        return None, msg
+
+    try:
+        data = resp.json()
+    except (json.JSONDecodeError, ValueError) as exc:
+        msg = f"Video engine returned non-JSON response: {exc}"
+        logger.warning("[ugc_render] task_id=%s  %s", task_id, msg)
+        return None, msg
+
+    if not data.get("success"):
+        fail = data.get("error") or data.get("details") or "render failed"
+        msg = f"Video engine render failed: {fail}"
+        logger.warning("[ugc_render] task_id=%s  %s", task_id, msg)
+        return None, msg
+
+    video_url = data.get("videoUrl") or data.get("video_url") or ""
+    if not isinstance(video_url, str) or not video_url.strip():
+        msg = "Video engine response missing videoUrl."
+        logger.warning("[ugc_render] task_id=%s  %s", task_id, msg)
+        return None, msg
+
+    final_url = video_url.strip()
+    logger.info("[ugc_render] task_id=%s  OK → %s", task_id, final_url)
+    return final_url, None
+
+
+================================================================================
 FILE: services/ugc_service.py
 ================================================================================
 
@@ -4966,16 +5752,18 @@ generate_elevenlabs_audio(text, voice_id) -> bytes
     Convert text to MP3 via ElevenLabs TTS (``eleven_v3`` + ``language_code: he`` + voice_settings).
     ``eleven_multilingual_v2`` does not list Hebrew; using it drops non-Latin script and only speaks e.g. brand acronyms.
 
-generate_heygen_avatar_video(avatar_id, audio_bytes) -> str
+generate_heygen_avatar_video(avatar_id, audio_bytes, character_type="avatar") -> str
     Upload audio, submit a HeyGen /v2/video/generate job, poll to completion,
-    and return the final CDN video URL.
+    and return the final CDN video URL. Use character_type="talking_photo" when
+    *avatar_id* is a HeyGen photo / talking-photo id from List Avatars V2.
 
 generate_did_avatar_video(source_url, script_text, voice_id) -> str
     ElevenLabs TTS → POST /audios → POST /talks (static ``source_url`` + ``script.type: audio``),
     poll ``GET /talks/{id}`` to completion, return ``result_url``. Trial-safe (no /expressives).
 
-dispatch_ugc_generation(provider, script_text, visual_reference) -> str
+dispatch_ugc_generation(provider, script_text, visual_reference, …) -> str
     Route to the correct provider pipeline and return the video URL.
+    For HeyGen, optional *heygen_character_type* selects avatar vs talking_photo payload.
 
 All HTTP calls are wrapped with tenacity for transient-failure resilience.
 """
@@ -5182,11 +5970,16 @@ def _upload_heygen_audio_asset(audio_bytes: bytes, api_key: str) -> str:
 
 @_http_retry
 def _heygen_request_video(
-    avatar_id: str,
+    visual_id: str,
     audio_asset_id: str,
     api_key: str,
+    *,
+    character_type: str = "avatar",
 ) -> str:
     """Submit a HeyGen /v2/video/generate job and return the ``video_id``.
+
+    *character_type* must be ``"avatar"`` (studio / instant avatar ``avatar_id``) or
+    ``"talking_photo"`` (photo avatar ``talking_photo_id`` from List Avatars V2).
 
     The v2 endpoint returns ``{"error": null, "data": {"video_id": "..."}}`` on success —
     it does NOT include a ``code`` field like the v1 endpoints do.
@@ -5195,14 +5988,23 @@ def _heygen_request_video(
         "x-api-key": api_key,
         "Content-Type": "application/json",
     }
+    if character_type == "talking_photo":
+        character: dict = {
+            "type": "talking_photo",
+            "talking_photo_id": visual_id,
+            "talking_photo_style": "circle",
+        }
+    else:
+        character = {
+            "type": "avatar",
+            "avatar_id": visual_id,
+            "avatar_style": "normal",
+            "scale": 1.0,
+        }
     payload = {
         "video_inputs": [
             {
-                "character": {
-                    "type": "avatar",
-                    "avatar_id": avatar_id,
-                    "avatar_style": "normal",
-                },
+                "character": character,
                 "voice": {
                     "type": "audio",
                     "audio_asset_id": audio_asset_id,
@@ -5211,7 +6013,10 @@ def _heygen_request_video(
         ],
         "dimension": {"width": 1080, "height": 1920},
     }
-    print(f"Calling HeyGen: {_HEYGEN_VIDEO_GENERATE_URL}")
+    print(
+        f"Calling HeyGen: {_HEYGEN_VIDEO_GENERATE_URL} "
+        f"(character_type={character_type!r}, id={visual_id[:16]}…)"
+    )
     resp = requests.post(
         _HEYGEN_VIDEO_GENERATE_URL, json=payload, headers=headers, timeout=60
     )
@@ -5310,7 +6115,12 @@ def _heygen_poll_status(video_id: str, api_key: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-def generate_heygen_avatar_video(avatar_id: str, audio_bytes: bytes) -> str:
+def generate_heygen_avatar_video(
+    avatar_id: str,
+    audio_bytes: bytes,
+    *,
+    character_type: str = "avatar",
+) -> str:
     """Generate a HeyGen talking-avatar video from a pre-rendered audio track.
 
     Step A — Upload *audio_bytes* to HeyGen's asset endpoint → ``audio_asset_id``.
@@ -5318,7 +6128,9 @@ def generate_heygen_avatar_video(avatar_id: str, audio_bytes: bytes) -> str:
     Step C — Poll /v1/video_status.get every 10 s until status is 'completed' or 'failed'.
 
     Args:
-        avatar_id:   HeyGen avatar ID (must be accessible under the caller's API key).
+        avatar_id:       HeyGen ``avatar_id`` or ``talking_photo_id`` (see *character_type*).
+        character_type:  ``"avatar"`` or ``"talking_photo"`` — must match the ID kind from
+                         `List All Avatars (V2) <https://docs.heygen.com/reference/list-avatars-v2>`_.
         audio_bytes: MP3 audio bytes (e.g. from :func:`generate_elevenlabs_audio`).
 
     Returns:
@@ -5351,15 +6163,20 @@ def generate_heygen_avatar_video(avatar_id: str, audio_bytes: bytes) -> str:
     logger.info("[ugc_service] HeyGen audio_asset_id=%s", audio_asset_id)
     print(
         f"[DEBUG] generate_heygen_avatar_video: using asset id from upload "
-        f"as voice.audio_asset_id={audio_asset_id!r} for POST /v2/video/generate"
+        f"as voice.audio_asset_id={audio_asset_id!r} for POST /v2/video/generate "
+        f"(character_type={character_type!r})"
     )
 
     # ── Step B: request video generation ───────────────────────────────────
     logger.info(
-        "[ugc_service] Submitting HeyGen video generate (avatar_id=%s).", avatar_id
+        "[ugc_service] Submitting HeyGen video generate (id=%s, character_type=%s).",
+        avatar_id,
+        character_type,
     )
     try:
-        video_id = _heygen_request_video(avatar_id, audio_asset_id, api_key)
+        video_id = _heygen_request_video(
+            avatar_id, audio_asset_id, api_key, character_type=character_type
+        )
     except UGCServiceError:
         raise  # already descriptive; propagate as-is
     except requests.HTTPError as exc:
@@ -5580,6 +6397,7 @@ def dispatch_ugc_generation(
     script_text: str,
     visual_reference: str,
     voice_id: str | None = None,
+    heygen_character_type: str | None = None,
 ) -> str:
     """Route UGC video generation to the correct provider pipeline.
 
@@ -5591,6 +6409,9 @@ def dispatch_ugc_generation(
         voice_id:         Optional ElevenLabs voice ID for both audio-based
                           providers. Forwarded to ``generate_elevenlabs_audio`` /
                           ``generate_did_avatar_video`` when supplied.
+        heygen_character_type: For ``heygen_elevenlabs`` only: ``"avatar"`` (default)
+                          or ``"talking_photo"``. Must match the kind of id in
+                          *visual_reference*. Ignored for ``d-id``.
 
     Returns:
         Final CDN video URL (``str``).
@@ -5601,9 +6422,16 @@ def dispatch_ugc_generation(
     """
     if provider == "heygen_elevenlabs":
         logger.info("[ugc_service] dispatch → heygen_elevenlabs pipeline.")
+        ct = (heygen_character_type or "avatar").strip().lower()
+        if ct not in ("avatar", "talking_photo"):
+            raise ValueError(
+                f"heygen_character_type must be 'avatar' or 'talking_photo', not {ct!r}."
+            )
         el_voice_id = voice_id if voice_id else _ELEVENLABS_DEFAULT_VOICE_ID
         audio_bytes = generate_elevenlabs_audio(script_text, voice_id=el_voice_id)
-        return generate_heygen_avatar_video(visual_reference, audio_bytes)
+        return generate_heygen_avatar_video(
+            visual_reference, audio_bytes, character_type=ct
+        )
 
     if provider == "d-id":
         logger.info("[ugc_service] dispatch → d-id pipeline (/audios + /talks audio).")
@@ -5617,6 +6445,34 @@ def dispatch_ugc_generation(
         f"Unknown UGC provider {provider!r}. "
         "Expected 'heygen_elevenlabs' or 'd-id'."
     )
+
+
+================================================================================
+FILE: services/url_display.py
+================================================================================
+
+"""Normalize user-supplied URLs for on-screen display (UGC / Remotion overlays)."""
+
+from __future__ import annotations
+
+import re
+
+
+def normalize_website_display(raw: str | None) -> str | None:
+    """Strip ``https://``, ``http://``, and leading ``www.``; keep host (and port if any).
+
+    Returns ``None`` when the result would be empty. Does not validate DNS.
+    """
+    if raw is None:
+        return None
+    s = str(raw).strip()
+    if not s:
+        return None
+    s = re.sub(r"^https?://", "", s, flags=re.IGNORECASE)
+    s = re.sub(r"^www\.", "", s, flags=re.IGNORECASE)
+    s = s.split("/")[0].split("?")[0].split("#")[0].strip()
+    s = s.rstrip(".")
+    return s or None
 
 
 ================================================================================
@@ -5811,18 +6667,45 @@ def test_ugc_generation():
             ugc_status = data.get("ugc_status")
             print(f"[{time.strftime('%H:%M:%S')}] סטטוס נוכחי: {ugc_status}")
             
+            if ugc_status == "rendering_captions":
+                print(f"[{time.strftime('%H:%M:%S')}] ⏳ Remotion מרנדר כתוביות... (עד 10 דקות)")
+
             if ugc_status == "completed":
                 print("\n🎉 הסרטון מוכן!!!")
                 print("==================================================")
-                print("וידאו גלמי:")
-                print(data.get("ugc_raw_video_url"))
+
+                final   = data.get("ugc_final_video_url")
+                comp    = data.get("ugc_composited_video_url")
+                raw     = data.get("ugc_raw_video_url")
+                note    = data.get("ugc_composite_note")
+
+                if final:
+                    print(f"✅ וידאו סופי עם כתוביות (Remotion):\n   {final}")
+                else:
+                    print("⚠️  וידאו Remotion לא נוצר (ראה הערה למטה).")
+
+                if comp:
+                    print(f"🎬 וידאו FFmpeg (blur-bg PiP):\n   {comp}")
+
+                print(f"📹 וידאו גלמי (HeyGen/D-ID):\n   {raw}")
+
+                if note:
+                    print(f"\n🔍 הערת אבחון (ugc_composite_note):\n   {note}")
+
                 print("==================================================")
                 print("תסריט ה-AI שנוצר:")
-                print(data.get("ugc_script"))
+                script = data.get("ugc_script") or {}
+                for s in script.get("scenes", []):
+                    print(f"  סצנה {s.get('scene_number')}: [{s.get('visual_layout')}]")
+                    print(f"    מדובר: {s.get('spoken_text', '')[:80]}")
+                    print(f"    על המסך: {s.get('on_screen_text', '')}")
                 break
             elif ugc_status == "failed" or data.get("status") == "failed":
                 print(f"\n❌ המשימה נכשלה!")
                 print(f"שגיאה: {data.get('ugc_error') or data.get('error')}")
+                note = data.get("ugc_composite_note")
+                if note:
+                    print(f"הערת אבחון: {note}")
                 break
                 
         except Exception as e:
@@ -5852,6 +6735,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -6107,6 +6991,108 @@ def _validate_script(data: dict, expected_duration: int) -> None:
             "[ugc_director] The last scene must use visual_layout 'avatar_with_cta'."
         )
 
+
+def _validate_script_studio_spoken_only(data: dict, expected_duration: int) -> None:
+    """Validate a multi-scene spoken_only script (avatar studio, no CTA arc required)."""
+    if not isinstance(data.get("estimated_duration_seconds"), int):
+        raise ValueError(
+            "[ugc_director] 'estimated_duration_seconds' must be an integer; "
+            f"got {data.get('estimated_duration_seconds')!r}."
+        )
+    if data["estimated_duration_seconds"] != expected_duration:
+        raise ValueError(
+            f"[ugc_director] 'estimated_duration_seconds' must be {expected_duration}; "
+            f"got {data['estimated_duration_seconds']}."
+        )
+    scenes = data.get("scenes")
+    if not isinstance(scenes, list) or len(scenes) == 0:
+        raise ValueError("[ugc_director] studio spoken_only expects at least one scene.")
+    for i, scene in enumerate(scenes):
+        idx = i + 1
+        for field in ("scene_number", "spoken_text", "on_screen_text", "visual_layout"):
+            if field not in scene:
+                raise ValueError(
+                    f"[ugc_director] Scene {idx} is missing required field {field!r}."
+                )
+        if scene["scene_number"] != idx:
+            raise ValueError(
+                f"[ugc_director] Scene at position {idx} has scene_number "
+                f"{scene['scene_number']}; expected {idx}."
+            )
+        if scene["visual_layout"] != "full_avatar":
+            raise ValueError(
+                f"[ugc_director] studio spoken_only scene {idx} must use visual_layout 'full_avatar'."
+            )
+        if not isinstance(scene["spoken_text"], str) or not scene["spoken_text"].strip():
+            raise ValueError(
+                f"[ugc_director] Scene {idx} 'spoken_text' must be a non-empty string."
+            )
+        if not isinstance(scene["on_screen_text"], str):
+            raise ValueError(
+                f"[ugc_director] Scene {idx} 'on_screen_text' must be a string."
+            )
+
+
+def _chunk_spoken_text(text: str, max_words: int = 6) -> list[str]:
+    """Split *text* into short caption chunks without any AI processing.
+
+    Strategy (pure Python / regex, no external calls):
+    1. Split at clause boundaries — after ``.``, ``!``, ``?``, or ``,`` followed
+       by whitespace.  Each piece keeps its trailing punctuation so the TTS
+       engine receives the correct prosody cues.
+    2. Any resulting piece that is still longer than *max_words* words is further
+       chopped into word-count chunks of at most *max_words*.
+    3. If the entire input contains no split points the whole text is returned as
+       a single-element list so the pipeline always gets at least one scene.
+    """
+    raw_parts = re.split(r'(?<=[.!?,])\s+', text.strip())
+    chunks: list[str] = []
+    for part in raw_parts:
+        part = part.strip()
+        if not part:
+            continue
+        words = part.split()
+        if len(words) <= max_words:
+            chunks.append(part)
+        else:
+            for i in range(0, len(words), max_words):
+                sub = " ".join(words[i : i + max_words])
+                if sub:
+                    chunks.append(sub)
+    return chunks if chunks else [text.strip()]
+
+
+def build_studio_spoken_only_script(spoken_text: str, video_length: str) -> dict:
+    """Build a multi-scene validated dict for TTS (avatar studio, no GPT).
+
+    The spoken text is auto-chunked into short phrases so each scene drives a
+    single Remotion caption card.  No AI or external API is involved — the
+    splitting is done purely with regex / Python string manipulation.
+    """
+    if video_length not in _DURATION_MAP:
+        raise ValueError(
+            f"[ugc_director] video_length must be one of {list(_DURATION_MAP)}; "
+            f"got {video_length!r}."
+        )
+    target_seconds = _DURATION_MAP[video_length]
+    chunks = _chunk_spoken_text(spoken_text.strip())
+    scenes = [
+        {
+            "scene_number": i + 1,
+            "spoken_text": chunk,
+            "on_screen_text": chunk,
+            "visual_layout": "full_avatar",
+        }
+        for i, chunk in enumerate(chunks)
+    ]
+    data = {
+        "estimated_duration_seconds": target_seconds,
+        "scenes": scenes,
+    }
+    _validate_script_studio_spoken_only(data, target_seconds)
+    return data
+
+
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
@@ -6186,6 +7172,72 @@ def generate_ugc_script(
     return data
 
 
+def generate_avatar_studio_script(
+    creative_brief: str,
+    director_notes: str | None,
+    video_length: str,
+) -> dict:
+    """
+    Hebrew UGC screenplay from creative brief only (no website crawl).
+
+    director_notes guides structure; must not appear verbatim as stage directions in spoken_text.
+    """
+    if video_length not in _DURATION_MAP:
+        raise ValueError(
+            f"[ugc_director] video_length must be one of {list(_DURATION_MAP)}; "
+            f"got {video_length!r}."
+        )
+
+    target_seconds = _DURATION_MAP[video_length]
+    scene_guidance = _SCENE_GUIDANCE[video_length]
+
+    notes_block = (
+        director_notes.strip()
+        if director_notes and director_notes.strip()
+        else "(None — infer hook, body, and CTA structure from the creative brief alone.)"
+    )
+
+    user_content = (
+        "NO SCRAPED WEBSITE TEXT IS AVAILABLE. "
+        "Build the entire script ONLY from the CREATIVE BRIEF and DIRECTOR NOTES below.\n\n"
+        f"TARGET VIDEO LENGTH: {video_length} ({target_seconds} seconds). "
+        f"Use exactly {scene_guidance}\n\n"
+        f"CREATIVE BRIEF:\n{creative_brief.strip()}\n\n"
+        f"DIRECTOR / STRUCTURE NOTES (for planning the arc only — output Hebrew spoken_text "
+        f"that sounds natural; never speak labels, English directions, or markdown aloud):\n"
+        f"{notes_block}\n"
+    )
+
+    api_key = os.environ.get("OPENAI_API_KEY")
+    if not api_key:
+        raise RuntimeError(
+            "[ugc_director] ERROR: OPENAI_API_KEY environment variable is not set."
+        )
+
+    print(
+        f"[ugc_director] Avatar studio: requesting {video_length} script from GPT-4o "
+        f"({target_seconds}s, {scene_guidance})"
+    )
+
+    client = OpenAI(api_key=api_key)
+    raw = _call_gpt(client, user_content)
+
+    print("[ugc_director] Avatar studio: parsing and validating JSON response…")
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(
+            f"[ugc_director] ERROR: GPT-4o returned invalid JSON — {exc}"
+        ) from exc
+
+    _validate_script(data, target_seconds)
+
+    print(
+        f"[ugc_director] Avatar studio OK — {len(data['scenes'])} scene(s) validated."
+    )
+    return data
+
+
 ================================================================================
 FILE: worker_tasks.py
 ================================================================================
@@ -6216,6 +7268,201 @@ from services.banner_service import TASKS_DIR, persist_task, rendered_banner_url
 from services.video_service import video_engine_render_url, video_payload_for_engine
 
 logger = logging.getLogger(__name__)
+
+
+def _finalize_ugc_with_composite(
+    task_uuid: uuid.UUID,
+    task_id: str,
+    video_url: str,
+    ugc_script: dict | None = None,
+) -> None:
+    """Persist provider URL, run optional FFmpeg polish, then drive Remotion caption render.
+
+    Pipeline (each step degrades gracefully on failure):
+
+    1. FFmpeg blur-bg PiP — converts the raw horizontal avatar video to a 9:16 vertical
+       format with a blurred background fill.  Saves ``ugc_composited.mp4`` locally and
+       sets ``ugc_composited_video_url``.  Skipped/failed → ``ugc_composited_video_url``
+       remains None and a note is recorded; pipeline continues.
+
+    2. Remotion caption render — POSTs ``raw_video_url`` + ``ugc_script`` to the Node.js
+       video engine's ``/render-ugc`` endpoint.  Remotion overlays animated Hebrew captions
+       and writes a finished MP4.  The URL is persisted as ``ugc_final_video_url``.
+       Skipped (no script) / failed → ``ugc_final_video_url`` remains None; pipeline still
+       completes successfully using whichever earlier step produced the best video.
+
+    Status transitions:
+      rendering_captions → completed  (normal path)
+      rendering_captions → completed  (fallback: Remotion unavailable, best existing URL kept)
+    """
+    from services import ugc_composite_service
+
+    work_dir = TASKS_DIR / task_id
+    work_dir.mkdir(parents=True, exist_ok=True)
+
+    # ── Step 1: FFmpeg blur-bg PiP ────────────────────────────────────────────
+    logger.info("[_finalize_ugc] task_id=%s  running FFmpeg composite…", task_id)
+    composited, note = ugc_composite_service.try_composite_pip_blur(
+        task_id=task_id,
+        source_video_url=video_url,
+        work_dir=work_dir,
+    )
+    if composited:
+        logger.info("[_finalize_ugc] task_id=%s  FFmpeg composite OK → %s", task_id, composited)
+    else:
+        logger.info("[_finalize_ugc] task_id=%s  FFmpeg composite skipped/failed: %s", task_id, note)
+
+    # Flush raw + composited URLs to DB before the potentially long Remotion render so the
+    # task is already partially visible (and survives a crash in the next step).
+    persist_task(
+        task_uuid,
+        ugc_raw_video_url=video_url,
+        ugc_composited_video_url=composited,
+        ugc_composite_note=note,
+    )
+
+    # ── Step 2: Remotion caption render ──────────────────────────────────────
+    scenes = (ugc_script or {}).get("scenes") or []
+    has_captions = any(
+        (s.get("on_screen_text") or "").strip() for s in scenes
+    )
+
+    if not ugc_script or not has_captions:
+        logger.info(
+            "[_finalize_ugc] task_id=%s  skipping Remotion render "
+            "(no ugc_script or no on_screen_text in any scene).",
+            task_id,
+        )
+        persist_task(
+            task_uuid,
+            ugc_status="completed",
+            ugc_error=None,
+        )
+        return
+
+    # ── Choose best local video for Remotion input ────────────────────────────
+    # Priority:
+    #   1. ugc_composited.mp4  — FFmpeg output: already 9:16, blur-bg, portrait-framed.
+    #                            Remotion only needs to add captions (1 OffthreadVideo decode
+    #                            per frame instead of 2 → roughly half the render time).
+    #   2. ugc_provider_source.mp4 — raw landscape download; still local so fast, but
+    #                            no blur-bg (the blur was intentionally removed from the
+    #                            Remotion composition to gain this speed win).
+    #   3. video_url (CDN)     — last resort if nothing was downloaded locally.
+    _api_base = os.environ.get("VITE_API_URL", "http://127.0.0.1:8888").rstrip("/")
+    _composited_path = work_dir / "ugc_composited.mp4"
+    _source_path = work_dir / "ugc_provider_source.mp4"
+
+    if _composited_path.is_file() and _composited_path.stat().st_size > 1024:
+        render_video_url = f"{_api_base}/task-files/{task_id}/ugc_composited.mp4"
+        logger.info(
+            "[_finalize_ugc] task_id=%s  using FFmpeg-composited video for Remotion "
+            "(9:16 blur-bg, 1× decode): %s",
+            task_id,
+            render_video_url,
+        )
+    elif _source_path.is_file() and _source_path.stat().st_size > 1024:
+        render_video_url = f"{_api_base}/task-files/{task_id}/ugc_provider_source.mp4"
+        logger.info(
+            "[_finalize_ugc] task_id=%s  composited not found, using raw source: %s",
+            task_id,
+            render_video_url,
+        )
+    else:
+        render_video_url = video_url  # CDN URL — slowest but always available
+        logger.info(
+            "[_finalize_ugc] task_id=%s  no local file found — using CDN URL for Remotion.",
+            task_id,
+        )
+
+    # ── Measure actual video duration ────────────────────────────────────────
+    # GPT estimates duration; HeyGen/D-ID may produce a slightly longer/shorter file.
+    # Remotion uses estimated_duration_seconds for durationInFrames — if the estimate
+    # is too short, the render cuts off mid-sentence.  Override with the measured value.
+    _estimated_dur = ugc_script.get("estimated_duration_seconds")
+    _probe_path = _composited_path if _composited_path.is_file() else _source_path
+    if _probe_path.is_file():
+        _actual_dur = ugc_composite_service.get_video_duration_seconds(_probe_path)
+        if _actual_dur and _actual_dur > 1:
+            ugc_script = {**ugc_script, "estimated_duration_seconds": round(_actual_dur, 2)}
+            logger.info(
+                "[_finalize_ugc] task_id=%s  measured duration=%.1fs "
+                "(estimated was %ss) — Remotion will use measured value",
+                task_id,
+                _actual_dur,
+                _estimated_dur,
+            )
+        else:
+            logger.info(
+                "[_finalize_ugc] task_id=%s  ffprobe unavailable or failed; "
+                "keeping estimated_duration_seconds=%ss",
+                task_id,
+                _estimated_dur,
+            )
+
+    # Signal to the UI that captions are being rendered.
+    persist_task(task_uuid, ugc_status="rendering_captions")
+    website_display: str | None = None
+    logo_url: str | None = None
+    product_image_url: str | None = None
+    with SessionLocal() as db:
+        db_row = db.get(BannerTask, task_uuid)
+        if db_row is not None:
+            w = getattr(db_row, "ugc_website_display", None) or ""
+            website_display = w.strip() or None
+            logo_url = getattr(db_row, "logo_url", None)
+            pi = getattr(db_row, "product_image_url", None) or ""
+            product_image_url = pi.strip() or None
+
+    logger.info(
+        "[_finalize_ugc] task_id=%s  calling Remotion /render-ugc  "
+        "scenes=%d  duration=%ss  video_url=%s  website_display=%s",
+        task_id,
+        len(scenes),
+        ugc_script.get("estimated_duration_seconds", "?"),
+        render_video_url,
+        website_display or "(none)",
+    )
+
+    final_url, render_err = ugc_composite_service.call_video_engine_render_ugc(
+        task_id=task_id,
+        raw_video_url=render_video_url,
+        ugc_script=ugc_script,
+        website_display=website_display,
+        logo_url=logo_url,
+        product_image_url=product_image_url,
+    )
+
+    if final_url:
+        logger.info(
+            "[_finalize_ugc] task_id=%s  Remotion render OK → %s",
+            task_id,
+            final_url,
+        )
+        persist_task(
+            task_uuid,
+            ugc_final_video_url=final_url,
+            ugc_status="completed",
+            ugc_error=None,
+        )
+    else:
+        # Non-fatal: the task still completes; surface composited / raw video instead.
+        # Build a combined note so both FFmpeg outcome and Remotion error are visible in the UI.
+        render_note = f"Video Engine failed: {render_err}. Showing raw video instead."
+        combined_note = f"{note}  |  {render_note}" if note else render_note
+        logger.warning(
+            "[_finalize_ugc] task_id=%s  Remotion render failed — persisting note: %s",
+            task_id,
+            render_note,
+        )
+        persist_task(
+            task_uuid,
+            ugc_final_video_url=None,
+            ugc_composite_note=combined_note,
+            ugc_status="completed",
+            ugc_error=None,
+        )
+
 
 # ── Chrome leak-prevention: guarantee cleanup on any exit path ────────────────
 #
@@ -6546,11 +7793,15 @@ def run_ugc_task(
     avatar_id: str,
     video_length: str,
     provider: str = "heygen_elevenlabs",
+    custom_script: str | None = None,
+    voice_id: str | None = None,
+    heygen_character_type: str | None = None,
 ) -> None:
     """End-to-end UGC video pipeline.
 
     1. Crawl *url* → scraped_content.txt
-    2. Generate Hebrew script via GPT-4o (ugc_director)
+    2. Generate Hebrew script via GPT-4o (ugc_director), or use *custom_script*
+       when provided (skips AI).
     3 & 4. Dispatch video generation to the chosen provider:
            - "heygen_elevenlabs": ElevenLabs TTS → HeyGen avatar video
            - "d-id":             D-ID all-in-one (TTS + video in a single call)
@@ -6571,8 +7822,8 @@ def run_ugc_task(
     work_dir.mkdir(parents=True, exist_ok=True)
 
     logger.info(
-        "[run_ugc_task] task_id=%s  url=%s  avatar=%s  length=%s  provider=%s",
-        task_id, url, avatar_id, video_length, provider,
+        "[run_ugc_task] task_id=%s  url=%s  avatar=%s  length=%s  provider=%s  voice_id=%s",
+        task_id, url, avatar_id, video_length, provider, voice_id or "(default)",
     )
 
     try:
@@ -6602,21 +7853,40 @@ def run_ugc_task(
         persist_task(task_uuid, ugc_status="scraped")
         logger.info("[run_ugc_task] task_id=%s  crawl complete (%d chars).", task_id, len(scraped_text))
 
-        # ── Step 2: generate UGC script ──────────────────────────────────────
+        # ── Step 2: generate UGC script (or use caller-provided text) ────────
         persist_task(task_uuid, ugc_status="generating_script")
-        logger.info("[run_ugc_task] task_id=%s  generating UGC script…", task_id)
-
-        try:
-            ugc_script = ugc_director.generate_ugc_script(
-                scraped_text=scraped_text,
-                brief=brief,
-                video_length=video_length,
+        script_override = (custom_script or "").strip()
+        if script_override:
+            logger.info(
+                "[run_ugc_task] task_id=%s  using custom_script (%d chars); skipping AI script.",
+                task_id,
+                len(script_override),
             )
-        except Exception as exc:
-            msg = f"UGC script generation failed: {exc}"
-            logger.error("[run_ugc_task] task_id=%s  %s", task_id, msg)
-            persist_task(task_uuid, ugc_status="failed", ugc_error=msg)
-            raise BannerPipelineFatalError(f"[run_ugc_task] {msg}") from exc
+            _dur_map = {"15s": 15, "30s": 30, "50s": 50}
+            ugc_script = {
+                "estimated_duration_seconds": _dur_map.get(video_length, 30),
+                "scenes": [
+                    {
+                        "scene_number": 1,
+                        "spoken_text": script_override,
+                        "on_screen_text": "",
+                        "visual_layout": "full_avatar",
+                    }
+                ],
+            }
+        else:
+            logger.info("[run_ugc_task] task_id=%s  generating UGC script…", task_id)
+            try:
+                ugc_script = ugc_director.generate_ugc_script(
+                    scraped_text=scraped_text,
+                    brief=brief,
+                    video_length=video_length,
+                )
+            except Exception as exc:
+                msg = f"UGC script generation failed: {exc}"
+                logger.error("[run_ugc_task] task_id=%s  %s", task_id, msg)
+                persist_task(task_uuid, ugc_status="failed", ugc_error=msg)
+                raise BannerPipelineFatalError(f"[run_ugc_task] {msg}") from exc
 
         persist_task(task_uuid, ugc_script=ugc_script)
         logger.info(
@@ -6649,6 +7919,8 @@ def run_ugc_task(
                 provider=provider,
                 script_text=combined_spoken_text,
                 visual_reference=avatar_id,
+                voice_id=voice_id,
+                heygen_character_type=heygen_character_type,
             )
         except (UGCServiceError, ValueError) as exc:
             msg = f"Video generation failed ({provider}): {exc}"
@@ -6656,13 +7928,8 @@ def run_ugc_task(
             persist_task(task_uuid, ugc_status="failed", ugc_error=msg)
             raise BannerPipelineFatalError(f"[run_ugc_task] {msg}") from exc
 
-        # ── Step 5: persist completed state ──────────────────────────────────
-        persist_task(
-            task_uuid,
-            ugc_raw_video_url=video_url,
-            ugc_status="completed",
-            ugc_error=None,
-        )
+        # ── Step 5: FFmpeg polish + Remotion caption render + persist ────────
+        _finalize_ugc_with_composite(task_uuid, task_id, video_url, ugc_script=ugc_script)
         logger.info(
             "[run_ugc_task] task_id=%s  COMPLETED. video_url=%s",
             task_id,
@@ -6672,8 +7939,146 @@ def run_ugc_task(
         _emergency_chrome_cleanup()
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Avatar studio — prompt-only UGC (no website crawl)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+@celery_app.task(
+    bind=True,
+    base=BannerGenerationTask,
+    name="run_avatar_studio_task",
+    queue="video_queue",
+)
+def run_avatar_studio_task(
+    self: BannerGenerationTask,
+    task_id: str,
+    avatar_id: str,
+    video_length: str,
+    provider: str = "heygen_elevenlabs",
+    voice_id: str | None = None,
+    script_source: str = "from_brief_ai",
+    creative_brief: str | None = None,
+    director_notes: str | None = None,
+    spoken_script: str | None = None,
+    heygen_character_type: str | None = None,
+) -> None:
+    """Avatar marketing video from creative prompts only (no crawl)."""
+    from services.ugc_service import (
+        UGCServiceError,
+        dispatch_ugc_generation,
+    )
+    import ugc_director
+
+    task_uuid = uuid.UUID(task_id)
+
+    logger.info(
+        "[run_avatar_studio_task] task_id=%s  avatar=%s  length=%s  provider=%s  "
+        "script_source=%s  voice_id=%s",
+        task_id,
+        avatar_id,
+        video_length,
+        provider,
+        script_source,
+        voice_id or "(default)",
+    )
+
+    try:
+        persist_task(task_uuid, ugc_status="generating_script")
+
+        if script_source == "spoken_only":
+            text = (spoken_script or "").strip()
+            if not text:
+                msg = "spoken_script is empty."
+                persist_task(task_uuid, ugc_status="failed", ugc_error=msg)
+                raise BannerPipelineFatalError(f"[run_avatar_studio_task] {msg}")
+            logger.info(
+                "[run_avatar_studio_task] task_id=%s  spoken_only (%d chars).",
+                task_id,
+                len(text),
+            )
+            try:
+                ugc_script = ugc_director.build_studio_spoken_only_script(
+                    text, video_length
+                )
+            except ValueError as exc:
+                msg = f"Script validation failed: {exc}"
+                persist_task(task_uuid, ugc_status="failed", ugc_error=msg)
+                raise BannerPipelineFatalError(f"[run_avatar_studio_task] {msg}") from exc
+        else:
+            brief = (creative_brief or "").strip()
+            if not brief:
+                msg = "creative_brief is empty."
+                persist_task(task_uuid, ugc_status="failed", ugc_error=msg)
+                raise BannerPipelineFatalError(f"[run_avatar_studio_task] {msg}")
+            logger.info(
+                "[run_avatar_studio_task] task_id=%s  GPT script from brief (%d chars).",
+                task_id,
+                len(brief),
+            )
+            try:
+                ugc_script = ugc_director.generate_avatar_studio_script(
+                    creative_brief=brief,
+                    director_notes=director_notes,
+                    video_length=video_length,
+                )
+            except Exception as exc:
+                msg = f"Avatar studio script generation failed: {exc}"
+                logger.error("[run_avatar_studio_task] task_id=%s  %s", task_id, msg)
+                persist_task(task_uuid, ugc_status="failed", ugc_error=msg)
+                raise BannerPipelineFatalError(f"[run_avatar_studio_task] {msg}") from exc
+
+        persist_task(task_uuid, ugc_script=ugc_script)
+        logger.info(
+            "[run_avatar_studio_task] task_id=%s  script saved (%d scenes).",
+            task_id,
+            len(ugc_script.get("scenes", [])),
+        )
+
+        scenes = ugc_script.get("scenes") or []
+        combined_spoken_text = " ".join(
+            scene.get("spoken_text", "").strip() for scene in scenes
+        ).strip()
+
+        if not combined_spoken_text:
+            msg = "UGC script has no spoken text in any scene."
+            persist_task(task_uuid, ugc_status="failed", ugc_error=msg)
+            raise BannerPipelineFatalError(f"[run_avatar_studio_task] {msg}")
+
+        persist_task(task_uuid, ugc_status="generating_video")
+        logger.info(
+            "[run_avatar_studio_task] task_id=%s  dispatching %d chars to provider=%r…",
+            task_id,
+            len(combined_spoken_text),
+            provider,
+        )
+
+        try:
+            video_url = dispatch_ugc_generation(
+                provider=provider,
+                script_text=combined_spoken_text,
+                visual_reference=avatar_id,
+                voice_id=voice_id,
+                heygen_character_type=heygen_character_type,
+            )
+        except (UGCServiceError, ValueError) as exc:
+            msg = f"Video generation failed ({provider}): {exc}"
+            logger.error("[run_avatar_studio_task] task_id=%s  %s", task_id, msg)
+            persist_task(task_uuid, ugc_status="failed", ugc_error=msg)
+            raise BannerPipelineFatalError(f"[run_avatar_studio_task] {msg}") from exc
+
+        _finalize_ugc_with_composite(task_uuid, task_id, video_url, ugc_script=ugc_script)
+        logger.info(
+            "[run_avatar_studio_task] task_id=%s  COMPLETED. video_url=%s",
+            task_id,
+            video_url,
+        )
+    finally:
+        _emergency_chrome_cleanup()
+
+
 ================================================================================
-SECTION: CLIENT SOURCE FILES (25)
+SECTION: CLIENT SOURCE FILES (26)
 ================================================================================
 
 
@@ -7025,6 +8430,7 @@ FILE: client/src/App.jsx
 ================================================================================
 
 import { Navigate, Route, Routes, useLocation } from 'react-router-dom'
+import AvatarStudio from './AvatarStudio.jsx'
 import BannerWorkspace from './BannerWorkspace.jsx'
 import { useAuth } from './AuthContext.jsx'
 import Login from './Login.jsx'
@@ -7058,6 +8464,14 @@ export default function App() {
           element={
             <ProtectedRoute>
               <BannerWorkspace />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/avatar-studio"
+          element={
+            <ProtectedRoute>
+              <AvatarStudio />
             </ProtectedRoute>
           }
         />
@@ -7156,6 +8570,681 @@ export function useAuth() {
     throw new Error('useAuth must be used within an AuthProvider')
   }
   return ctx
+}
+
+
+================================================================================
+FILE: client/src/AvatarStudio.jsx
+================================================================================
+
+import { useEffect, useMemo, useState } from 'react'
+import { Link, useNavigate } from 'react-router-dom'
+import api, { API_BASE_URL, API_BASE_URL_DISPLAY } from './api.js'
+import { useAuth } from './AuthContext.jsx'
+
+function axiosErrorMessage(err) {
+  const d = err.response?.data?.detail
+  if (typeof d === 'string') return d
+  if (Array.isArray(d)) return d.map((x) => x.msg || JSON.stringify(x)).join(' ')
+  return err.message || 'הבקשה נכשלה'
+}
+
+const DEFAULT_DID_URL =
+  'https://d-id-public-bucket.s3.us-west-2.amazonaws.com/alice.jpg'
+const DEFAULT_HEYGEN_ID = 'd365dda368044f6189ee68af637389ff'
+const UGC_DEFAULT_VOICE_HINT = 'Wuv1s5YTNCjL9mFJTqo4'
+
+/**
+ * Best-available video URL priority:
+ *   1. ugc_final_video_url   — Remotion render: captions + animations (best)
+ *   2. ugc_composited_video_url — FFmpeg blur-bg PiP (no captions)
+ *   3. ugc_raw_video_url     — raw HeyGen/D-ID CDN URL
+ */
+function ugcPlaybackUrl(payload) {
+  const f = typeof payload?.ugc_final_video_url === 'string' ? payload.ugc_final_video_url.trim() : ''
+  const c = typeof payload?.ugc_composited_video_url === 'string' ? payload.ugc_composited_video_url.trim() : ''
+  const r = typeof payload?.ugc_raw_video_url === 'string' ? payload.ugc_raw_video_url.trim() : ''
+  return f || c || r || ''
+}
+
+/** Which tier is currently being shown, for the UI badge. */
+function ugcVideoTier(payload) {
+  if (typeof payload?.ugc_final_video_url === 'string' && payload.ugc_final_video_url.trim())
+    return 'final'
+  if (typeof payload?.ugc_composited_video_url === 'string' && payload.ugc_composited_video_url.trim())
+    return 'composited'
+  return 'raw'
+}
+
+function formatUgcStatus(ugcStatus) {
+  if (!ugcStatus) return 'מתחיל…'
+  const map = {
+    pending: 'UGC: ממתין…',
+    scraped: 'UGC: נסרק…',
+    generating_script: 'UGC: מכין תסריט…',
+    generating_video: 'UGC: מייצר וידאו…',
+    rendering_captions: 'UGC: מרנדר כתוביות…',
+    completed: 'UGC: הושלם',
+    failed: 'UGC: נכשל',
+  }
+  return map[ugcStatus] || `UGC: ${ugcStatus.replace(/_/g, ' ')}`
+}
+
+function Spinner({ className = '' }) {
+  return (
+    <span
+      className={`inline-block size-5 rounded-full border-2 border-violet-500/30 border-t-violet-500 animate-spin ${className}`}
+      aria-hidden
+    />
+  )
+}
+
+function UgcScriptScenesBody({ scenes }) {
+  if (!Array.isArray(scenes) || scenes.length === 0) return null
+  return (
+    <ul className="space-y-4 pt-2">
+      {scenes.map((scene, i) => {
+        const num = scene?.scene_number ?? i + 1
+        const spoken = typeof scene?.spoken_text === 'string' ? scene.spoken_text.trim() : ''
+        const onScreen = typeof scene?.on_screen_text === 'string' ? scene.on_screen_text.trim() : ''
+        return (
+          <li
+            key={`ugc-scene-${num}-${i}`}
+            className="rounded-xl border border-slate-200/90 dark:border-slate-700/90 bg-slate-50/80 dark:bg-slate-950/50 p-4 text-right"
+          >
+            <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
+              <span className="inline-flex items-center rounded-full bg-violet-100 dark:bg-violet-950/80 px-2.5 py-0.5 text-[11px] font-semibold text-violet-800 dark:text-violet-200 ring-1 ring-violet-200/80 dark:ring-violet-800/60">
+                סצנה {num}
+              </span>
+            </div>
+            <div className="space-y-3">
+              <div>
+                <p className="text-[10px] uppercase tracking-wide text-slate-500 dark:text-slate-400 mb-1">
+                  דיבור (תמליל)
+                </p>
+                <p className="text-sm text-slate-900 dark:text-slate-100 leading-relaxed whitespace-pre-wrap" dir="rtl">
+                  {spoken || '—'}
+                </p>
+              </div>
+              <div>
+                <p className="text-[10px] uppercase tracking-wide text-slate-500 dark:text-slate-400 mb-1">
+                  טקסט על המסך
+                </p>
+                <p className="text-sm font-medium text-slate-800 dark:text-slate-200 leading-relaxed" dir="rtl">
+                  {onScreen || '—'}
+                </p>
+              </div>
+            </div>
+          </li>
+        )
+      })}
+    </ul>
+  )
+}
+
+export default function AvatarStudio() {
+  const { user, logout } = useAuth()
+  const navigate = useNavigate()
+
+  const [scriptSource, setScriptSource] = useState('spoken_only')
+  const [creativeBrief, setCreativeBrief] = useState('')
+  const [directorNotes, setDirectorNotes] = useState('')
+  const [spokenScript, setSpokenScript] = useState('')
+  const [provider, setProvider] = useState('heygen_elevenlabs')
+  const [heygenCharacterType, setHeygenCharacterType] = useState('avatar')
+  const [avatarId, setAvatarId] = useState(DEFAULT_HEYGEN_ID)
+  const [voiceId, setVoiceId] = useState('')
+  const [videoLength, setVideoLength] = useState('15s')
+  const [websiteUrl, setWebsiteUrl] = useState('')
+  const [logoUrl, setLogoUrl] = useState('')
+  const [productImageUrl, setProductImageUrl] = useState('')
+
+  const [taskId, setTaskId] = useState(null)
+  const [statusPayload, setStatusPayload] = useState(null)
+  const [submitError, setSubmitError] = useState(null)
+  const [isPosting, setIsPosting] = useState(false)
+  const [sseBump, setSseBump] = useState(0)
+
+  const bannerTerminal =
+    statusPayload?.status === 'completed' || statusPayload?.status === 'failed'
+  const ugcTerminal =
+    statusPayload?.ugc_status === 'completed' || statusPayload?.ugc_status === 'failed'
+  const terminal = bannerTerminal || ugcTerminal
+  const isPolling = Boolean(taskId && !terminal)
+
+  useEffect(() => {
+    if (!taskId) return undefined
+    const tick = async () => {
+      try {
+        const { data } = await api.get(`/status/${taskId}`)
+        setStatusPayload(data)
+      } catch {
+        /* ignore */
+      }
+    }
+    void tick()
+    const id = setInterval(tick, 4000)
+    return () => clearInterval(id)
+  }, [taskId])
+
+  useEffect(() => {
+    if (!taskId) {
+      setStatusPayload(null)
+      return undefined
+    }
+    const ssePath = `${API_BASE_URL}/status/${taskId}/stream`
+    const sse = new EventSource(ssePath)
+    sse.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data)
+        setStatusPayload(data)
+      } catch {
+        /* ignore */
+      }
+    }
+    return () => {
+      sse.close()
+    }
+  }, [taskId, sseBump])
+
+  const handleSubmit = async (e) => {
+    e.preventDefault()
+    setSubmitError(null)
+    setIsPosting(true)
+    try {
+      const body = {
+        script_source: scriptSource,
+        provider,
+        avatar_id: avatarId.trim(),
+        video_length: videoLength,
+      }
+      const v = voiceId.trim()
+      if (v) body.voice_id = v
+      if (provider === 'heygen_elevenlabs') {
+        body.heygen_character_type = heygenCharacterType
+      }
+      if (scriptSource === 'from_brief_ai') {
+        body.creative_brief = creativeBrief.trim()
+        const dn = directorNotes.trim()
+        if (dn) body.director_notes = dn
+      } else {
+        body.spoken_script = spokenScript.trim()
+      }
+      const wu = websiteUrl.trim()
+      if (wu) body.website_url = wu
+      const lu = logoUrl.trim()
+      if (lu) body.logo_url = lu
+      body.product_image_url = productImageUrl.trim() || undefined
+      const { data } = await api.post('/avatar-studio/generate', body)
+      const id = data?.task_id
+      if (!id) throw new Error('לא התקבל מזהה משימה')
+      setTaskId(id)
+      setSseBump((n) => n + 1)
+    } catch (err) {
+      setSubmitError(axiosErrorMessage(err))
+    } finally {
+      setIsPosting(false)
+    }
+  }
+
+  const formLocked = isPosting || isPolling
+
+  const statusChip = useMemo(() => {
+    const s = statusPayload?.status
+    if (!taskId) return null
+    const ugcS = statusPayload?.ugc_status
+    const tone =
+      s === 'failed' || ugcS === 'failed'
+        ? 'bg-red-500/15 text-red-700 dark:text-red-300 ring-red-500/25'
+        : s === 'completed' || ugcS === 'completed'
+          ? 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 ring-emerald-500/25'
+          : 'bg-violet-500/15 text-violet-700 dark:text-violet-200 ring-violet-500/25'
+    const showSpinner = isPolling
+    const label =
+      ugcS && (s === 'pending' || !bannerTerminal)
+        ? formatUgcStatus(ugcS)
+        : s ?? '…'
+    return (
+      <span className={`inline-flex items-center gap-2 rounded-full px-3 py-1 text-xs font-medium ring-1 ${tone}`}>
+        {showSpinner && <Spinner className="!size-3.5 border-violet-400/40 border-t-violet-300" />}
+        <span className="opacity-90">{label}</span>
+      </span>
+    )
+  }, [taskId, statusPayload?.status, statusPayload?.ugc_status, isPolling, bannerTerminal])
+
+  return (
+    <div
+      className="min-h-screen bg-slate-100 dark:bg-slate-950 text-slate-900 dark:text-slate-100"
+      dir="rtl"
+      lang="he"
+    >
+      <header className="sticky top-0 z-20 border-b border-slate-200/80 dark:border-slate-800 bg-white/90 dark:bg-slate-900/90 backdrop-blur-md">
+        <div className="mx-auto flex max-w-[96%] items-center justify-between gap-4 px-4 py-3 sm:px-6">
+          <div className="text-start">
+            <h1 className="text-lg font-semibold tracking-tight text-slate-900 dark:text-white">
+              סטודיו אווטאר שיווקי
+            </h1>
+            <p className="text-xs text-slate-500 dark:text-slate-400">
+              ללא סריקת אתר — בריף, בימוי ותסריט מובנים לווידאו מדבר
+            </p>
+          </div>
+          <div className="flex items-center gap-3">
+            <Link
+              to="/"
+              className="rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 px-3 py-2 text-sm font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-700 transition"
+            >
+              חזרה לבאנרים
+            </Link>
+            {user?.email && (
+              <span className="hidden text-sm text-slate-600 dark:text-slate-400 sm:inline max-w-[180px] truncate">
+                {user.email}
+              </span>
+            )}
+            <button
+              type="button"
+              onClick={() => {
+                logout()
+                navigate('/login', { replace: true })
+              }}
+              className="rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 px-3 py-2 text-sm font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-700 transition"
+            >
+              התנתקות
+            </button>
+          </div>
+        </div>
+      </header>
+
+      <div className="mx-auto grid max-w-[96%] gap-6 px-4 py-6 lg:grid-cols-[minmax(300px,400px)_1fr] sm:px-6 lg:py-8">
+        <aside className="space-y-4 lg:sticky lg:top-24 lg:self-start">
+          <form
+            onSubmit={handleSubmit}
+            className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-5 shadow-sm text-right space-y-4"
+          >
+            <div>
+              <label className="block text-xs font-medium text-slate-600 dark:text-slate-300 mb-1.5">
+                מקור תסריט
+              </label>
+              <select
+                value={scriptSource}
+                onChange={(ev) => setScriptSource(ev.target.value)}
+                disabled={formLocked}
+                className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 px-3 py-2.5 text-sm outline-none focus:border-violet-500 focus:ring-2 focus:ring-violet-500/20 disabled:opacity-60"
+              >
+                <option value="from_brief_ai">AI מבריף + הערות בימוי</option>
+                <option value="spoken_only">רק טקסט דיבור (בלי AI)</option>
+              </select>
+            </div>
+
+            {scriptSource === 'from_brief_ai' && (
+              <>
+                <div>
+                  <label className="block text-xs font-medium text-slate-600 dark:text-slate-300 mb-1.5">
+                    <span className="text-red-500">*</span> בריף קריאייטיבי
+                  </label>
+                  <textarea
+                    rows={6}
+                    value={creativeBrief}
+                    onChange={(ev) => setCreativeBrief(ev.target.value)}
+                    disabled={formLocked}
+                    placeholder="מוצר, קהל, הצעה, טון — מה המסר?"
+                    className="w-full resize-y rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 px-3 py-2.5 text-sm text-right outline-none focus:border-violet-500 min-h-[120px] disabled:opacity-60"
+                    dir="rtl"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-slate-600 dark:text-slate-300 mb-1.5">
+                    הערות בימוי / מבנה{' '}
+                    <span className="text-slate-400 font-normal">(לא יוקראו בקול — מנחות את ה-AI)</span>
+                  </label>
+                  <textarea
+                    rows={4}
+                    value={directorNotes}
+                    onChange={(ev) => setDirectorNotes(ev.target.value)}
+                    disabled={formLocked}
+                    placeholder="למשל: הוק 3 שניות, כאב, הוכחה, CTA חזק בסוף…"
+                    className="w-full resize-y rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 px-3 py-2.5 text-sm text-right outline-none focus:border-violet-500 min-h-[88px] disabled:opacity-60"
+                    dir="rtl"
+                  />
+                </div>
+              </>
+            )}
+
+            {scriptSource === 'spoken_only' && (
+              <div>
+                <label className="block text-xs font-medium text-slate-600 dark:text-slate-300 mb-1.5">
+                  <span className="text-red-500">*</span> טקסט לדיבור בלבד (עברית)
+                </label>
+                <textarea
+                  rows={8}
+                  value={spokenScript}
+                  onChange={(ev) => setSpokenScript(ev.target.value)}
+                  disabled={formLocked}
+                  placeholder="רק מה שהאווטאר יאמר — בלי כותרות סצנה ואנגלית."
+                  maxLength={12000}
+                  className="w-full resize-y rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 px-3 py-2.5 text-sm text-right outline-none focus:border-violet-500 min-h-[160px] disabled:opacity-60"
+                  dir="rtl"
+                />
+              </div>
+            )}
+
+            <div>
+              <label className="block text-xs font-medium text-slate-600 dark:text-slate-300 mb-1.5">ספק</label>
+              <select
+                value={provider}
+                onChange={(ev) => {
+                  const v = ev.target.value
+                  setProvider(v)
+
+                  const currentAvatar = avatarId.trim()
+                  if (v === 'd-id' && (currentAvatar === DEFAULT_HEYGEN_ID || currentAvatar === '')) {
+                    setAvatarId(DEFAULT_DID_URL)
+                  } else if (
+                    v === 'heygen_elevenlabs' &&
+                    (currentAvatar === DEFAULT_DID_URL || currentAvatar === '')
+                  ) {
+                    setAvatarId(DEFAULT_HEYGEN_ID)
+                  }
+                }}
+                disabled={formLocked}
+                className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2.5 text-sm outline-none disabled:opacity-60"
+              >
+                <option value="d-id">D-ID</option>
+                <option value="heygen_elevenlabs">HeyGen + ElevenLabs</option>
+              </select>
+            </div>
+
+            {provider === 'heygen_elevenlabs' && (
+              <div>
+                <label className="block text-xs font-medium text-slate-600 dark:text-slate-300 mb-1.5">
+                  סוג מזהה HeyGen
+                </label>
+                <select
+                  value={heygenCharacterType}
+                  onChange={(ev) => setHeygenCharacterType(ev.target.value)}
+                  disabled={formLocked}
+                  className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2.5 text-sm outline-none disabled:opacity-60"
+                >
+                  <option value="avatar">אווטאר סטודיו / Instant (avatar_id)</option>
+                  <option value="talking_photo">תמונה מדברת / Photo avatar (talking_photo_id)</option>
+                </select>
+                <p className="mt-1 text-[10px] text-slate-500 dark:text-slate-400 leading-relaxed text-right">
+                  אם HeyGen מחזיר &quot;avatar look not found&quot; — לרוב העתקת מזהה של תמונה מדברת אבל נשלח כ-avatar. נסה
+                  &quot;תמונה מדברת&quot;.
+                </p>
+              </div>
+            )}
+
+            <div>
+              <label className="block text-xs font-medium text-slate-600 dark:text-slate-300 mb-1.5">אווטאר / תמונה</label>
+              <input
+                type="text"
+                value={avatarId}
+                onChange={(ev) => setAvatarId(ev.target.value)}
+                disabled={formLocked}
+                placeholder={
+                  provider === 'd-id'
+                    ? 'URL תמונת פנים'
+                    : heygenCharacterType === 'talking_photo'
+                      ? 'talking_photo_id מ-List Avatars V2'
+                      : 'avatar_id מ-HeyGen'
+                }
+                className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2.5 text-sm outline-none disabled:opacity-60"
+                dir="ltr"
+              />
+            </div>
+
+            <div>
+              <label className="block text-xs font-medium text-slate-600 dark:text-slate-300 mb-1.5">
+                קול ElevenLabs <span className="text-slate-400 font-normal">(אופציונלי)</span>
+              </label>
+              <input
+                type="text"
+                value={voiceId}
+                onChange={(ev) => setVoiceId(ev.target.value)}
+                disabled={formLocked}
+                placeholder={`ברירת מחדל: ${UGC_DEFAULT_VOICE_HINT}`}
+                className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2.5 text-sm outline-none disabled:opacity-60"
+                dir="ltr"
+              />
+            </div>
+
+            <div>
+              <label className="block text-xs font-medium text-slate-600 dark:text-slate-300 mb-1.5">אורך יעד</label>
+              <select
+                value={videoLength}
+                onChange={(ev) => setVideoLength(ev.target.value)}
+                disabled={formLocked}
+                className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2.5 text-sm outline-none disabled:opacity-60"
+              >
+                <option value="15s">15 שניות</option>
+                <option value="30s">30 שניות</option>
+                <option value="50s">50 שניות</option>
+              </select>
+            </div>
+
+            <div>
+              <label className="block text-xs font-medium text-slate-600 dark:text-slate-300 mb-1.5">
+                כתובת לאתר בווידאו{' '}
+                <span className="text-slate-400 font-normal">(אופציונלי)</span>
+              </label>
+              <input
+                type="text"
+                value={websiteUrl}
+                onChange={(ev) => setWebsiteUrl(ev.target.value)}
+                disabled={formLocked}
+                placeholder="example.co.il — יוצג בלי https/www"
+                className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2.5 text-sm outline-none disabled:opacity-60"
+                dir="ltr"
+                autoComplete="off"
+                maxLength={512}
+              />
+            </div>
+
+            <div>
+              <label className="block text-xs font-medium text-slate-600 dark:text-slate-300 mb-1.5">
+                כתובת תמונת לוגו{' '}
+                <span className="text-slate-400 font-normal">(אופציונלי)</span>
+              </label>
+              <input
+                type="text"
+                value={logoUrl}
+                onChange={(ev) => setLogoUrl(ev.target.value)}
+                disabled={formLocked}
+                placeholder="https://... קישור ישיר לתמונה"
+                className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2.5 text-sm outline-none disabled:opacity-60"
+                dir="ltr"
+                autoComplete="off"
+                maxLength={1024}
+              />
+            </div>
+
+            <div>
+              <label className="block text-xs font-medium text-slate-600 dark:text-slate-300 mb-1.5">
+                תמונת מוצר (אופציונלי - תופיע במרכז ובסוף)
+              </label>
+              <input
+                type="text"
+                value={productImageUrl}
+                onChange={(ev) => setProductImageUrl(ev.target.value)}
+                disabled={formLocked}
+                placeholder="https://... קישור ישיר לתמונת מוצר"
+                className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2.5 text-sm outline-none disabled:opacity-60"
+                dir="ltr"
+                autoComplete="off"
+                maxLength={1024}
+              />
+            </div>
+
+            {submitError && (
+              <div
+                role="alert"
+                className="rounded-xl border border-red-200 dark:border-red-900/50 bg-red-50 dark:bg-red-950/40 px-3 py-2 text-xs text-red-800 dark:text-red-200"
+              >
+                {submitError}
+              </div>
+            )}
+
+            <button
+              type="submit"
+              disabled={formLocked}
+              className="w-full rounded-xl bg-violet-600 px-4 py-3 text-sm font-semibold text-white shadow-md hover:bg-violet-500 disabled:opacity-50 inline-flex items-center justify-center gap-2"
+            >
+              {isPosting && <Spinner className="!size-4 border-white/30 border-t-white" />}
+              {isPosting ? 'שולח…' : isPolling ? 'מייצר…' : 'צור וידאו'}
+            </button>
+
+            <p className="text-[10px] text-slate-400">
+              API: <code className="rounded bg-slate-100 dark:bg-slate-800 px-1" dir="ltr">{API_BASE_URL_DISPLAY}</code>
+            </p>
+          </form>
+        </aside>
+
+        <main className="min-h-[280px] space-y-4 text-right">
+          {!taskId && (
+            <div className="rounded-2xl border border-dashed border-slate-300 dark:border-slate-700 bg-white/50 dark:bg-slate-900/40 px-6 py-16 text-center text-sm text-slate-500">
+              מלא את הטופס ולחץ &quot;צור וידאו&quot;. הסטטוס והתסריט יופיעו כאן.
+            </div>
+          )}
+
+          {taskId && (
+            <section className="space-y-4">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <h2 className="text-sm font-semibold">סטטוס</h2>
+                {statusChip}
+              </div>
+              {statusPayload?.task_kind && (
+                <p className="text-xs text-slate-500">
+                  סוג משימה: <span className="font-mono" dir="ltr">{statusPayload.task_kind}</span>
+                </p>
+              )}
+              <p className="text-xs font-mono break-all" dir="ltr">
+                task_id: {taskId}
+              </p>
+
+              {(statusPayload?.status === 'failed' || statusPayload?.ugc_status === 'failed') && (
+                <div
+                  role="alert"
+                  className="rounded-2xl border border-red-300 dark:border-red-800 bg-red-50 dark:bg-red-950/50 px-4 py-3 text-sm text-red-900 dark:text-red-100"
+                >
+                  <strong className="font-semibold">שגיאה.</strong>
+                  <p className="mt-1">
+                    {statusPayload?.ugc_status === 'failed'
+                      ? statusPayload.ugc_error || statusPayload.error
+                      : statusPayload.error}
+                  </p>
+                </div>
+              )}
+
+              {isPolling && (
+                <div className="rounded-2xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 p-6 animate-pulse space-y-3">
+                  <div className="h-4 w-1/3 rounded bg-slate-200 dark:bg-slate-700 ms-auto" />
+                  <div className="h-3 w-full rounded bg-slate-100 dark:bg-slate-800" />
+                </div>
+              )}
+
+              {statusPayload?.ugc_script?.scenes?.length > 0 && (
+                <details className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm open:pb-2">
+                  <summary className="cursor-pointer px-5 py-3.5 text-sm font-semibold">
+                    תסריט (סצנות)
+                  </summary>
+                  <div className="px-5 pb-4 border-t border-slate-100 dark:border-slate-800 pt-3">
+                    <UgcScriptScenesBody scenes={statusPayload.ugc_script.scenes} />
+                  </div>
+                </details>
+              )}
+
+              {statusPayload?.ugc_status === 'completed' && ugcPlaybackUrl(statusPayload) && (
+                <div className="rounded-2xl border border-violet-200 dark:border-violet-800/60 bg-white dark:bg-slate-900 p-5 space-y-3">
+                  <div className="flex items-center justify-between gap-2">
+                    <h3 className="text-sm font-semibold">וידאו</h3>
+                    {/* Tier badge — tells the user which version they're watching */}
+                    {ugcVideoTier(statusPayload) === 'final' && (
+                      <span className="rounded-full bg-violet-100 dark:bg-violet-950/70 px-2.5 py-0.5 text-[11px] font-semibold text-violet-700 dark:text-violet-300 ring-1 ring-violet-200/80 dark:ring-violet-800/60">
+                        ✦ כתוביות + אנימציות
+                      </span>
+                    )}
+                    {ugcVideoTier(statusPayload) === 'composited' && (
+                      <span className="rounded-full bg-sky-100 dark:bg-sky-950/70 px-2.5 py-0.5 text-[11px] font-semibold text-sky-700 dark:text-sky-300 ring-1 ring-sky-200/80 dark:ring-sky-800/60">
+                        רקע מטושטש (FFmpeg)
+                      </span>
+                    )}
+                    {ugcVideoTier(statusPayload) === 'raw' && (
+                      <span className="rounded-full bg-slate-100 dark:bg-slate-800 px-2.5 py-0.5 text-[11px] font-semibold text-slate-500 dark:text-slate-400 ring-1 ring-slate-200 dark:ring-slate-700">
+                        וידאו גלמי
+                      </span>
+                    )}
+                  </div>
+
+                  {statusPayload?.ugc_composite_note?.trim() && (
+                    <div
+                      role="alert"
+                      className="flex gap-2 rounded-xl border border-amber-300 dark:border-amber-600/60 bg-amber-50 dark:bg-amber-950/40 px-3 py-2.5 text-xs text-amber-900 dark:text-amber-200"
+                      dir="rtl"
+                    >
+                      <span className="mt-0.5 shrink-0 text-amber-500">⚠</span>
+                      <span className="leading-relaxed">{statusPayload.ugc_composite_note.trim()}</span>
+                    </div>
+                  )}
+
+                  {/* 9:16 letterbox — centers horizontal videos inside a vertical frame */}
+                  <div
+                    className="relative mx-auto w-full max-w-[280px] overflow-hidden rounded-xl bg-black"
+                    style={{ aspectRatio: '9/16' }}
+                  >
+                    <video
+                      key={ugcPlaybackUrl(statusPayload)}
+                      className="absolute inset-0 h-full w-full object-contain"
+                      src={ugcPlaybackUrl(statusPayload)}
+                      controls
+                      playsInline
+                      preload="metadata"
+                    />
+                  </div>
+
+                  {/* Download links — one per available tier */}
+                  <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs">
+                    <a
+                      href={ugcPlaybackUrl(statusPayload)}
+                      download
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="font-medium text-violet-600 dark:text-violet-400 hover:underline"
+                      dir="ltr"
+                    >
+                      ⬇ הורד (הטוב ביותר)
+                    </a>
+                    {statusPayload?.ugc_final_video_url?.trim() &&
+                      statusPayload?.ugc_composited_video_url?.trim() && (
+                        <a
+                          href={statusPayload.ugc_composited_video_url.trim()}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-slate-500 dark:text-slate-400 hover:underline"
+                          dir="ltr"
+                        >
+                          גרסת FFmpeg
+                        </a>
+                      )}
+                    {statusPayload?.ugc_raw_video_url?.trim() && (
+                      <a
+                        href={statusPayload.ugc_raw_video_url.trim()}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-slate-500 dark:text-slate-400 hover:underline"
+                        dir="ltr"
+                      >
+                        מקור מהספק
+                      </a>
+                    )}
+                  </div>
+                </div>
+              )}
+            </section>
+          )}
+        </main>
+      </div>
+    </div>
+  )
 }
 
 
@@ -9280,7 +11369,7 @@ FILE: client/src/BannerWorkspace.jsx
 ================================================================================
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
 import api, { API_BASE_URL, API_BASE_URL_DISPLAY } from './api.js'
 import { useAuth } from './AuthContext.jsx'
 import BannerCanvas from './BannerCanvas.jsx'
@@ -9333,6 +11422,32 @@ const VIDEO_RENDERING_HINT =
 
 /** After "נתק מהמשימה", do not auto-load /banners/latest on refresh (stuck pending would return forever). */
 const SKIP_LATEST_RESTORE_KEY = 'banner_workspace_skip_latest_restore'
+
+/** D-ID sample portrait; stable for tests (see test_ugc.py). */
+const UGC_DEFAULT_AVATAR_URL =
+  'https://d-id-public-bucket.s3.us-west-2.amazonaws.com/alice.jpg'
+
+/** Default ElevenLabs voice used server-side when voice_id is omitted ([`services/ugc_service.py`]). */
+const UGC_DEFAULT_VOICE_ID_HINT = 'Wuv1s5YTNCjL9mFJTqo4'
+
+function ugcPlaybackUrl(payload) {
+  const c = typeof payload?.ugc_composited_video_url === 'string' ? payload.ugc_composited_video_url.trim() : ''
+  const r = typeof payload?.ugc_raw_video_url === 'string' ? payload.ugc_raw_video_url.trim() : ''
+  return c || r || ''
+}
+
+function formatUgcStatus(ugcStatus) {
+  if (!ugcStatus) return 'מתחיל…'
+  const map = {
+    pending: 'UGC: ממתין…',
+    scraped: 'UGC: נסרק את האתר…',
+    generating_script: 'UGC: מכין תסריט…',
+    generating_video: 'UGC: מייצר וידאו…',
+    completed: 'UGC: הושלם',
+    failed: 'UGC: נכשל',
+  }
+  return map[ugcStatus] || `UGC: ${ugcStatus.replace(/_/g, ' ')}`
+}
 
 function Spinner({ className = '' }) {
   return (
@@ -9417,6 +11532,15 @@ export default function BannerWorkspace() {
   const [videoHook,        setVideoHook]        = useState('')
   const [latestRestoreNonce, setLatestRestoreNonce] = useState(0)
   const [skipLatestRestore, setSkipLatestRestore] = useState(readSkipLatestRestoreFlag)
+  const [ugcPanelOpen, setUgcPanelOpen] = useState(false)
+  const [ugcProvider, setUgcProvider] = useState('d-id')
+  const [ugcHeygenCharacterType, setUgcHeygenCharacterType] = useState('avatar')
+  const [ugcAvatarId, setUgcAvatarId] = useState(UGC_DEFAULT_AVATAR_URL)
+  const [ugcVoiceId, setUgcVoiceId] = useState('')
+  const [ugcCustomScript, setUgcCustomScript] = useState('')
+  const [ugcWebsiteUrl, setUgcWebsiteUrl] = useState('')
+  const [ugcPosting, setUgcPosting] = useState(false)
+  const [ugcError, setUgcError] = useState(null)
   // Tracks the taskId for which we've already initialised videoHook from the
   // server, so that subsequent statusPayload updates don't overwrite user edits.
   const hookSyncedForTask = useRef(null)
@@ -9428,7 +11552,11 @@ export default function BannerWorkspace() {
     taskIdRef.current = taskId
   }, [taskId])
 
-  const terminal  = statusPayload?.status === 'completed' || statusPayload?.status === 'failed'
+  const bannerTerminal =
+    statusPayload?.status === 'completed' || statusPayload?.status === 'failed'
+  const ugcTerminal =
+    statusPayload?.ugc_status === 'completed' || statusPayload?.ugc_status === 'failed'
+  const terminal = bannerTerminal || ugcTerminal
   const isPolling = Boolean(taskId && !terminal)
   const videoRendering = statusPayload?.video_status === 'processing'
   const completed =
@@ -9494,6 +11622,7 @@ export default function BannerWorkspace() {
     setTaskId(null)
     setStatusPayload(null)
     setSubmitError(null)
+    setUgcError(null)
     setVideoRenderError(null)
     hookSyncedForTask.current = null
     setSseBump((n) => n + 1)
@@ -9679,12 +11808,63 @@ export default function BannerWorkspace() {
     }
   }, [])
 
+  const handleGenerateUGC = async () => {
+    const trimmed = url.trim()
+    if (!trimmed) {
+      setUgcError('נא להזין כתובת אתר.')
+      return
+    }
+    const avatarRef = ugcAvatarId.trim()
+    if (!avatarRef) {
+      setUgcError('נא להזין מזהה אווטאר HeyGen או כתובת URL לתמונת פנים (D-ID).')
+      return
+    }
+    setUgcError(null)
+    setSubmitError(null)
+    setStatusPayload(null)
+    setTaskId(null)
+    setUgcPosting(true)
+    try {
+      const body = {
+        url: trimmed,
+        provider: ugcProvider,
+        avatar_id: avatarRef,
+        video_length: '30s',
+        brief: brief.trim() || null,
+      }
+      const script = ugcCustomScript.trim()
+      if (script) body.custom_script = script
+      const vid = ugcVoiceId.trim()
+      if (vid) body.voice_id = vid
+      if (ugcProvider === 'heygen_elevenlabs') {
+        body.heygen_character_type = ugcHeygenCharacterType
+      }
+      const wu = ugcWebsiteUrl.trim()
+      if (wu) body.website_url = wu
+      const { data } = await api.post('/generate-ugc', body)
+      const id = data?.task_id
+      if (!id) throw new Error('לא התקבל מזהה משימה מהשרת')
+      try {
+        sessionStorage.removeItem(SKIP_LATEST_RESTORE_KEY)
+      } catch {
+        /* ignore */
+      }
+      setSkipLatestRestore(false)
+      setTaskId(id)
+    } catch (err) {
+      setUgcError(axiosErrorMessage(err))
+    } finally {
+      setUgcPosting(false)
+    }
+  }
+
   const handleGenerate = async (e) => {
     e.preventDefault()
     const trimmed = url.trim()
     if (!trimmed) { setSubmitError('נא להזין כתובת אתר.'); return }
 
     setSubmitError(null)
+    setUgcError(null)
     setStatusPayload(null)
     setTaskId(null)
     setIsPosting(true)
@@ -9711,26 +11891,37 @@ export default function BannerWorkspace() {
     }
   }
 
-  const formLocked = isPosting || isPolling
+  const formLocked = isPosting || isPolling || ugcPosting
 
   const statusChip = useMemo(() => {
     const s = statusPayload?.status
     if (!taskId) return null
+    const ugcS = statusPayload?.ugc_status
     const tone =
-      s === 'failed'      ? 'bg-red-500/15 text-red-700 dark:text-red-300 ring-red-500/25'
-      : s === 'completed' ? 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 ring-emerald-500/25'
-      : 'bg-indigo-500/15 text-indigo-700 dark:text-indigo-200 ring-indigo-500/25'
+      s === 'failed' || ugcS === 'failed'
+        ? 'bg-red-500/15 text-red-700 dark:text-red-300 ring-red-500/25'
+        : s === 'completed' || ugcS === 'completed'
+          ? 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 ring-emerald-500/25'
+          : 'bg-indigo-500/15 text-indigo-700 dark:text-indigo-200 ring-indigo-500/25'
     const showSpinner = isPolling || videoRendering
+    const label =
+      ugcS && (s === 'pending' || !bannerTerminal)
+        ? formatUgcStatus(ugcS)
+        : formatStatus(s, { videoRendering })
     const codeHint =
-      s === 'completed' && videoRendering ? `${s} · video:processing` : (s ?? '…')
+      ugcS && (s === 'pending' || !bannerTerminal)
+        ? `ugc:${ugcS ?? '…'}`
+        : s === 'completed' && videoRendering
+          ? `${s} · video:processing`
+          : (s ?? '…')
     return (
       <span className={`inline-flex items-center gap-2 rounded-full px-3 py-1 text-xs font-medium ring-1 ${tone}`}>
         {showSpinner && <Spinner className="!size-3.5 border-indigo-400/40 border-t-indigo-300" />}
-        <span className="opacity-90">{formatStatus(s, { videoRendering })}</span>
+        <span className="opacity-90">{label}</span>
         <span className="font-mono uppercase tracking-wide opacity-70" dir="ltr">({codeHint})</span>
       </span>
     )
-  }, [taskId, statusPayload?.status, isPolling, videoRendering])
+  }, [taskId, statusPayload?.status, statusPayload?.ugc_status, isPolling, videoRendering, bannerTerminal])
 
   const handleResetVideoRender = useCallback(async () => {
     if (!taskId) return
@@ -9766,6 +11957,12 @@ export default function BannerWorkspace() {
                 {user.email}
               </span>
             )}
+            <Link
+              to="/avatar-studio"
+              className="rounded-lg border border-violet-300/80 dark:border-violet-600/50 bg-violet-50 dark:bg-violet-950/40 px-3 py-2 text-sm font-medium text-violet-800 dark:text-violet-200 hover:bg-violet-100 dark:hover:bg-violet-900/50 transition"
+            >
+              סטודיו אווטאר
+            </Link>
             {isPrimaryAdmin && (
               <button
                 type="button"
@@ -9909,6 +12106,200 @@ export default function BannerWorkspace() {
               </button>
             </form>
 
+            <div className="mt-6 border-t border-slate-200 dark:border-slate-800 pt-5 space-y-3">
+              <button
+                type="button"
+                onClick={() => setUgcPanelOpen((o) => !o)}
+                className="w-full rounded-xl border border-violet-300/90 dark:border-violet-600/50 bg-violet-50/90 dark:bg-violet-950/40 px-4 py-2.5 text-sm font-semibold text-violet-900 dark:text-violet-100 hover:bg-violet-100/90 dark:hover:bg-violet-900/50 transition text-right"
+                aria-expanded={ugcPanelOpen}
+              >
+                {ugcPanelOpen ? 'הסתר אווטאר' : 'וידאו אווטאר'}
+              </button>
+
+              {ugcPanelOpen && (
+                <div className="rounded-xl border border-violet-200/80 dark:border-violet-800/50 bg-violet-50/40 dark:bg-violet-950/20 p-4 space-y-3">
+                  <div className="rounded-xl border-2 border-violet-500/60 dark:border-violet-400/40 bg-white dark:bg-slate-900/90 p-4 shadow-sm space-y-3">
+                    <p className="text-sm font-bold text-violet-950 dark:text-violet-100 text-right">
+                      סטודיו אווטאר מלא (מומלץ)
+                    </p>
+                    <p className="text-[11px] text-slate-600 dark:text-slate-300 leading-relaxed text-right">
+                      דף נפרד: <strong className="text-slate-800 dark:text-slate-100">בריף שיווקי</strong>,{' '}
+                      <strong className="text-slate-800 dark:text-slate-100">הערות בימוי</strong> שלא נקראות בקול, תסריט
+                      מובנה מ-AI או טקסט דיבור בלבד — <strong className="text-slate-800 dark:text-slate-100">בלי סריקת אתר</strong>.
+                    </p>
+                    <Link
+                      to="/avatar-studio"
+                      className="flex w-full items-center justify-center gap-2 rounded-xl bg-violet-600 px-4 py-3 text-sm font-bold text-white shadow-md shadow-violet-900/25 hover:bg-violet-500 transition"
+                    >
+                      פתח סטודיו אווטאר
+                    </Link>
+                  </div>
+
+                  <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400 border-t border-violet-200/60 dark:border-violet-800/40 pt-3 text-right">
+                    מסלול ישן — UGC עם סריקת כתובת האתר מהטופס למעלה
+                  </p>
+                  <p className="text-[11px] text-violet-900/80 dark:text-violet-200/80 leading-relaxed">
+                    דורש URL + סריקה. תסריט מותאם (אופציונלי) הוא טקסט דיבור אחד — בלי שדות בימוי נפרדים. השוואת D-ID / HeyGen.
+                  </p>
+                  <div>
+                    <label
+                      htmlFor="bw-ugc-provider"
+                      className="block text-xs font-medium text-slate-600 dark:text-slate-300 mb-1.5"
+                    >
+                      ספק וידאו
+                    </label>
+                    <select
+                      id="bw-ugc-provider"
+                      value={ugcProvider}
+                      onChange={(ev) => {
+                        const v = ev.target.value
+                        setUgcProvider(v)
+                        if (v === 'heygen_elevenlabs' && ugcAvatarId.trim() === UGC_DEFAULT_AVATAR_URL) {
+                          setUgcAvatarId('')
+                        }
+                        if (v === 'd-id' && !ugcAvatarId.trim()) {
+                          setUgcAvatarId(UGC_DEFAULT_AVATAR_URL)
+                        }
+                      }}
+                      disabled={formLocked}
+                      className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2.5 text-sm text-right outline-none focus:border-violet-500 focus:ring-2 focus:ring-violet-500/20 disabled:opacity-60 transition"
+                    >
+                      <option value="d-id">D-ID (תמונת פורטרט + אודיו)</option>
+                      <option value="heygen_elevenlabs">HeyGen + ElevenLabs</option>
+                    </select>
+                  </div>
+                  {ugcProvider === 'heygen_elevenlabs' && (
+                    <div>
+                      <label
+                        htmlFor="bw-ugc-heygen-type"
+                        className="block text-xs font-medium text-slate-600 dark:text-slate-300 mb-1.5"
+                      >
+                        סוג מזהה HeyGen
+                      </label>
+                      <select
+                        id="bw-ugc-heygen-type"
+                        value={ugcHeygenCharacterType}
+                        onChange={(ev) => setUgcHeygenCharacterType(ev.target.value)}
+                        disabled={formLocked}
+                        className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2.5 text-sm text-right outline-none focus:border-violet-500 focus:ring-2 focus:ring-violet-500/20 disabled:opacity-60 transition"
+                      >
+                        <option value="avatar">אווטאר סטודיו (avatar_id)</option>
+                        <option value="talking_photo">תמונה מדברת (talking_photo_id)</option>
+                      </select>
+                    </div>
+                  )}
+                  <div>
+                    <label
+                      htmlFor="bw-ugc-avatar"
+                      className="block text-xs font-medium text-slate-600 dark:text-slate-300 mb-1.5"
+                    >
+                      אווטאר / תמונת מקור
+                    </label>
+                    <input
+                      id="bw-ugc-avatar"
+                      type="text"
+                      value={ugcAvatarId}
+                      onChange={(ev) => setUgcAvatarId(ev.target.value)}
+                      disabled={formLocked}
+                      placeholder={
+                        ugcProvider === 'd-id'
+                          ? 'https://… תמונת פנים ציבורית (HTTPS)'
+                          : ugcHeygenCharacterType === 'talking_photo'
+                            ? 'talking_photo_id (List Avatars V2)'
+                            : 'avatar_id מ-HeyGen'
+                      }
+                      className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2.5 text-sm outline-none focus:border-violet-500 focus:ring-2 focus:ring-violet-500/20 disabled:opacity-60 transition"
+                      dir="ltr"
+                    />
+                    <p className="mt-1 text-[10px] text-slate-500 dark:text-slate-400 leading-relaxed">
+                      D-ID: URL לתמונה. HeyGen: בחר למעלה avatar או talking_photo לפי סוג המזהה מהדשבורד.
+                    </p>
+                  </div>
+                  <div>
+                    <label
+                      htmlFor="bw-ugc-voice"
+                      className="block text-xs font-medium text-slate-600 dark:text-slate-300 mb-1.5"
+                    >
+                      מזהה קול ElevenLabs{' '}
+                      <span className="text-slate-400 font-normal">(אופציונלי)</span>
+                    </label>
+                    <input
+                      id="bw-ugc-voice"
+                      type="text"
+                      value={ugcVoiceId}
+                      onChange={(ev) => setUgcVoiceId(ev.target.value)}
+                      disabled={formLocked}
+                      placeholder={`ריק = ברירת מחדל (${UGC_DEFAULT_VOICE_ID_HINT})`}
+                      className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2.5 text-sm outline-none focus:border-violet-500 focus:ring-2 focus:ring-violet-500/20 disabled:opacity-60 transition"
+                      dir="ltr"
+                      autoComplete="off"
+                    />
+                  </div>
+                  <div>
+                    <label
+                      htmlFor="bw-ugc-website"
+                      className="block text-xs font-medium text-slate-600 dark:text-slate-300 mb-1.5"
+                    >
+                      כתובת לאתר בווידאו{' '}
+                      <span className="text-slate-400 font-normal">
+                        (אופציונלי — בלי https/www, מוצג בפינה ואז במרכז בסוף)
+                      </span>
+                    </label>
+                    <input
+                      id="bw-ugc-website"
+                      type="text"
+                      value={ugcWebsiteUrl}
+                      onChange={(ev) => setUgcWebsiteUrl(ev.target.value)}
+                      disabled={formLocked}
+                      placeholder="למשל: example.co.il או https://www.example.co.il"
+                      className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2.5 text-sm outline-none focus:border-violet-500 focus:ring-2 focus:ring-violet-500/20 disabled:opacity-60 transition"
+                      dir="ltr"
+                      autoComplete="off"
+                      maxLength={512}
+                    />
+                  </div>
+                  <div>
+                    <label
+                      htmlFor="bw-ugc-custom-script"
+                      className="block text-xs font-medium text-slate-600 dark:text-slate-300 mb-1.5"
+                    >
+                      תסריט מותאם (Custom Script){' '}
+                      <span className="text-slate-400 font-normal">(אופציונלי — דילוג על תסריט AI)</span>
+                    </label>
+                    <textarea
+                      id="bw-ugc-custom-script"
+                      name="ugc_custom_script"
+                      rows={4}
+                      maxLength={2000}
+                      placeholder="הקלד כאן טקסט לדיבור — אם יישאר ריק, המערכת תייצר תסריט אוטומטית מהאתר."
+                      value={ugcCustomScript}
+                      onChange={(ev) => setUgcCustomScript(ev.target.value)}
+                      disabled={formLocked}
+                      className="w-full resize-y rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2.5 text-sm text-right outline-none focus:border-violet-500 focus:ring-2 focus:ring-violet-500/20 disabled:opacity-60 min-h-[88px] transition"
+                      dir="rtl"
+                    />
+                  </div>
+                  {ugcError && (
+                    <div
+                      role="alert"
+                      className="rounded-xl border border-red-200 dark:border-red-900/50 bg-red-50 dark:bg-red-950/40 px-3 py-2 text-xs text-red-800 dark:text-red-200 text-right"
+                    >
+                      {ugcError}
+                    </div>
+                  )}
+                  <button
+                    type="button"
+                    onClick={handleGenerateUGC}
+                    disabled={formLocked}
+                    className="w-full rounded-xl bg-violet-600 px-4 py-3 text-sm font-semibold text-white shadow-md shadow-violet-900/20 hover:bg-violet-500 disabled:opacity-50 disabled:pointer-events-none transition inline-flex items-center justify-center gap-2"
+                  >
+                    {ugcPosting && <Spinner className="!size-4 border-white/30 border-t-white" />}
+                    {ugcPosting ? 'שולח…' : 'צור וידאו אווטאר'}
+                  </button>
+                </div>
+              )}
+            </div>
+
             <p className="mt-4 text-[10px] text-slate-400 dark:text-slate-500 text-right">
               כתובת API:{' '}
               <code className="rounded bg-slate-100 dark:bg-slate-800 px-1" dir="ltr">
@@ -9946,7 +12337,10 @@ export default function BannerWorkspace() {
                 </div>
               </div>
               <p className="text-sm text-slate-600 dark:text-slate-300">
-                {formatStatus(statusPayload?.status, { videoRendering })}
+                {statusPayload?.ugc_status &&
+                (statusPayload?.status === 'pending' || !bannerTerminal)
+                  ? formatUgcStatus(statusPayload.ugc_status)
+                  : formatStatus(statusPayload?.status, { videoRendering })}
               </p>
               <p className="text-xs text-slate-500 font-mono break-all" dir="ltr">
                 מזהה משימה: {taskId}
@@ -9970,15 +12364,79 @@ export default function BannerWorkspace() {
 
               {isPolling && <StatusSkeleton />}
 
-              {statusPayload?.status === 'failed' && (
+              {(statusPayload?.status === 'failed' || statusPayload?.ugc_status === 'failed') && (
                 <div
                   role="alert"
                   className="rounded-2xl border border-red-300 dark:border-red-800 bg-red-50 dark:bg-red-950/50 px-4 py-3 text-sm text-red-900 dark:text-red-100 text-right"
                 >
                   <strong className="font-semibold">משהו השתבש.</strong>
-                  <p className="mt-1">{statusPayload.error || 'שגיאה לא ידועה'}</p>
+                  <p className="mt-1">
+                    {statusPayload?.ugc_status === 'failed'
+                      ? statusPayload.ugc_error || statusPayload.error || 'שגיאה ב-UGC'
+                      : statusPayload.error || 'שגיאה לא ידועה'}
+                  </p>
                 </div>
               )}
+
+              {statusPayload?.ugc_status === 'completed' && ugcPlaybackUrl(statusPayload) && (
+                  <div className="rounded-2xl border border-violet-200 dark:border-violet-800/60 bg-gradient-to-b from-white to-violet-50/40 dark:from-slate-900 dark:to-violet-950/30 p-5 shadow-sm space-y-3">
+                    <h3 className="text-sm font-semibold text-slate-800 dark:text-slate-100">
+                      וידאו אווטאר UGC
+                    </h3>
+                    {statusPayload?.ugc_composite_note?.trim() && (
+                      <div
+                        role="alert"
+                        className="rounded-xl border border-amber-300 dark:border-amber-600/60 bg-amber-50 dark:bg-amber-950/40 px-3 py-2.5 flex gap-2 items-start"
+                        dir="ltr"
+                      >
+                        <span className="text-amber-500 mt-px shrink-0" aria-hidden>⚠</span>
+                        <p className="text-[11px] text-amber-900 dark:text-amber-200 leading-relaxed">
+                          {statusPayload.ugc_composite_note.trim()}
+                        </p>
+                      </div>
+                    )}
+                    {/* 9:16 letterbox container — keeps vertical frame even for raw horizontal video */}
+                    <div className="relative mx-auto w-full max-w-[280px] bg-black rounded-xl overflow-hidden"
+                         style={{ aspectRatio: '9 / 16' }}>
+                      <video
+                        key={ugcPlaybackUrl(statusPayload)}
+                        className="absolute inset-0 w-full h-full object-contain"
+                        src={ugcPlaybackUrl(statusPayload)}
+                        controls
+                        playsInline
+                        preload="metadata"
+                      >
+                        הדפדפן שלך אינו תומך בנגן וידאו.
+                      </video>
+                    </div>
+                    <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs">
+                      <a
+                        href={ugcPlaybackUrl(statusPayload)}
+                        download
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-block font-medium text-violet-600 dark:text-violet-400 hover:underline"
+                        dir="ltr"
+                      >
+                        הורד וידאו
+                      </a>
+                      {statusPayload?.ugc_composited_video_url?.trim() &&
+                        statusPayload?.ugc_raw_video_url?.trim() &&
+                        statusPayload.ugc_composited_video_url.trim() !==
+                          statusPayload.ugc_raw_video_url.trim() && (
+                          <a
+                            href={statusPayload.ugc_raw_video_url.trim()}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-slate-500 dark:text-slate-400 hover:underline"
+                            dir="ltr"
+                          >
+                            מקור מהספק
+                          </a>
+                        )}
+                    </div>
+                  </div>
+                )}
 
               {/* UGC script while banner pipeline not yet completed (e.g. UGC-only or mid-run) */}
               {!completed &&
@@ -12086,6 +14544,7 @@ export default defineConfig({
     proxy: {
       // Same-origin API in dev when client/.env has VITE_API_URL= (empty)
       '/auth': { target: 'http://127.0.0.1:8888', changeOrigin: true },
+      '/avatar-studio': { target: 'http://127.0.0.1:8888', changeOrigin: true },
       '/generate': { target: 'http://127.0.0.1:8888', changeOrigin: true },
       '/banners': { target: 'http://127.0.0.1:8888', changeOrigin: true },
       '/status': { target: 'http://127.0.0.1:8888', changeOrigin: true },
@@ -12098,7 +14557,7 @@ export default defineConfig({
 
 
 ================================================================================
-SECTION: VIDEO ENGINE SOURCE FILES (8)
+SECTION: VIDEO ENGINE SOURCE FILES (9)
 ================================================================================
 
 
@@ -13556,7 +16015,7 @@ import express from "express";
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
-import { buildBannerInputProps, renderBannerVideo } from "./render.js";
+import { buildBannerInputProps, renderBannerVideo, buildUgcInputProps, renderUgcVideo } from "./render.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -13572,6 +16031,12 @@ const MAX_CONCURRENT_RENDERS = Number(process.env.MAX_CONCURRENT_RENDERS) || 2;
 const MAX_QUEUE_DEPTH = Number(process.env.MAX_QUEUE_DEPTH) || 10;
 /** Hard wall-clock deadline for a single renderMedia call (milliseconds). */
 const RENDER_TIMEOUT_MS = Number(process.env.RENDER_TIMEOUT_MS) || 3 * 60 * 1000;
+/**
+ * Separate deadline for UGC renders: long clips + 2× OffthreadVideo (blur-bg layer)
+ * decode is much slower than a banner render.
+ * Defaults to 25 min; override via UGC_RENDER_TIMEOUT_MS in .env.
+ */
+const UGC_RENDER_TIMEOUT_MS = Number(process.env.UGC_RENDER_TIMEOUT_MS) || 25 * 60 * 1000;
 
 // ── Output-file cleanup config ─────────────────────────────────────────────
 const CLEANUP_INTERVAL_MS =
@@ -13893,11 +16358,158 @@ app.post("/render", async (req, res) => {
   }
 });
 
+// ── UGC render ─────────────────────────────────────────────────────────────
+
+function validateUgcRenderPayload(body) {
+  const errors = [];
+
+  if (body === null || typeof body !== "object" || Array.isArray(body)) {
+    return { ok: false, errors: ["Body must be a JSON object"] };
+  }
+
+  const rawVideoUrl = body.raw_video_url;
+  if (!rawVideoUrl || typeof rawVideoUrl !== "string" || !rawVideoUrl.trim()) {
+    errors.push("Missing required field: raw_video_url (non-empty string)");
+  }
+
+  const ugcScript = body.ugc_script;
+  if (!ugcScript || typeof ugcScript !== "object" || Array.isArray(ugcScript)) {
+    errors.push("Missing required field: ugc_script (must be an object)");
+  } else {
+    if (!Array.isArray(ugcScript.scenes) || ugcScript.scenes.length === 0) {
+      errors.push("ugc_script.scenes must be a non-empty array");
+    }
+    if (
+      typeof ugcScript.estimated_duration_seconds !== "number" ||
+      ugcScript.estimated_duration_seconds <= 0
+    ) {
+      errors.push("ugc_script.estimated_duration_seconds must be a positive number");
+    }
+  }
+
+  if (
+    body.bgm_url !== undefined &&
+    body.bgm_url !== null &&
+    body.bgm_url !== "" &&
+    typeof body.bgm_url !== "string"
+  ) {
+    errors.push("bgm_url must be a string when provided");
+  }
+
+  if (
+    body.website_display !== undefined &&
+    body.website_display !== null &&
+    body.website_display !== "" &&
+    typeof body.website_display !== "string"
+  ) {
+    errors.push("website_display must be a string when provided");
+  }
+  if (typeof body.website_display === "string" && body.website_display.length > 512) {
+    errors.push("website_display must be at most 512 characters");
+  }
+
+  if (
+    body.logo_url !== undefined &&
+    body.logo_url !== null &&
+    body.logo_url !== "" &&
+    typeof body.logo_url !== "string"
+  ) {
+    errors.push("logo_url must be a string when provided");
+  }
+  if (typeof body.logo_url === "string" && body.logo_url.length > 1024) {
+    errors.push("logo_url must be at most 1024 characters");
+  }
+
+  if (
+    body.product_image_url !== undefined &&
+    body.product_image_url !== null &&
+    body.product_image_url !== "" &&
+    typeof body.product_image_url !== "string"
+  ) {
+    errors.push("product_image_url must be a string when provided");
+  }
+  if (typeof body.product_image_url === "string" && body.product_image_url.length > 1024) {
+    errors.push("product_image_url must be at most 1024 characters");
+  }
+
+  if (
+    body.task_id !== undefined &&
+    body.task_id !== null &&
+    (typeof body.task_id !== "string" || !body.task_id.trim())
+  ) {
+    errors.push("task_id must be a non-empty string when provided");
+  }
+
+  return { ok: errors.length === 0, errors };
+}
+
+app.post("/render-ugc", async (req, res) => {
+  console.log("[/render-ugc] incoming body:", JSON.stringify(req.body));
+
+  const { ok, errors } = validateUgcRenderPayload(req.body);
+  if (!ok) {
+    return res.status(400).json({ error: "Validation failed", details: errors });
+  }
+
+  if (renderLimiter.pending >= MAX_QUEUE_DEPTH) {
+    console.warn(
+      `[/render-ugc] queue full (active=${renderLimiter.active} pending=${renderLimiter.pending}) — rejecting request`,
+    );
+    return res.status(503).json({
+      error: "Render queue is full. Please try again later.",
+      details: `Queue depth limit of ${MAX_QUEUE_DEPTH} reached.`,
+    });
+  }
+
+  const inputProps = buildUgcInputProps(req.body);
+
+  console.log(
+    `[/render-ugc] queued — active=${renderLimiter.active} pending=${renderLimiter.pending + 1}`,
+    {
+      scenes: inputProps.ugc_script?.scenes?.length ?? 0,
+      duration: inputProps.ugc_script?.estimated_duration_seconds ?? "?",
+    },
+  );
+
+  try {
+    const { fileName, outputPath, videoUrl } = await renderLimiter.run(() =>
+      withTimeout(
+        renderUgcVideo(inputProps, { publicBaseUrl: PUBLIC_BASE_URL }),
+        UGC_RENDER_TIMEOUT_MS,
+        "Remotion renderMedia",
+      ),
+    );
+
+    if (!videoUrl) {
+      const msg = "Render completed but videoUrl was empty";
+      console.error("[/render-ugc]", msg, { fileName, outputPath });
+      return res.status(500).json({ error: msg });
+    }
+
+    console.log("[/render-ugc] success", { videoUrl, fileName });
+    return res.status(200).json({ success: true, videoUrl, fileName, outputPath });
+  } catch (err) {
+    const isTimeout =
+      err instanceof Error && err.message.startsWith("Remotion renderMedia timed out");
+    console.error(
+      `[/render-ugc] ${isTimeout ? "TIMEOUT" : "render failed"}:`,
+      err instanceof Error ? err.message : String(err),
+    );
+    if (!isTimeout && err instanceof Error && err.stack) {
+      console.error(err.stack);
+    }
+    const status = isTimeout ? 504 : 500;
+    const description = err instanceof Error ? err.message : String(err);
+    return res.status(status).json({ error: description });
+  }
+});
+
 app.listen(PORT, "0.0.0.0", () => {
   console.log(`video_engine listening on http://0.0.0.0:${PORT}`);
   console.log(`Public video base: ${PUBLIC_BASE_URL} (set VIDEO_ENGINE_PUBLIC_URL to override)`);
   console.log(
-    `Render concurrency: max=${MAX_CONCURRENT_RENDERS} queueDepth=${MAX_QUEUE_DEPTH} timeout=${RENDER_TIMEOUT_MS / 1000}s`,
+    `Render concurrency: max=${MAX_CONCURRENT_RENDERS} queueDepth=${MAX_QUEUE_DEPTH} ` +
+    `timeout_banner=${RENDER_TIMEOUT_MS / 1000}s timeout_ugc=${UGC_RENDER_TIMEOUT_MS / 1000}s`,
   );
   console.log(
     `Output cleanup: every ${CLEANUP_INTERVAL_MS / 3600_000}h, files older than ${MAX_OUTPUT_AGE_MS / 3600_000}h`,
@@ -13952,6 +16564,7 @@ import { renderMedia, selectComposition } from "@remotion/renderer";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const COMPOSITION_ID = "Banner";
+const UGC_COMPOSITION_ID = "Ugc";
 
 const OUTPUT_DIR = path.join(__dirname, "output");
 
@@ -14036,6 +16649,44 @@ function getBundleServeUrl() {
   return bundleServeUrlPromise;
 }
 
+// ── UGC helpers ─────────────────────────────────────────────────────────────
+
+export function buildUgcInputProps(body) {
+  if (body === null || typeof body !== "object" || Array.isArray(body)) {
+    return {};
+  }
+  return {
+    raw_video_url:
+      typeof body.raw_video_url === "string" && body.raw_video_url.trim()
+        ? resolveAssetUrl(body.raw_video_url.trim())
+        : "",
+    ugc_script:
+      body.ugc_script && typeof body.ugc_script === "object" && !Array.isArray(body.ugc_script)
+        ? body.ugc_script
+        : null,
+    bgm_url:
+      typeof body.bgm_url === "string" && body.bgm_url.trim()
+        ? resolveAssetUrl(body.bgm_url.trim())
+        : "",
+    task_id:
+      typeof body.task_id === "string" && body.task_id.trim()
+        ? body.task_id.trim()
+        : "",
+    website_display:
+      typeof body.website_display === "string" && body.website_display.trim()
+        ? body.website_display.trim().slice(0, 512)
+        : "",
+    logo_url:
+      typeof body.logo_url === "string" && body.logo_url.trim()
+        ? resolveAssetUrl(body.logo_url.trim())
+        : "",
+    product_image_url:
+      typeof body.product_image_url === "string" && body.product_image_url.trim()
+        ? resolveAssetUrl(body.product_image_url)
+        : "",
+  };
+}
+
 /**
  * @param {Record<string, unknown>} inputProps — includes designTemplate (1 | 2 | 3)
  * @param {{ publicBaseUrl?: string }} options
@@ -14092,6 +16743,115 @@ export async function renderBannerVideo(inputProps, options = {}) {
   };
 }
 
+/**
+ * Render a UGC composition (avatar video + Hebrew caption overlays).
+ *
+ * @param {Record<string, unknown>} inputProps — { raw_video_url, ugc_script, bgm_url, task_id }
+ * @param {{ publicBaseUrl?: string }} options
+ */
+export async function renderUgcVideo(inputProps, options = {}) {
+  const taskId =
+    typeof inputProps.task_id === "string" && inputProps.task_id.trim()
+      ? inputProps.task_id.trim()
+      : "";
+
+  const taskDir = taskId ? path.join(OUTPUT_DIR, taskId) : OUTPUT_DIR;
+  await fs.promises.mkdir(taskDir, { recursive: true });
+
+  const serveUrl = await getBundleServeUrl();
+
+  // ── Bundled BGM (public/bgm.mp3) ───────────────────────────────────────────
+  // bundle() returns a *filesystem* path to the webpack output, not http://…
+  // Concatenating "/bgm.mp3" produced C:\...\remotion-webpack-bundle-…\bgm.mp3
+  // which Chromium cannot decode (MediaError).  The composition must use
+  // staticFile("bgm.mp3") instead; we only flip bundled_bgm after fs check.
+  const hasCustomBgm =
+    typeof inputProps.bgm_url === "string" && inputProps.bgm_url.trim();
+  let bundledBgm = false;
+  if (!hasCustomBgm) {
+    const bgmPublicPath = path.join(__dirname, "public", "bgm.mp3");
+    bundledBgm = await fs.promises
+      .access(bgmPublicPath)
+      .then(() => true)
+      .catch(() => false);
+    if (bundledBgm) {
+      console.log(
+        "[renderUgcVideo] BGM: public/bgm.mp3 present — composition will use staticFile('bgm.mp3').",
+      );
+    } else {
+      console.log("[renderUgcVideo] No bgm.mp3 in public/ — rendering without BGM.");
+    }
+  }
+
+  // ── End-card padding ──────────────────────────────────────────────────────
+  // After speech ends, the OffthreadVideo freezes on its last frame.  We add
+  // END_CARD_SECONDS of extra duration so the composition shows an animated
+  // end-card (URL pill zooms to center, dark overlay fades in).
+  // This constant MUST match END_CARD_SECONDS in UgcComposition.jsx.
+  const END_CARD_SECONDS = 3;
+  const speechSeconds = inputProps.ugc_script?.estimated_duration_seconds;
+  const totalSeconds =
+    (typeof speechSeconds === "number" && speechSeconds > 0 ? speechSeconds : 30) +
+    END_CARD_SECONDS;
+
+  console.log(
+    `[renderUgcVideo] speech=${speechSeconds ?? "?"}s endCard=${END_CARD_SECONDS}s total=${totalSeconds}s`,
+  );
+
+  const resolvedInputProps = {
+    ...inputProps,
+    bgm_url: hasCustomBgm ? String(inputProps.bgm_url).trim() : "",
+    bundled_bgm: hasCustomBgm ? false : bundledBgm,
+    // Override duration to include end-card seconds
+    ugc_script: {
+      ...(inputProps.ugc_script ?? {}),
+      estimated_duration_seconds: totalSeconds,
+    },
+  };
+
+  const composition = await selectComposition({
+    serveUrl,
+    id: UGC_COMPOSITION_ID,
+    inputProps: resolvedInputProps,
+    logLevel: "warn",
+  });
+
+  const fileName = `ugc-${randomUUID()}.mp4`;
+  const outputLocation = path.join(taskDir, fileName);
+
+  await renderMedia({
+    composition,
+    serveUrl,
+    codec: "h264",
+    outputLocation,
+    inputProps: resolvedInputProps,
+    logLevel: "warn",
+    overwrite: true,
+    // Limit frame-level parallelism — reduces Chrome RAM pressure significantly.
+    // Each concurrent "slot" spawns a Chrome tab; 1 is enough for local rendering.
+    concurrency: 1,
+    // SwiftShader = pure-software WebGL — no GPU memory allocated.
+    // Required on Windows machines without a discrete GPU / when GPU VRAM is low.
+    chromiumOptions: {
+      gl: "swiftshader",
+    },
+  });
+
+  const publicBase =
+    options.publicBaseUrl?.replace(/\/$/, "") ||
+    process.env.VIDEO_ENGINE_PUBLIC_URL?.replace(/\/$/, "") ||
+    "";
+
+  const relPath = taskId ? `output/${taskId}/${fileName}` : `output/${fileName}`;
+
+  return {
+    fileName,
+    outputPath: outputLocation,
+    videoUrl: publicBase ? `${publicBase}/${relPath}` : `/${relPath}`,
+    compositionId: UGC_COMPOSITION_ID,
+  };
+}
+
 
 ================================================================================
 FILE: video_engine/Root.jsx
@@ -14100,9 +16860,11 @@ FILE: video_engine/Root.jsx
 import { Composition, registerRoot } from "remotion";
 import { defaultBannerProps } from "./Composition1.jsx";
 import { UnifiedBannerComposition } from "./UnifiedComposition.jsx";
+import { UgcComposition, defaultUgcProps } from "./UgcComposition.jsx";
 
 const BASE_DURATION = 150;
 const HOOK_FRAMES = 60;
+const UGC_FPS = 30;
 
 export const RemotionRoot = () => (
   <>
@@ -14133,10 +16895,781 @@ export const RemotionRoot = () => (
         };
       }}
     />
+
+    <Composition
+      id="Ugc"
+      component={UgcComposition}
+      durationInFrames={defaultUgcProps.ugc_script.estimated_duration_seconds * UGC_FPS}
+      fps={UGC_FPS}
+      width={1080}
+      height={1920}
+      defaultProps={defaultUgcProps}
+      calculateMetadata={({ props }) => {
+        const seconds = props.ugc_script?.estimated_duration_seconds;
+        const durationInFrames = Math.max(
+          UGC_FPS,
+          Math.round((typeof seconds === "number" && seconds > 0 ? seconds : 30) * UGC_FPS),
+        );
+        return { width: 1080, height: 1920, durationInFrames };
+      }}
+    />
   </>
 );
 
 registerRoot(RemotionRoot);
+
+
+================================================================================
+FILE: video_engine/UgcComposition.jsx
+================================================================================
+
+import {
+  AbsoluteFill,
+  Audio,
+  Img,
+  OffthreadVideo,
+  Sequence,
+  interpolate,
+  spring,
+  staticFile,
+  useCurrentFrame,
+  useVideoConfig,
+} from "remotion";
+import { loadFont } from "@remotion/google-fonts/Heebo";
+
+const { fontFamily } = loadFont("normal", {
+  weights: ["700", "800"],
+  subsets: ["hebrew", "latin", "latin-ext"],
+});
+
+/**
+ * Seconds reserved at the END of the composition for the end card.
+ * MUST match END_CARD_SECONDS in render.js (render.js adds this amount to
+ * estimated_duration_seconds so the composition is long enough for the end card).
+ */
+const END_CARD_SECONDS = 3;
+
+/**
+ * Allocate ``speechFrames`` across scenes by ``spoken_text`` length so caption windows
+ * track TTS pacing better than equal slices (avoids captions appearing before dialogue
+ * when later scenes are longer than earlier ones).
+ */
+function proportionalSceneDurations(speechFrames, scenes) {
+  const n = scenes.length;
+  if (n === 0 || speechFrames <= 0) return [];
+  if (speechFrames < n) {
+    const d = Array(n).fill(0);
+    for (let i = 0; i < speechFrames; i++) d[i] = 1;
+    return d;
+  }
+  const weights = scenes.map((s) =>
+    Math.max(1, String(s?.spoken_text ?? "").trim().length),
+  );
+  const totalW = weights.reduce((a, b) => a + b, 0);
+  const exact = weights.map((w) => (w / totalW) * speechFrames);
+  let dur = exact.map((x) => Math.max(1, Math.floor(x)));
+  let sum = dur.reduce((a, b) => a + b, 0);
+  let guard = 0;
+  while (sum > speechFrames && guard++ < 100000) {
+    const j = dur.indexOf(Math.max(...dur));
+    if (dur[j] <= 1) break;
+    dur[j]--;
+    sum--;
+  }
+  guard = 0;
+  while (sum < speechFrames && guard++ < 100000) {
+    const j = dur.indexOf(Math.max(...dur));
+    dur[j]++;
+    sum++;
+  }
+  return dur;
+}
+
+function cumulativeSceneStarts(durations) {
+  const starts = [];
+  let acc = 0;
+  for (let i = 0; i < durations.length; i++) {
+    starts.push(acc);
+    acc += durations[i];
+  }
+  return starts;
+}
+
+/**
+ * On-screen URL overlay + end card.
+ *
+ * Behaviour:
+ *   0 → speechEnd  : Small pill, top-left corner (LTR), constant position.
+ *   speechEnd → end: End card — dark overlay fades in, pill springs to center
+ *                    and grows to 1.6×.  The frozen last video frame shows
+ *                    behind the overlay for the extra END_CARD_SECONDS added
+ *                    by render.js.
+ */
+
+const PRODUCT_CENTER_POP_FRAMES = 60;
+
+/**
+ * Center “pop” for the product still: spring scale-in, then opacity fade-out.
+ * `startTime` / `duration` are absolute composition frames (speech segment only).
+ */
+function ProductOverlay({ src, startTime, duration, brandHex }) {
+  const frame = useCurrentFrame();
+  const { fps } = useVideoConfig();
+
+  const local = frame - startTime;
+  if (local < 0 || local >= duration) {
+    return null;
+  }
+
+  const entry = spring({
+    frame: local,
+    fps,
+    from: 0,
+    to: 1,
+    config: { damping: 12, stiffness: 200 },
+  });
+  const scale = Math.min(1, interpolate(entry, [0, 1], [0, 1]));
+
+  const fadeLen = Math.min(
+    Math.round(0.35 * fps),
+    Math.max(1, duration - 1),
+  );
+  const fadeOutStart = Math.max(0, duration - fadeLen);
+  const opacity =
+    duration <= 1
+      ? 1
+      : interpolate(local, [fadeOutStart, duration - 1], [1, 0], {
+          extrapolateLeft: "clamp",
+          extrapolateRight: "clamp",
+        });
+
+  return (
+    <AbsoluteFill style={{ pointerEvents: "none", zIndex: 36 }}>
+      {/*
+       * display: "inline-flex" makes the wrapper shrink to the actual rendered image
+       * dimensions (respecting maxWidth/maxHeight + auto sizing), so boxShadow on the
+       * <Img> tracks the visible content rather than the full 920×920 fixed box.
+       */}
+      <div
+        style={{
+          position: "absolute",
+          left: "50%",
+          top: "50%",
+          display: "inline-flex",
+          transform: `translate(-50%, -50%) scale(${scale})`,
+          transformOrigin: "center center",
+          opacity,
+        }}
+      >
+        <Img
+          src={src}
+          style={{
+            maxWidth: 900,
+            maxHeight: 860,
+            width: "auto",
+            height: "auto",
+            objectFit: "contain",
+            borderRadius: 20,
+            border: "2px solid rgba(255,255,255,0.35)",
+            boxShadow: `0 0 60px 10px ${brandHex}`,
+            display: "block",
+          }}
+        />
+      </div>
+    </AbsoluteFill>
+  );
+}
+
+function WebsiteUrlOverlay({
+  text,
+  logo_url,
+  product_image_url = "",
+  brandHex = "#6366f1",
+  durationInFrames,
+}) {
+  const frame = useCurrentFrame();
+  const { fps } = useVideoConfig();
+
+  const endCardFrames = Math.max(Math.round(END_CARD_SECONDS * fps), fps);
+  const endCardStart = Math.max(0, durationInFrames - endCardFrames);
+  const inEndCard = frame >= endCardStart;
+  const endLocal = inEndCard ? frame - endCardStart : 0;
+
+  // Spring 0→1 that fires when end card begins
+  const t = inEndCard
+    ? spring({
+        frame: endLocal,
+        fps,
+        from: 0,
+        to: 1,
+        config: { damping: 14, stiffness: 180 },
+      })
+    : 0;
+
+  // Logo springs in 8 frames after the end card starts (lands after the URL pill)
+  const logoScale = inEndCard
+    ? spring({
+        frame: Math.max(0, endLocal - 8),
+        fps,
+        from: 0,
+        to: 1,
+        config: { damping: 12, stiffness: 200 },
+      })
+    : 0;
+
+  // Product: springs in after logo has landed (~10 frames after logo start)
+  const productSpring = inEndCard && product_image_url
+    ? spring({
+        frame: Math.max(0, endLocal - 22),
+        fps,
+        from: 0,
+        to: 1,
+        config: { damping: 11, stiffness: 190 },
+      })
+    : 0;
+
+  // Overlay darkens to rgba(0,0,0,0.75) during end card
+  const overlayAlpha = interpolate(t, [0, 1], [0, 0.75]);
+
+  // Pill anchor (LTR): during speech, center horizontally so long hostnames are not clipped
+  // by the left edge; keep CY below the safe top margin. End card still eases to (CX, CY).
+  const TL_CX = 1080 / 2;
+  const TL_CY = 102;
+  const CX = 1080 / 2;
+  const CY = 1920 * 0.44;
+  const cx = interpolate(t, [0, 1], [TL_CX, CX]);
+  const cy = interpolate(t, [0, 1], [TL_CY, CY]);
+
+  // Scale: pill+logo only — 2.4× zoom on end card. When a product image is present,
+  // keep scale at 1 so the large product + logo + pill stack is not blown past the frame.
+  const hasProduct = Boolean(product_image_url && String(product_image_url).trim());
+  const scale = hasProduct
+    ? interpolate(t, [0, 1], [1.0, 1.0])
+    : interpolate(t, [0, 1], [1.0, 2.4]);
+
+  // Subtle fade-in at very start so pill doesn't pop in on frame 0
+  const initialOpacity = Math.min(1, frame / 5);
+
+  const hasPill = Boolean(text && String(text).trim());
+  const hasLogo = Boolean(logo_url);
+
+  // Larger pill while the URL sits in the corner during speech; slightly smaller on end card stack.
+  const pillFontSize =
+    !inEndCard ? 52 : hasProduct ? 58 : 34;
+  const pillPadding =
+    !inEndCard ? "20px 40px" : hasProduct ? "20px 48px" : "12px 24px";
+  const pillRadius = !inEndCard ? 22 : hasProduct ? 20 : 14;
+  const pillMaxWidth = !inEndCard ? 1040 : hasProduct ? 1000 : 960;
+
+  const pillBlock = hasPill ? (
+    <div
+      dir="ltr"
+      lang="en"
+      style={{
+        fontFamily: 'system-ui, "Segoe UI", sans-serif',
+        fontWeight: 700,
+        fontSize: pillFontSize,
+        letterSpacing: 0.5,
+        color: "#FFFFFF",
+        textShadow: "0 2px 14px rgba(0,0,0,0.95), 0 0 2px rgba(0,0,0,1)",
+        padding: pillPadding,
+        background: "rgba(0,0,0,0.52)",
+        borderRadius: pillRadius,
+        border: "1px solid rgba(255,255,255,0.26)",
+        whiteSpace: "nowrap",
+        overflow: "visible",
+        maxWidth: pillMaxWidth,
+      }}
+    >
+      {text}
+    </div>
+  ) : hasLogo && hasProduct ? (
+    <div style={{ width: 4, height: 4 }} aria-hidden />
+  ) : hasLogo ? (
+    <div style={{ width: 4, height: 4 }} aria-hidden />
+  ) : null;
+
+  return (
+    <AbsoluteFill style={{ pointerEvents: "none" }}>
+      {/* End-card dark overlay — transparent during speech, fades in at end */}
+      <AbsoluteFill
+        style={{ backgroundColor: `rgba(0,0,0,${overlayAlpha})` }}
+      />
+
+      {/* LTR: speech pill is top-centered (TL_CX = frame center); end card eases to mid-frame. */}
+      <AbsoluteFill dir="ltr" lang="en" style={{ pointerEvents: "none" }}>
+        {/* With product: during speech only the pill — full column would reserve huge height. */}
+        <div
+          style={{
+            position: "absolute",
+            left: 0,
+            top: 0,
+            transform: `translate(${cx}px, ${cy}px) translate(-50%, -50%) scale(${scale})`,
+            opacity: initialOpacity,
+          }}
+        >
+          {hasProduct && inEndCard ? (
+            <div
+              style={{
+                display: "flex",
+                flexDirection: "column",
+                alignItems: "center",
+                justifyContent: "center",
+                gap: 28,
+                paddingTop: 28,
+                boxSizing: "border-box",
+              }}
+            >
+              {hasLogo ? (
+                <div
+                  style={{
+                    marginTop: 0,
+                    marginBottom: 8,
+                    transform: `scale(${logoScale})`,
+                    transformOrigin: "center center",
+                  }}
+                >
+                  <Img
+                    src={logo_url}
+                    style={{
+                      maxHeight: 280,
+                      maxWidth: 640,
+                      objectFit: "contain",
+                      display: "block",
+                    }}
+                  />
+                </div>
+              ) : null}
+              <div
+                style={{
+                  display: "inline-flex",
+                  maxHeight: Math.max(0, Math.ceil(productSpring * 1020)),
+                  overflow: "hidden",
+                  transform: `scale(${productSpring})`,
+                  transformOrigin: "center center",
+                  opacity: productSpring,
+                }}
+              >
+                <Img
+                  src={product_image_url}
+                  style={{
+                    maxWidth: 1064,
+                    maxHeight: 1020,
+                    width: "auto",
+                    height: "auto",
+                    objectFit: "contain",
+                    display: "block",
+                    borderRadius: 24,
+                    border: `2px solid ${brandHex}55`,
+                    boxShadow: `0 0 56px 12px ${brandHex}99`,
+                  }}
+                />
+              </div>
+              {pillBlock ? (
+                <div style={{ marginTop: 40 }}>{pillBlock}</div>
+              ) : null}
+            </div>
+          ) : (
+            <div style={{ position: "relative", display: "inline-block" }}>
+              {hasLogo && !hasProduct ? (
+                <div
+                  style={{
+                    position: "absolute",
+                    bottom: "100%",
+                    left: "50%",
+                    transform: `translateX(-50%) scale(${logoScale})`,
+                    transformOrigin: "center bottom",
+                    marginBottom: 30,
+                  }}
+                >
+                  <Img
+                    src={logo_url}
+                    style={{
+                      maxHeight: 140,
+                      maxWidth: 400,
+                      objectFit: "contain",
+                      display: "block",
+                    }}
+                  />
+                </div>
+              ) : null}
+              {pillBlock}
+            </div>
+          )}
+        </div>
+      </AbsoluteFill>
+    </AbsoluteFill>
+  );
+}
+
+function RtlText({ style, children }) {
+  return (
+    <div
+      dir="rtl"
+      lang="he"
+      style={{
+        direction: "rtl",
+        textAlign: "center",
+        unicodeBidi: "isolate",
+        ...style,
+      }}
+    >
+      {children}
+    </div>
+  );
+}
+
+/**
+ * TikTok-style caption: strong spring pop-in + slide-up + fade.
+ * Timing: only the first ~18–22 frames of each scene (~0.6–0.75s @ 30fps) —
+ * if you seek to the middle of a scene the text already looks “static”.
+ */
+function CaptionLayer({ text, fps, brandHex = "#6366f1" }) {
+  const frame = useCurrentFrame();
+
+  // Big entrance: small → full (was 0.55, too subtle on export)
+  const scale = spring({
+    frame,
+    fps,
+    from: 0.35,
+    to: 1,
+    config: { damping: 11, stiffness: 200 },
+  });
+
+  // Visible overshoot: “bounce” settle (1.22 → 1.0)
+  const bounce = spring({
+    frame,
+    fps,
+    from: 1.22,
+    to: 1.0,
+    config: { damping: 9, stiffness: 280 },
+  });
+
+  const opacity = Math.min(1, frame / 6);
+
+  // Slide up from below (pixels) — reads clearly even at 1080×1920
+  const slideUp = interpolate(frame, [0, 10], [36, 0], {
+    extrapolateLeft: "clamp",
+    extrapolateRight: "clamp",
+    easing: (t) => 1 - Math.pow(1 - t, 2),
+  });
+
+  return (
+    <AbsoluteFill
+      style={{
+        display: "flex",
+        flexDirection: "column",
+        justifyContent: "flex-end",
+        alignItems: "center",
+        paddingBottom: 168,
+        pointerEvents: "none",
+      }}
+    >
+      <div
+        style={{
+          transform: `translateY(${slideUp}px) scale(${scale * bounce})`,
+          opacity,
+          transformOrigin: "center bottom",
+        }}
+      >
+        <RtlText
+          style={{
+            fontFamily: `${fontFamily}, "Segoe UI", sans-serif`,
+            fontWeight: 800,
+            fontSize: 84,
+            color: "#FFFFFF",
+            textShadow: [
+              "0 2px 12px rgba(0,0,0,0.95)",
+              "0 0 4px rgba(0,0,0,1)",
+              `0 0 32px ${brandHex}`,
+              `0 0 16px ${brandHex}`,
+            ].join(", "),
+            lineHeight: 1.3,
+            letterSpacing: -0.5,
+            padding: "14px 48px",
+            background: "rgba(0,0,0,0.48)",
+            borderRadius: 22,
+            WebkitTextStroke: "0.5px rgba(255,255,255,0.15)",
+          }}
+        >
+          {text}
+        </RtlText>
+      </div>
+    </AbsoluteFill>
+  );
+}
+
+/**
+ * Main UGC composition — 1080×1920 portrait (TikTok/Reels format).
+ *
+ * Props:
+ *   raw_video_url  — Full URL to the HeyGen/D-ID avatar video (CDN or local).
+ *   ugc_script     — Validated script object from ugc_director.py:
+ *                    { estimated_duration_seconds, scenes: [{ on_screen_text, … }] }
+ *   bgm_url        — Optional remote/custom audio URL (http(s) or resolved asset).
+ *   bundled_bgm    — When true and bgm_url is empty, plays video_engine/public/bgm.mp3
+ *                    via Remotion staticFile() (required for renderMedia — do not pass
+ *                    filesystem paths from Node; bundle() serveUrl is not an http URL).
+ *   website_display — Optional hostname for branded URL pill (no https/www). Shown
+ *                    top-left (LTR) for the clip, then springs toward center in the
+ *                    last ~2.75s.
+ *   product_image_url — Optional product image: “center pop” ~2s around speech midpoint,
+ *                    plus end-card stack (below logo, above URL pill) when overlay is shown.
+ *
+ * Architecture note:
+ *   FFmpeg runs BEFORE Remotion and already produces a 1080×1920 9:16 video with blurred
+ *   background fill (ugc_composited.mp4).  worker_tasks.py passes that file as raw_video_url
+ *   so Remotion only needs ONE OffthreadVideo decode per frame instead of two.
+ *   This halves render time compared to having Remotion also re-blur the background.
+ *
+ * Visual layers (bottom → top):
+ *   1. Foreground video  — FFmpeg-composited (already 9:16 blur-bg) + Ken Burns + scene punch.
+ *   2. Cinematic gradient — top+bottom dark bars for broadcast-TV depth.
+ *   3. URL overlay        — hostname pill top-left → center end-card spring (+ logo/product).
+ *   4. Product center pop — optional 2s window around speech midpoint.
+ *   5. Caption layers     — per-scene, spring pop-in + pill background.
+ *   6. BGM audio          — volume 0.15, looped.
+ */
+export function UgcComposition({
+  raw_video_url = "",
+  ugc_script = null,
+  bgm_url = "",
+  bundled_bgm = false,
+  website_display = "",
+  logo_url = "",
+  product_image_url = "",
+  brand_hex = "#6366f1",
+}) {
+  const { fps, durationInFrames } = useVideoConfig();
+  const frame = useCurrentFrame();
+
+  // Sanitise brand colour — fall back to indigo if the prop is empty/absent
+  const brandHex =
+    typeof brand_hex === "string" && /^#[0-9A-Fa-f]{3,8}$/.test(brand_hex.trim())
+      ? brand_hex.trim()
+      : "#6366f1";
+
+  const trimmedBgm =
+    typeof bgm_url === "string" ? bgm_url.trim() : "";
+  const bgmSrc = trimmedBgm
+    ? trimmedBgm
+    : bundled_bgm
+      ? staticFile("bgm.mp3")
+      : null;
+
+  const websiteText =
+    typeof website_display === "string" ? website_display.trim() : "";
+
+  const productImg =
+    typeof product_image_url === "string" ? product_image_url.trim() : "";
+
+  const scenes = Array.isArray(ugc_script?.scenes) ? ugc_script.scenes : [];
+  const numScenes = Math.max(1, scenes.length);
+
+  // Speech frames = total minus the end-card portion added by render.js.
+  // Ken Burns zoom and captions are bounded to speech frames so they don't
+  // animate weirdly under the end-card overlay.
+  const endCardFrames = Math.round(END_CARD_SECONDS * fps);
+  const speechFrames = Math.max(fps, durationInFrames - endCardFrames);
+  const sceneDurations = proportionalSceneDurations(speechFrames, scenes);
+  const sceneStarts = cumulativeSceneStarts(sceneDurations);
+
+  // Midpoint of speech (excluding end card) — product “center pop” is 60 frames centered here.
+  const speechMidFrame = Math.floor(speechFrames / 2);
+  const halfPop = Math.floor(PRODUCT_CENTER_POP_FRAMES / 2);
+  const productPopStart = Math.max(0, speechMidFrame - halfPop);
+  const productPopDuration = Math.min(
+    PRODUCT_CENTER_POP_FRAMES,
+    Math.max(0, speechFrames - productPopStart),
+  );
+
+  // ── Continuous floating camera (no per-scene hiccups) ────────────────────
+  // Single entrance punch at the very beginning of the video
+  const globalPunch = spring({
+    frame,
+    fps,
+    from: 0.95,
+    to: 1.0,
+    config: { damping: 14, stiffness: 200 },
+  });
+
+  // Continuous slow zoom across the entire video
+  const globalZoom = interpolate(frame, [0, durationInFrames], [1.06, 1.15], {
+    extrapolateLeft: "clamp",
+    extrapolateRight: "clamp",
+  });
+
+  // Gentle, random-feeling cinematic float using sine/cosine waves
+  const panX = Math.sin(frame / 60) * 22;
+  const panY = Math.cos(frame / 45) * 14;
+
+  // Full-scale: entrance punch × continuous slow zoom
+  const videoScale = globalZoom * globalPunch;
+
+  // Progress bar: 0 → 100% across the full composition duration
+  const progressWidth = interpolate(frame, [0, durationInFrames], [0, 100], {
+    extrapolateRight: "clamp",
+  });
+
+  return (
+    <AbsoluteFill style={{ backgroundColor: "#000000" }}>
+      {raw_video_url ? (
+        <>
+          {/* ── Layer 1: Video — continuous float + entrance punch ────────────── */}
+          {/* Input is already a 9:16 blur-bg composited file (FFmpeg output).  */}
+          {/* ONE OffthreadVideo only — halves render time vs double-decode.     */}
+          <AbsoluteFill
+            style={{
+              transform: `translate(${panX}px, ${panY}px) scale(${videoScale})`,
+              transformOrigin: "center center",
+              overflow: "hidden",
+            }}
+          >
+            <OffthreadVideo
+              src={raw_video_url}
+              style={{ width: "100%", height: "100%", objectFit: "cover" }}
+            />
+          </AbsoluteFill>
+
+          {/* ── Layer 2: Cinematic gradient ───────────────────────────────── */}
+          <AbsoluteFill
+            style={{
+              background: [
+                "linear-gradient(180deg,",
+                "rgba(0,0,0,0.15) 0%,",
+                "transparent 20%,",
+                "transparent 65%,",
+                "rgba(0,0,0,0.75) 100%)",
+              ].join(" "),
+              pointerEvents: "none",
+            }}
+          />
+        </>
+      ) : (
+        // Studio preview placeholder — no video URL supplied
+        <AbsoluteFill
+          style={{
+            background:
+              "linear-gradient(180deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%)",
+          }}
+        />
+      )}
+
+      {/* ── Layer 4a: Product center pop (~2s around speech midpoint) ─────── */}
+      {productImg && productPopDuration > 0 ? (
+        <ProductOverlay
+          src={productImg}
+          startTime={productPopStart}
+          duration={productPopDuration}
+          brandHex={brandHex}
+        />
+      ) : null}
+
+      {/* ── Layer 4b: Website URL + end-card logo / product (above captions) ─ */}
+      {websiteText || logo_url || productImg ? (
+        <WebsiteUrlOverlay
+          text={websiteText}
+          logo_url={logo_url}
+          product_image_url={productImg}
+          brandHex={brandHex}
+          durationInFrames={durationInFrames}
+        />
+      ) : null}
+
+      {/* ── Layer 5: Per-scene captions (stop at speechFrames, not durationInFrames) */}
+      {scenes.map((scene, i) => {
+        if (!scene?.on_screen_text?.trim()) return null;
+
+        const startFrame = sceneStarts[i] ?? 0;
+        const sceneDuration = Math.max(
+          1,
+          sceneDurations[i] ?? Math.floor(speechFrames / numScenes),
+        );
+
+        const hasPunctuation = /[.!?]$/.test(
+          scene.on_screen_text?.trim() || "",
+        );
+        const shouldPlayDing = i === 0 || hasPunctuation;
+
+        return (
+          <Sequence key={i} from={startFrame} durationInFrames={sceneDuration}>
+            {shouldPlayDing && (
+              <Audio src={staticFile("ding.mp3")} volume={0.4} />
+            )}
+            <CaptionLayer text={scene.on_screen_text} fps={fps} brandHex={brandHex} />
+          </Sequence>
+        );
+      })}
+
+      {/* ── Layer 5b: Progress bar — thick track + inset fill so it reads on export & web preview */}
+      <AbsoluteFill style={{ pointerEvents: "none", zIndex: 250 }}>
+        <div
+          style={{
+            position: "absolute",
+            bottom: 0,
+            left: 0,
+            width: "100%",
+            height: 20,
+            backgroundColor: "rgba(0,0,0,0.62)",
+            borderTop: "2px solid rgba(255,255,255,0.18)",
+            boxShadow: "0 -6px 24px rgba(0,0,0,0.5)",
+            boxSizing: "border-box",
+          }}
+        >
+          <div
+            style={{
+              width: `${progressWidth}%`,
+              height: "100%",
+              borderRadius: 3,
+              backgroundColor: brandHex,
+              boxShadow: `0 0 14px 3px ${brandHex}`,
+            }}
+          />
+        </div>
+      </AbsoluteFill>
+
+      {/* ── Layer 6a: End-card whoosh — plays exactly when end card begins */}
+      <Sequence from={durationInFrames - endCardFrames}>
+        <Audio src={staticFile("whoosh.mp3")} volume={0.8} />
+      </Sequence>
+
+      {/* ── Layer 6b: Background music ─────────────────────────────────────── */}
+      {bgmSrc ? <Audio src={bgmSrc} volume={0.15} loop /> : null}
+    </AbsoluteFill>
+  );
+}
+
+export const defaultUgcProps = {
+  raw_video_url: "",
+  ugc_script: {
+    estimated_duration_seconds: 30,
+    scenes: [
+      {
+        scene_number: 1,
+        spoken_text: "תקשיבו... אתם לא הולכים להאמין למה שגיליתי.",
+        on_screen_text: "רגע, זה אמיתי?",
+        visual_layout: "full_avatar",
+      },
+      {
+        scene_number: 2,
+        spoken_text: "המוצר הזה שינה לי את החיים, באמת.",
+        on_screen_text: "שינוי אמיתי",
+        visual_layout: "avatar_with_bullets",
+      },
+      {
+        scene_number: 3,
+        spoken_text: "אז מה אתם מחכים... כנסו עכשיו!",
+        on_screen_text: "כנסו עכשיו!",
+        visual_layout: "avatar_with_cta",
+      },
+    ],
+  },
+  bgm_url: "",
+  bundled_bgm: true,
+  website_display: "",
+  logo_url: "",
+  product_image_url: "",
+};
 
 
 ================================================================================

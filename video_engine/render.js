@@ -8,6 +8,7 @@ import { renderMedia, selectComposition } from "@remotion/renderer";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const COMPOSITION_ID = "Banner";
+const UGC_COMPOSITION_ID = "Ugc";
 
 const OUTPUT_DIR = path.join(__dirname, "output");
 
@@ -92,6 +93,44 @@ function getBundleServeUrl() {
   return bundleServeUrlPromise;
 }
 
+// ── UGC helpers ─────────────────────────────────────────────────────────────
+
+export function buildUgcInputProps(body) {
+  if (body === null || typeof body !== "object" || Array.isArray(body)) {
+    return {};
+  }
+  return {
+    raw_video_url:
+      typeof body.raw_video_url === "string" && body.raw_video_url.trim()
+        ? resolveAssetUrl(body.raw_video_url.trim())
+        : "",
+    ugc_script:
+      body.ugc_script && typeof body.ugc_script === "object" && !Array.isArray(body.ugc_script)
+        ? body.ugc_script
+        : null,
+    bgm_url:
+      typeof body.bgm_url === "string" && body.bgm_url.trim()
+        ? resolveAssetUrl(body.bgm_url.trim())
+        : "",
+    task_id:
+      typeof body.task_id === "string" && body.task_id.trim()
+        ? body.task_id.trim()
+        : "",
+    website_display:
+      typeof body.website_display === "string" && body.website_display.trim()
+        ? body.website_display.trim().slice(0, 512)
+        : "",
+    logo_url:
+      typeof body.logo_url === "string" && body.logo_url.trim()
+        ? resolveAssetUrl(body.logo_url.trim())
+        : "",
+    product_image_url:
+      typeof body.product_image_url === "string" && body.product_image_url.trim()
+        ? resolveAssetUrl(body.product_image_url)
+        : "",
+  };
+}
+
 /**
  * @param {Record<string, unknown>} inputProps — includes designTemplate (1 | 2 | 3)
  * @param {{ publicBaseUrl?: string }} options
@@ -145,5 +184,114 @@ export async function renderBannerVideo(inputProps, options = {}) {
     videoUrl: publicBase ? `${publicBase}/${relPath}` : `/${relPath}`,
     compositionId: COMPOSITION_ID,
     designTemplate: inputProps.designTemplate,
+  };
+}
+
+/**
+ * Render a UGC composition (avatar video + Hebrew caption overlays).
+ *
+ * @param {Record<string, unknown>} inputProps — { raw_video_url, ugc_script, bgm_url, task_id }
+ * @param {{ publicBaseUrl?: string }} options
+ */
+export async function renderUgcVideo(inputProps, options = {}) {
+  const taskId =
+    typeof inputProps.task_id === "string" && inputProps.task_id.trim()
+      ? inputProps.task_id.trim()
+      : "";
+
+  const taskDir = taskId ? path.join(OUTPUT_DIR, taskId) : OUTPUT_DIR;
+  await fs.promises.mkdir(taskDir, { recursive: true });
+
+  const serveUrl = await getBundleServeUrl();
+
+  // ── Bundled BGM (public/bgm.mp3) ───────────────────────────────────────────
+  // bundle() returns a *filesystem* path to the webpack output, not http://…
+  // Concatenating "/bgm.mp3" produced C:\...\remotion-webpack-bundle-…\bgm.mp3
+  // which Chromium cannot decode (MediaError).  The composition must use
+  // staticFile("bgm.mp3") instead; we only flip bundled_bgm after fs check.
+  const hasCustomBgm =
+    typeof inputProps.bgm_url === "string" && inputProps.bgm_url.trim();
+  let bundledBgm = false;
+  if (!hasCustomBgm) {
+    const bgmPublicPath = path.join(__dirname, "public", "bgm.mp3");
+    bundledBgm = await fs.promises
+      .access(bgmPublicPath)
+      .then(() => true)
+      .catch(() => false);
+    if (bundledBgm) {
+      console.log(
+        "[renderUgcVideo] BGM: public/bgm.mp3 present — composition will use staticFile('bgm.mp3').",
+      );
+    } else {
+      console.log("[renderUgcVideo] No bgm.mp3 in public/ — rendering without BGM.");
+    }
+  }
+
+  // ── End-card padding ──────────────────────────────────────────────────────
+  // After speech ends, the OffthreadVideo freezes on its last frame.  We add
+  // END_CARD_SECONDS of extra duration so the composition shows an animated
+  // end-card (URL pill zooms to center, dark overlay fades in).
+  // This constant MUST match END_CARD_SECONDS in UgcComposition.jsx.
+  const END_CARD_SECONDS = 3;
+  const speechSeconds = inputProps.ugc_script?.estimated_duration_seconds;
+  const totalSeconds =
+    (typeof speechSeconds === "number" && speechSeconds > 0 ? speechSeconds : 30) +
+    END_CARD_SECONDS;
+
+  console.log(
+    `[renderUgcVideo] speech=${speechSeconds ?? "?"}s endCard=${END_CARD_SECONDS}s total=${totalSeconds}s`,
+  );
+
+  const resolvedInputProps = {
+    ...inputProps,
+    bgm_url: hasCustomBgm ? String(inputProps.bgm_url).trim() : "",
+    bundled_bgm: hasCustomBgm ? false : bundledBgm,
+    // Override duration to include end-card seconds
+    ugc_script: {
+      ...(inputProps.ugc_script ?? {}),
+      estimated_duration_seconds: totalSeconds,
+    },
+  };
+
+  const composition = await selectComposition({
+    serveUrl,
+    id: UGC_COMPOSITION_ID,
+    inputProps: resolvedInputProps,
+    logLevel: "warn",
+  });
+
+  const fileName = `ugc-${randomUUID()}.mp4`;
+  const outputLocation = path.join(taskDir, fileName);
+
+  await renderMedia({
+    composition,
+    serveUrl,
+    codec: "h264",
+    outputLocation,
+    inputProps: resolvedInputProps,
+    logLevel: "warn",
+    overwrite: true,
+    // Limit frame-level parallelism — reduces Chrome RAM pressure significantly.
+    // Each concurrent "slot" spawns a Chrome tab; 1 is enough for local rendering.
+    concurrency: 1,
+    // SwiftShader = pure-software WebGL — no GPU memory allocated.
+    // Required on Windows machines without a discrete GPU / when GPU VRAM is low.
+    chromiumOptions: {
+      gl: "swiftshader",
+    },
+  });
+
+  const publicBase =
+    options.publicBaseUrl?.replace(/\/$/, "") ||
+    process.env.VIDEO_ENGINE_PUBLIC_URL?.replace(/\/$/, "") ||
+    "";
+
+  const relPath = taskId ? `output/${taskId}/${fileName}` : `output/${fileName}`;
+
+  return {
+    fileName,
+    outputPath: outputLocation,
+    videoUrl: publicBase ? `${publicBase}/${relPath}` : `/${relPath}`,
+    compositionId: UGC_COMPOSITION_ID,
   };
 }

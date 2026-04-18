@@ -39,6 +39,7 @@ def banner_task_status_dict(task_id: str, row: BannerTask) -> dict[str, Any]:
     status_val: TaskStatus = row.status  # type: ignore[assignment]
     return {
         "task_id": task_id,
+        "task_kind": getattr(row, "task_kind", None) or "banner",
         "url": row.url,
         "brief": row.brief,
         "status": status_val,
@@ -65,6 +66,10 @@ def banner_task_status_dict(task_id: str, row: BannerTask) -> dict[str, Any]:
         "ugc_script": row.ugc_script,
         "ugc_avatar_id": row.ugc_avatar_id,
         "ugc_raw_video_url": row.ugc_raw_video_url,
+        "ugc_composited_video_url": row.ugc_composited_video_url,
+        "ugc_composite_note": row.ugc_composite_note,
+        "ugc_final_video_url": getattr(row, "ugc_final_video_url", None),
+        "ugc_website_display": getattr(row, "ugc_website_display", None),
         "ugc_status": row.ugc_status,
         "ugc_error": row.ugc_error,
     }

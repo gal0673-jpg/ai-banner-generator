@@ -63,18 +63,45 @@ def test_ugc_generation():
             ugc_status = data.get("ugc_status")
             print(f"[{time.strftime('%H:%M:%S')}] סטטוס נוכחי: {ugc_status}")
             
+            if ugc_status == "rendering_captions":
+                print(f"[{time.strftime('%H:%M:%S')}] ⏳ Remotion מרנדר כתוביות... (עד 10 דקות)")
+
             if ugc_status == "completed":
                 print("\n🎉 הסרטון מוכן!!!")
                 print("==================================================")
-                print("וידאו גלמי:")
-                print(data.get("ugc_raw_video_url"))
+
+                final   = data.get("ugc_final_video_url")
+                comp    = data.get("ugc_composited_video_url")
+                raw     = data.get("ugc_raw_video_url")
+                note    = data.get("ugc_composite_note")
+
+                if final:
+                    print(f"✅ וידאו סופי עם כתוביות (Remotion):\n   {final}")
+                else:
+                    print("⚠️  וידאו Remotion לא נוצר (ראה הערה למטה).")
+
+                if comp:
+                    print(f"🎬 וידאו FFmpeg (blur-bg PiP):\n   {comp}")
+
+                print(f"📹 וידאו גלמי (HeyGen/D-ID):\n   {raw}")
+
+                if note:
+                    print(f"\n🔍 הערת אבחון (ugc_composite_note):\n   {note}")
+
                 print("==================================================")
                 print("תסריט ה-AI שנוצר:")
-                print(data.get("ugc_script"))
+                script = data.get("ugc_script") or {}
+                for s in script.get("scenes", []):
+                    print(f"  סצנה {s.get('scene_number')}: [{s.get('visual_layout')}]")
+                    print(f"    מדובר: {s.get('spoken_text', '')[:80]}")
+                    print(f"    על המסך: {s.get('on_screen_text', '')}")
                 break
             elif ugc_status == "failed" or data.get("status") == "failed":
                 print(f"\n❌ המשימה נכשלה!")
                 print(f"שגיאה: {data.get('ugc_error') or data.get('error')}")
+                note = data.get("ugc_composite_note")
+                if note:
+                    print(f"הערת אבחון: {note}")
                 break
                 
         except Exception as e:

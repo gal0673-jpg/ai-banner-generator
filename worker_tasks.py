@@ -25,6 +25,201 @@ from services.video_service import video_engine_render_url, video_payload_for_en
 
 logger = logging.getLogger(__name__)
 
+
+def _finalize_ugc_with_composite(
+    task_uuid: uuid.UUID,
+    task_id: str,
+    video_url: str,
+    ugc_script: dict | None = None,
+) -> None:
+    """Persist provider URL, run optional FFmpeg polish, then drive Remotion caption render.
+
+    Pipeline (each step degrades gracefully on failure):
+
+    1. FFmpeg blur-bg PiP — converts the raw horizontal avatar video to a 9:16 vertical
+       format with a blurred background fill.  Saves ``ugc_composited.mp4`` locally and
+       sets ``ugc_composited_video_url``.  Skipped/failed → ``ugc_composited_video_url``
+       remains None and a note is recorded; pipeline continues.
+
+    2. Remotion caption render — POSTs ``raw_video_url`` + ``ugc_script`` to the Node.js
+       video engine's ``/render-ugc`` endpoint.  Remotion overlays animated Hebrew captions
+       and writes a finished MP4.  The URL is persisted as ``ugc_final_video_url``.
+       Skipped (no script) / failed → ``ugc_final_video_url`` remains None; pipeline still
+       completes successfully using whichever earlier step produced the best video.
+
+    Status transitions:
+      rendering_captions → completed  (normal path)
+      rendering_captions → completed  (fallback: Remotion unavailable, best existing URL kept)
+    """
+    from services import ugc_composite_service
+
+    work_dir = TASKS_DIR / task_id
+    work_dir.mkdir(parents=True, exist_ok=True)
+
+    # ── Step 1: FFmpeg blur-bg PiP ────────────────────────────────────────────
+    logger.info("[_finalize_ugc] task_id=%s  running FFmpeg composite…", task_id)
+    composited, note = ugc_composite_service.try_composite_pip_blur(
+        task_id=task_id,
+        source_video_url=video_url,
+        work_dir=work_dir,
+    )
+    if composited:
+        logger.info("[_finalize_ugc] task_id=%s  FFmpeg composite OK → %s", task_id, composited)
+    else:
+        logger.info("[_finalize_ugc] task_id=%s  FFmpeg composite skipped/failed: %s", task_id, note)
+
+    # Flush raw + composited URLs to DB before the potentially long Remotion render so the
+    # task is already partially visible (and survives a crash in the next step).
+    persist_task(
+        task_uuid,
+        ugc_raw_video_url=video_url,
+        ugc_composited_video_url=composited,
+        ugc_composite_note=note,
+    )
+
+    # ── Step 2: Remotion caption render ──────────────────────────────────────
+    scenes = (ugc_script or {}).get("scenes") or []
+    has_captions = any(
+        (s.get("on_screen_text") or "").strip() for s in scenes
+    )
+
+    if not ugc_script or not has_captions:
+        logger.info(
+            "[_finalize_ugc] task_id=%s  skipping Remotion render "
+            "(no ugc_script or no on_screen_text in any scene).",
+            task_id,
+        )
+        persist_task(
+            task_uuid,
+            ugc_status="completed",
+            ugc_error=None,
+        )
+        return
+
+    # ── Choose best local video for Remotion input ────────────────────────────
+    # Priority:
+    #   1. ugc_composited.mp4  — FFmpeg output: already 9:16, blur-bg, portrait-framed.
+    #                            Remotion only needs to add captions (1 OffthreadVideo decode
+    #                            per frame instead of 2 → roughly half the render time).
+    #   2. ugc_provider_source.mp4 — raw landscape download; still local so fast, but
+    #                            no blur-bg (the blur was intentionally removed from the
+    #                            Remotion composition to gain this speed win).
+    #   3. video_url (CDN)     — last resort if nothing was downloaded locally.
+    _api_base = os.environ.get("VITE_API_URL", "http://127.0.0.1:8888").rstrip("/")
+    _composited_path = work_dir / "ugc_composited.mp4"
+    _source_path = work_dir / "ugc_provider_source.mp4"
+
+    if _composited_path.is_file() and _composited_path.stat().st_size > 1024:
+        render_video_url = f"{_api_base}/task-files/{task_id}/ugc_composited.mp4"
+        logger.info(
+            "[_finalize_ugc] task_id=%s  using FFmpeg-composited video for Remotion "
+            "(9:16 blur-bg, 1× decode): %s",
+            task_id,
+            render_video_url,
+        )
+    elif _source_path.is_file() and _source_path.stat().st_size > 1024:
+        render_video_url = f"{_api_base}/task-files/{task_id}/ugc_provider_source.mp4"
+        logger.info(
+            "[_finalize_ugc] task_id=%s  composited not found, using raw source: %s",
+            task_id,
+            render_video_url,
+        )
+    else:
+        render_video_url = video_url  # CDN URL — slowest but always available
+        logger.info(
+            "[_finalize_ugc] task_id=%s  no local file found — using CDN URL for Remotion.",
+            task_id,
+        )
+
+    # ── Measure actual video duration ────────────────────────────────────────
+    # GPT estimates duration; HeyGen/D-ID may produce a slightly longer/shorter file.
+    # Remotion uses estimated_duration_seconds for durationInFrames — if the estimate
+    # is too short, the render cuts off mid-sentence.  Override with the measured value.
+    _estimated_dur = ugc_script.get("estimated_duration_seconds")
+    _probe_path = _composited_path if _composited_path.is_file() else _source_path
+    if _probe_path.is_file():
+        _actual_dur = ugc_composite_service.get_video_duration_seconds(_probe_path)
+        if _actual_dur and _actual_dur > 1:
+            ugc_script = {**ugc_script, "estimated_duration_seconds": round(_actual_dur, 2)}
+            logger.info(
+                "[_finalize_ugc] task_id=%s  measured duration=%.1fs "
+                "(estimated was %ss) — Remotion will use measured value",
+                task_id,
+                _actual_dur,
+                _estimated_dur,
+            )
+        else:
+            logger.info(
+                "[_finalize_ugc] task_id=%s  ffprobe unavailable or failed; "
+                "keeping estimated_duration_seconds=%ss",
+                task_id,
+                _estimated_dur,
+            )
+
+    # Signal to the UI that captions are being rendered.
+    persist_task(task_uuid, ugc_status="rendering_captions")
+    website_display: str | None = None
+    logo_url: str | None = None
+    product_image_url: str | None = None
+    with SessionLocal() as db:
+        db_row = db.get(BannerTask, task_uuid)
+        if db_row is not None:
+            w = getattr(db_row, "ugc_website_display", None) or ""
+            website_display = w.strip() or None
+            logo_url = getattr(db_row, "logo_url", None)
+            pi = getattr(db_row, "product_image_url", None) or ""
+            product_image_url = pi.strip() or None
+
+    logger.info(
+        "[_finalize_ugc] task_id=%s  calling Remotion /render-ugc  "
+        "scenes=%d  duration=%ss  video_url=%s  website_display=%s",
+        task_id,
+        len(scenes),
+        ugc_script.get("estimated_duration_seconds", "?"),
+        render_video_url,
+        website_display or "(none)",
+    )
+
+    final_url, render_err = ugc_composite_service.call_video_engine_render_ugc(
+        task_id=task_id,
+        raw_video_url=render_video_url,
+        ugc_script=ugc_script,
+        website_display=website_display,
+        logo_url=logo_url,
+        product_image_url=product_image_url,
+    )
+
+    if final_url:
+        logger.info(
+            "[_finalize_ugc] task_id=%s  Remotion render OK → %s",
+            task_id,
+            final_url,
+        )
+        persist_task(
+            task_uuid,
+            ugc_final_video_url=final_url,
+            ugc_status="completed",
+            ugc_error=None,
+        )
+    else:
+        # Non-fatal: the task still completes; surface composited / raw video instead.
+        # Build a combined note so both FFmpeg outcome and Remotion error are visible in the UI.
+        render_note = f"Video Engine failed: {render_err}. Showing raw video instead."
+        combined_note = f"{note}  |  {render_note}" if note else render_note
+        logger.warning(
+            "[_finalize_ugc] task_id=%s  Remotion render failed — persisting note: %s",
+            task_id,
+            render_note,
+        )
+        persist_task(
+            task_uuid,
+            ugc_final_video_url=None,
+            ugc_composite_note=combined_note,
+            ugc_status="completed",
+            ugc_error=None,
+        )
+
+
 # ── Chrome leak-prevention: guarantee cleanup on any exit path ────────────────
 #
 # Celery's *soft* time limit raises SoftTimeLimitExceeded inside the running task
@@ -355,6 +550,8 @@ def run_ugc_task(
     video_length: str,
     provider: str = "heygen_elevenlabs",
     custom_script: str | None = None,
+    voice_id: str | None = None,
+    heygen_character_type: str | None = None,
 ) -> None:
     """End-to-end UGC video pipeline.
 
@@ -381,8 +578,8 @@ def run_ugc_task(
     work_dir.mkdir(parents=True, exist_ok=True)
 
     logger.info(
-        "[run_ugc_task] task_id=%s  url=%s  avatar=%s  length=%s  provider=%s",
-        task_id, url, avatar_id, video_length, provider,
+        "[run_ugc_task] task_id=%s  url=%s  avatar=%s  length=%s  provider=%s  voice_id=%s",
+        task_id, url, avatar_id, video_length, provider, voice_id or "(default)",
     )
 
     try:
@@ -478,6 +675,8 @@ def run_ugc_task(
                 provider=provider,
                 script_text=combined_spoken_text,
                 visual_reference=avatar_id,
+                voice_id=voice_id,
+                heygen_character_type=heygen_character_type,
             )
         except (UGCServiceError, ValueError) as exc:
             msg = f"Video generation failed ({provider}): {exc}"
@@ -485,15 +684,148 @@ def run_ugc_task(
             persist_task(task_uuid, ugc_status="failed", ugc_error=msg)
             raise BannerPipelineFatalError(f"[run_ugc_task] {msg}") from exc
 
-        # ── Step 5: persist completed state ──────────────────────────────────
-        persist_task(
-            task_uuid,
-            ugc_raw_video_url=video_url,
-            ugc_status="completed",
-            ugc_error=None,
-        )
+        # ── Step 5: FFmpeg polish + Remotion caption render + persist ────────
+        _finalize_ugc_with_composite(task_uuid, task_id, video_url, ugc_script=ugc_script)
         logger.info(
             "[run_ugc_task] task_id=%s  COMPLETED. video_url=%s",
+            task_id,
+            video_url,
+        )
+    finally:
+        _emergency_chrome_cleanup()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Avatar studio — prompt-only UGC (no website crawl)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+@celery_app.task(
+    bind=True,
+    base=BannerGenerationTask,
+    name="run_avatar_studio_task",
+    queue="video_queue",
+)
+def run_avatar_studio_task(
+    self: BannerGenerationTask,
+    task_id: str,
+    avatar_id: str,
+    video_length: str,
+    provider: str = "heygen_elevenlabs",
+    voice_id: str | None = None,
+    script_source: str = "from_brief_ai",
+    creative_brief: str | None = None,
+    director_notes: str | None = None,
+    spoken_script: str | None = None,
+    heygen_character_type: str | None = None,
+) -> None:
+    """Avatar marketing video from creative prompts only (no crawl)."""
+    from services.ugc_service import (
+        UGCServiceError,
+        dispatch_ugc_generation,
+    )
+    import ugc_director
+
+    task_uuid = uuid.UUID(task_id)
+
+    logger.info(
+        "[run_avatar_studio_task] task_id=%s  avatar=%s  length=%s  provider=%s  "
+        "script_source=%s  voice_id=%s",
+        task_id,
+        avatar_id,
+        video_length,
+        provider,
+        script_source,
+        voice_id or "(default)",
+    )
+
+    try:
+        persist_task(task_uuid, ugc_status="generating_script")
+
+        if script_source == "spoken_only":
+            text = (spoken_script or "").strip()
+            if not text:
+                msg = "spoken_script is empty."
+                persist_task(task_uuid, ugc_status="failed", ugc_error=msg)
+                raise BannerPipelineFatalError(f"[run_avatar_studio_task] {msg}")
+            logger.info(
+                "[run_avatar_studio_task] task_id=%s  spoken_only (%d chars).",
+                task_id,
+                len(text),
+            )
+            try:
+                ugc_script = ugc_director.build_studio_spoken_only_script(
+                    text, video_length
+                )
+            except ValueError as exc:
+                msg = f"Script validation failed: {exc}"
+                persist_task(task_uuid, ugc_status="failed", ugc_error=msg)
+                raise BannerPipelineFatalError(f"[run_avatar_studio_task] {msg}") from exc
+        else:
+            brief = (creative_brief or "").strip()
+            if not brief:
+                msg = "creative_brief is empty."
+                persist_task(task_uuid, ugc_status="failed", ugc_error=msg)
+                raise BannerPipelineFatalError(f"[run_avatar_studio_task] {msg}")
+            logger.info(
+                "[run_avatar_studio_task] task_id=%s  GPT script from brief (%d chars).",
+                task_id,
+                len(brief),
+            )
+            try:
+                ugc_script = ugc_director.generate_avatar_studio_script(
+                    creative_brief=brief,
+                    director_notes=director_notes,
+                    video_length=video_length,
+                )
+            except Exception as exc:
+                msg = f"Avatar studio script generation failed: {exc}"
+                logger.error("[run_avatar_studio_task] task_id=%s  %s", task_id, msg)
+                persist_task(task_uuid, ugc_status="failed", ugc_error=msg)
+                raise BannerPipelineFatalError(f"[run_avatar_studio_task] {msg}") from exc
+
+        persist_task(task_uuid, ugc_script=ugc_script)
+        logger.info(
+            "[run_avatar_studio_task] task_id=%s  script saved (%d scenes).",
+            task_id,
+            len(ugc_script.get("scenes", [])),
+        )
+
+        scenes = ugc_script.get("scenes") or []
+        combined_spoken_text = " ".join(
+            scene.get("spoken_text", "").strip() for scene in scenes
+        ).strip()
+
+        if not combined_spoken_text:
+            msg = "UGC script has no spoken text in any scene."
+            persist_task(task_uuid, ugc_status="failed", ugc_error=msg)
+            raise BannerPipelineFatalError(f"[run_avatar_studio_task] {msg}")
+
+        persist_task(task_uuid, ugc_status="generating_video")
+        logger.info(
+            "[run_avatar_studio_task] task_id=%s  dispatching %d chars to provider=%r…",
+            task_id,
+            len(combined_spoken_text),
+            provider,
+        )
+
+        try:
+            video_url = dispatch_ugc_generation(
+                provider=provider,
+                script_text=combined_spoken_text,
+                visual_reference=avatar_id,
+                voice_id=voice_id,
+                heygen_character_type=heygen_character_type,
+            )
+        except (UGCServiceError, ValueError) as exc:
+            msg = f"Video generation failed ({provider}): {exc}"
+            logger.error("[run_avatar_studio_task] task_id=%s  %s", task_id, msg)
+            persist_task(task_uuid, ugc_status="failed", ugc_error=msg)
+            raise BannerPipelineFatalError(f"[run_avatar_studio_task] {msg}") from exc
+
+        _finalize_ugc_with_composite(task_uuid, task_id, video_url, ugc_script=ugc_script)
+        logger.info(
+            "[run_avatar_studio_task] task_id=%s  COMPLETED. video_url=%s",
             task_id,
             video_url,
         )

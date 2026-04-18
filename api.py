@@ -28,6 +28,7 @@ from database import Base, SessionLocal, engine  # noqa: E402
 from models import User  # noqa: E402
 from routers import admin as admin_router  # noqa: E402
 from routers import auth as auth_router  # noqa: E402
+from routers import avatar_studio as avatar_studio_router  # noqa: E402
 from routers import banners as banners_router  # noqa: E402
 from services.banner_service import TASKS_DIR, ensure_tasks_dir  # noqa: E402
 
@@ -82,6 +83,20 @@ app.add_middleware(
 
 app.mount("/task-files", StaticFiles(directory=str(TASKS_DIR)), name="task_files")
 
+
+@app.get("/")
+def api_root() -> dict[str, str]:
+    """Opening :8888 in a browser hits ``/``; the UI lives on Vite (e.g. :5173)."""
+    return {
+        "service": "banner-generator-api",
+        "docs": "/docs",
+        "redoc": "/redoc",
+        "ui": "http://127.0.0.1:5173",
+        "message": "This port serves the JSON API only. Use /docs or the React dev server.",
+    }
+
+
 app.include_router(auth_router.router)
 app.include_router(banners_router.router)
+app.include_router(avatar_studio_router.router)
 app.include_router(admin_router.router)

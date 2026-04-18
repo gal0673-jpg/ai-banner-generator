@@ -6,16 +6,18 @@ generate_elevenlabs_audio(text, voice_id) -> bytes
     Convert text to MP3 via ElevenLabs TTS (``eleven_v3`` + ``language_code: he`` + voice_settings).
     ``eleven_multilingual_v2`` does not list Hebrew; using it drops non-Latin script and only speaks e.g. brand acronyms.
 
-generate_heygen_avatar_video(avatar_id, audio_bytes) -> str
+generate_heygen_avatar_video(avatar_id, audio_bytes, character_type="avatar") -> str
     Upload audio, submit a HeyGen /v2/video/generate job, poll to completion,
-    and return the final CDN video URL.
+    and return the final CDN video URL. Use character_type="talking_photo" when
+    *avatar_id* is a HeyGen photo / talking-photo id from List Avatars V2.
 
 generate_did_avatar_video(source_url, script_text, voice_id) -> str
     ElevenLabs TTS → POST /audios → POST /talks (static ``source_url`` + ``script.type: audio``),
     poll ``GET /talks/{id}`` to completion, return ``result_url``. Trial-safe (no /expressives).
 
-dispatch_ugc_generation(provider, script_text, visual_reference) -> str
+dispatch_ugc_generation(provider, script_text, visual_reference, …) -> str
     Route to the correct provider pipeline and return the video URL.
+    For HeyGen, optional *heygen_character_type* selects avatar vs talking_photo payload.
 
 All HTTP calls are wrapped with tenacity for transient-failure resilience.
 """
@@ -222,11 +224,16 @@ def _upload_heygen_audio_asset(audio_bytes: bytes, api_key: str) -> str:
 
 @_http_retry
 def _heygen_request_video(
-    avatar_id: str,
+    visual_id: str,
     audio_asset_id: str,
     api_key: str,
+    *,
+    character_type: str = "avatar",
 ) -> str:
     """Submit a HeyGen /v2/video/generate job and return the ``video_id``.
+
+    *character_type* must be ``"avatar"`` (studio / instant avatar ``avatar_id``) or
+    ``"talking_photo"`` (photo avatar ``talking_photo_id`` from List Avatars V2).
 
     The v2 endpoint returns ``{"error": null, "data": {"video_id": "..."}}`` on success —
     it does NOT include a ``code`` field like the v1 endpoints do.
@@ -235,14 +242,23 @@ def _heygen_request_video(
         "x-api-key": api_key,
         "Content-Type": "application/json",
     }
+    if character_type == "talking_photo":
+        character: dict = {
+            "type": "talking_photo",
+            "talking_photo_id": visual_id,
+            "talking_photo_style": "circle",
+        }
+    else:
+        character = {
+            "type": "avatar",
+            "avatar_id": visual_id,
+            "avatar_style": "normal",
+            "scale": 1.0,
+        }
     payload = {
         "video_inputs": [
             {
-                "character": {
-                    "type": "avatar",
-                    "avatar_id": avatar_id,
-                    "avatar_style": "normal",
-                },
+                "character": character,
                 "voice": {
                     "type": "audio",
                     "audio_asset_id": audio_asset_id,
@@ -251,7 +267,10 @@ def _heygen_request_video(
         ],
         "dimension": {"width": 1080, "height": 1920},
     }
-    print(f"Calling HeyGen: {_HEYGEN_VIDEO_GENERATE_URL}")
+    print(
+        f"Calling HeyGen: {_HEYGEN_VIDEO_GENERATE_URL} "
+        f"(character_type={character_type!r}, id={visual_id[:16]}…)"
+    )
     resp = requests.post(
         _HEYGEN_VIDEO_GENERATE_URL, json=payload, headers=headers, timeout=60
     )
@@ -350,7 +369,12 @@ def _heygen_poll_status(video_id: str, api_key: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-def generate_heygen_avatar_video(avatar_id: str, audio_bytes: bytes) -> str:
+def generate_heygen_avatar_video(
+    avatar_id: str,
+    audio_bytes: bytes,
+    *,
+    character_type: str = "avatar",
+) -> str:
     """Generate a HeyGen talking-avatar video from a pre-rendered audio track.
 
     Step A — Upload *audio_bytes* to HeyGen's asset endpoint → ``audio_asset_id``.
@@ -358,7 +382,9 @@ def generate_heygen_avatar_video(avatar_id: str, audio_bytes: bytes) -> str:
     Step C — Poll /v1/video_status.get every 10 s until status is 'completed' or 'failed'.
 
     Args:
-        avatar_id:   HeyGen avatar ID (must be accessible under the caller's API key).
+        avatar_id:       HeyGen ``avatar_id`` or ``talking_photo_id`` (see *character_type*).
+        character_type:  ``"avatar"`` or ``"talking_photo"`` — must match the ID kind from
+                         `List All Avatars (V2) <https://docs.heygen.com/reference/list-avatars-v2>`_.
         audio_bytes: MP3 audio bytes (e.g. from :func:`generate_elevenlabs_audio`).
 
     Returns:
@@ -391,15 +417,20 @@ def generate_heygen_avatar_video(avatar_id: str, audio_bytes: bytes) -> str:
     logger.info("[ugc_service] HeyGen audio_asset_id=%s", audio_asset_id)
     print(
         f"[DEBUG] generate_heygen_avatar_video: using asset id from upload "
-        f"as voice.audio_asset_id={audio_asset_id!r} for POST /v2/video/generate"
+        f"as voice.audio_asset_id={audio_asset_id!r} for POST /v2/video/generate "
+        f"(character_type={character_type!r})"
     )
 
     # ── Step B: request video generation ───────────────────────────────────
     logger.info(
-        "[ugc_service] Submitting HeyGen video generate (avatar_id=%s).", avatar_id
+        "[ugc_service] Submitting HeyGen video generate (id=%s, character_type=%s).",
+        avatar_id,
+        character_type,
     )
     try:
-        video_id = _heygen_request_video(avatar_id, audio_asset_id, api_key)
+        video_id = _heygen_request_video(
+            avatar_id, audio_asset_id, api_key, character_type=character_type
+        )
     except UGCServiceError:
         raise  # already descriptive; propagate as-is
     except requests.HTTPError as exc:
@@ -620,6 +651,7 @@ def dispatch_ugc_generation(
     script_text: str,
     visual_reference: str,
     voice_id: str | None = None,
+    heygen_character_type: str | None = None,
 ) -> str:
     """Route UGC video generation to the correct provider pipeline.
 
@@ -631,6 +663,9 @@ def dispatch_ugc_generation(
         voice_id:         Optional ElevenLabs voice ID for both audio-based
                           providers. Forwarded to ``generate_elevenlabs_audio`` /
                           ``generate_did_avatar_video`` when supplied.
+        heygen_character_type: For ``heygen_elevenlabs`` only: ``"avatar"`` (default)
+                          or ``"talking_photo"``. Must match the kind of id in
+                          *visual_reference*. Ignored for ``d-id``.
 
     Returns:
         Final CDN video URL (``str``).
@@ -641,9 +676,16 @@ def dispatch_ugc_generation(
     """
     if provider == "heygen_elevenlabs":
         logger.info("[ugc_service] dispatch → heygen_elevenlabs pipeline.")
+        ct = (heygen_character_type or "avatar").strip().lower()
+        if ct not in ("avatar", "talking_photo"):
+            raise ValueError(
+                f"heygen_character_type must be 'avatar' or 'talking_photo', not {ct!r}."
+            )
         el_voice_id = voice_id if voice_id else _ELEVENLABS_DEFAULT_VOICE_ID
         audio_bytes = generate_elevenlabs_audio(script_text, voice_id=el_voice_id)
-        return generate_heygen_avatar_video(visual_reference, audio_bytes)
+        return generate_heygen_avatar_video(
+            visual_reference, audio_bytes, character_type=ct
+        )
 
     if provider == "d-id":
         logger.info("[ugc_service] dispatch → d-id pipeline (/audios + /talks audio).")
