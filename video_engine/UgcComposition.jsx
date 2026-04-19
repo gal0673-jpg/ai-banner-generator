@@ -10,12 +10,75 @@ import {
   useCurrentFrame,
   useVideoConfig,
 } from "remotion";
-import { loadFont } from "@remotion/google-fonts/Heebo";
+import { loadFont as loadAssistantFont } from "@remotion/google-fonts/Assistant";
+import { loadFont as loadHeeboFont } from "@remotion/google-fonts/Heebo";
+import { loadFont as loadRubikFont } from "@remotion/google-fonts/Rubik";
 
-const { fontFamily } = loadFont("normal", {
+const heeboLoaded = loadHeeboFont("normal", {
   weights: ["700", "800"],
   subsets: ["hebrew", "latin", "latin-ext"],
 });
+
+const rubikLoaded = loadRubikFont("normal", {
+  weights: ["700", "800"],
+  subsets: ["hebrew", "latin", "latin-ext"],
+});
+
+const assistantLoaded = loadAssistantFont("normal", {
+  weights: ["700", "800"],
+  subsets: ["hebrew", "latin", "latin-ext"],
+});
+
+/**
+ * @param {string | undefined} fontKey — 'heebo' | 'rubik' | 'assistant'
+ * @returns {string} CSS font-family stack
+ */
+function resolveCaptionFontFamily(fontKey) {
+  const k = typeof fontKey === "string" ? fontKey.toLowerCase().trim() : "heebo";
+  if (k === "rubik") return rubikLoaded.fontFamily;
+  if (k === "assistant") return assistantLoaded.fontFamily;
+  return heeboLoaded.fontFamily;
+}
+
+/** Frames per typed character for typewriter animation (see CaptionLayer). */
+const TYPEWRITER_FRAMES_PER_CHAR = 2;
+
+function getCaptionFillStyle(position) {
+  const base = {
+    display: "flex",
+    flexDirection: "column",
+    alignItems: "center",
+    pointerEvents: "none",
+  };
+  if (position === "top") {
+    return {
+      ...base,
+      justifyContent: "flex-start",
+      paddingTop: 168,
+      paddingBottom: 0,
+    };
+  }
+  if (position === "center") {
+    return {
+      ...base,
+      justifyContent: "center",
+      paddingTop: 0,
+      paddingBottom: 0,
+    };
+  }
+  return {
+    ...base,
+    justifyContent: "flex-end",
+    paddingBottom: 168,
+    paddingTop: 0,
+  };
+}
+
+function captionTransformOrigin(position) {
+  if (position === "top") return "center top";
+  if (position === "center") return "center center";
+  return "center bottom";
+}
 
 /**
  * Seconds reserved at the END of the composition for the end card.
@@ -395,80 +458,118 @@ function RtlText({ style, children }) {
 }
 
 /**
- * TikTok-style caption: strong spring pop-in + slide-up + fade.
- * Timing: only the first ~18–22 frames of each scene (~0.6–0.75s @ 30fps) —
- * if you seek to the middle of a scene the text already looks “static”.
+ * TikTok-style caption with optional style prefs (`ugc_script.style`).
+ * Timing: entrance animates in the first frames of each scene sequence.
  */
-function CaptionLayer({ text, fps, brandHex = "#6366f1" }) {
+function CaptionLayer({ text, brandHex = "#6366f1", stylePrefs = {} }) {
   const frame = useCurrentFrame();
+  const { fps } = useVideoConfig();
 
-  // Big entrance: small → full (was 0.55, too subtle on export)
-  const scale = spring({
-    frame,
-    fps,
-    from: 0.35,
-    to: 1,
-    config: { damping: 11, stiffness: 200 },
-  });
+  const position =
+    stylePrefs.position === "top" ||
+    stylePrefs.position === "center" ||
+    stylePrefs.position === "bottom"
+      ? stylePrefs.position
+      : "bottom";
 
-  // Visible overshoot: “bounce” settle (1.22 → 1.0)
-  const bounce = spring({
-    frame,
-    fps,
-    from: 1.22,
-    to: 1.0,
-    config: { damping: 9, stiffness: 280 },
-  });
+  const animation =
+    stylePrefs.animation === "fade" || stylePrefs.animation === "typewriter"
+      ? stylePrefs.animation
+      : "pop";
 
-  const opacity = Math.min(1, frame / 6);
+  const fontFamilyStr = resolveCaptionFontFamily(
+    typeof stylePrefs.font === "string" ? stylePrefs.font : "heebo",
+  );
 
-  // Slide up from below (pixels) — reads clearly even at 1080×1920
-  const slideUp = interpolate(frame, [0, 10], [36, 0], {
-    extrapolateLeft: "clamp",
-    extrapolateRight: "clamp",
-    easing: (t) => 1 - Math.pow(1 - t, 2),
-  });
+  const origin = captionTransformOrigin(position);
+  const fillStyle = getCaptionFillStyle(position);
+
+  const raw = String(text ?? "");
+  const displayText =
+    animation === "typewriter"
+      ? raw.substring(
+          0,
+          Math.min(raw.length, Math.floor(frame / TYPEWRITER_FRAMES_PER_CHAR)),
+        )
+      : raw;
+
+  let innerStyle;
+
+  if (animation === "pop") {
+    const scale = spring({
+      frame,
+      fps,
+      from: 0.35,
+      to: 1,
+      config: { damping: 11, stiffness: 200 },
+    });
+    const bounce = spring({
+      frame,
+      fps,
+      from: 1.22,
+      to: 1.0,
+      config: { damping: 9, stiffness: 280 },
+    });
+    const opacity = Math.min(1, frame / 6);
+    const slideUp = interpolate(frame, [0, 10], [36, 0], {
+      extrapolateLeft: "clamp",
+      extrapolateRight: "clamp",
+      easing: (t) => 1 - Math.pow(1 - t, 2),
+    });
+    innerStyle = {
+      transform: `translateY(${slideUp}px) scale(${scale * bounce})`,
+      opacity,
+      transformOrigin: origin,
+    };
+  } else if (animation === "fade") {
+    const opacity = interpolate(frame, [0, 18], [0, 1], {
+      extrapolateLeft: "clamp",
+      extrapolateRight: "clamp",
+      easing: (t) => 1 - Math.pow(1 - t, 2),
+    });
+    const slideFrom = position === "top" ? -26 : 26;
+    const slideUp = interpolate(frame, [0, 18], [slideFrom, 0], {
+      extrapolateLeft: "clamp",
+      extrapolateRight: "clamp",
+      easing: (t) => 1 - Math.pow(1 - t, 2),
+    });
+    innerStyle = {
+      transform: `translateY(${slideUp}px)`,
+      opacity,
+      transformOrigin: origin,
+    };
+  } else {
+    const opacity = Math.min(1, frame / 5);
+    innerStyle = {
+      transform: "none",
+      opacity,
+      transformOrigin: origin,
+    };
+  }
+
+  const textStyle = {
+    fontFamily: `${fontFamilyStr}, "Segoe UI", sans-serif`,
+    fontWeight: 800,
+    fontSize: 84,
+    color: "#FFFFFF",
+    textShadow: [
+      "0 2px 12px rgba(0,0,0,0.95)",
+      "0 0 4px rgba(0,0,0,1)",
+      `0 0 32px ${brandHex}`,
+      `0 0 16px ${brandHex}`,
+    ].join(", "),
+    lineHeight: 1.3,
+    letterSpacing: -0.5,
+    padding: "14px 48px",
+    background: "rgba(0,0,0,0.48)",
+    borderRadius: 22,
+    WebkitTextStroke: "0.5px rgba(255,255,255,0.15)",
+  };
 
   return (
-    <AbsoluteFill
-      style={{
-        display: "flex",
-        flexDirection: "column",
-        justifyContent: "flex-end",
-        alignItems: "center",
-        paddingBottom: 168,
-        pointerEvents: "none",
-      }}
-    >
-      <div
-        style={{
-          transform: `translateY(${slideUp}px) scale(${scale * bounce})`,
-          opacity,
-          transformOrigin: "center bottom",
-        }}
-      >
-        <RtlText
-          style={{
-            fontFamily: `${fontFamily}, "Segoe UI", sans-serif`,
-            fontWeight: 800,
-            fontSize: 84,
-            color: "#FFFFFF",
-            textShadow: [
-              "0 2px 12px rgba(0,0,0,0.95)",
-              "0 0 4px rgba(0,0,0,1)",
-              `0 0 32px ${brandHex}`,
-              `0 0 16px ${brandHex}`,
-            ].join(", "),
-            lineHeight: 1.3,
-            letterSpacing: -0.5,
-            padding: "14px 48px",
-            background: "rgba(0,0,0,0.48)",
-            borderRadius: 22,
-            WebkitTextStroke: "0.5px rgba(255,255,255,0.15)",
-          }}
-        >
-          {text}
-        </RtlText>
+    <AbsoluteFill style={fillStyle}>
+      <div style={innerStyle}>
+        <RtlText style={textStyle}>{displayText}</RtlText>
       </div>
     </AbsoluteFill>
   );
@@ -540,6 +641,11 @@ export function UgcComposition({
 
   const scenes = Array.isArray(ugc_script?.scenes) ? ugc_script.scenes : [];
   const numScenes = Math.max(1, scenes.length);
+
+  const stylePrefs =
+    ugc_script?.style && typeof ugc_script.style === "object"
+      ? ugc_script.style
+      : {};
 
   // Speech frames = total minus the end-card portion added by render.js.
   // Ken Burns zoom and captions are bounded to speech frames so they don't
@@ -671,7 +777,11 @@ export function UgcComposition({
             {shouldPlayDing && (
               <Audio src={staticFile("ding.mp3")} volume={0.4} />
             )}
-            <CaptionLayer text={scene.on_screen_text} fps={fps} brandHex={brandHex} />
+            <CaptionLayer
+              text={scene.on_screen_text}
+              brandHex={brandHex}
+              stylePrefs={stylePrefs}
+            />
           </Sequence>
         );
       })}
@@ -718,6 +828,11 @@ export const defaultUgcProps = {
   raw_video_url: "",
   ugc_script: {
     estimated_duration_seconds: 30,
+    style: {
+      animation: "pop",
+      position: "bottom",
+      font: "heebo",
+    },
     scenes: [
       {
         scene_number: 1,

@@ -13,3 +13,10 @@ __pycache__/
 
 # Generated task workspaces (assets, renders)
 tasks/
+# Video Engine renders
+video_engine/output/
+*.mp4
+
+# AI Context files
+ai-banner-context.txt
+project_context.txt

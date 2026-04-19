@@ -277,6 +277,24 @@ def ugc_re_render(
     if "speed_factor" in patch:
         row.ugc_speed_factor = patch["speed_factor"]
 
+    _style_patch_keys = ("caption_animation", "caption_position", "caption_font")
+    if any(k in patch for k in _style_patch_keys):
+        base = row.ugc_script if isinstance(row.ugc_script, dict) else {}
+        style = dict(base.get("style") or {})
+        if "caption_animation" in patch:
+            v = patch["caption_animation"]
+            if v is not None:
+                style["animation"] = v
+        if "caption_position" in patch:
+            v = patch["caption_position"]
+            if v is not None:
+                style["position"] = v
+        if "caption_font" in patch:
+            v = patch["caption_font"]
+            if v is not None:
+                style["font"] = v
+        row.ugc_script = {**base, "style": style}
+
     row.ugc_status = "rendering_captions"
     row.ugc_error = None
     db.commit()

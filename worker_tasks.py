@@ -49,6 +49,7 @@ def _finalize_ugc_with_composite(
        completes successfully using whichever earlier step produced the best video.
 
     Status transitions:
+      processing_video → rendering_captions  (after FFmpeg + before Remotion)
       rendering_captions → completed  (normal path)
       rendering_captions → completed  (fallback: Remotion unavailable, best existing URL kept)
     """
@@ -58,6 +59,7 @@ def _finalize_ugc_with_composite(
     work_dir.mkdir(parents=True, exist_ok=True)
 
     # ── Step 1: FFmpeg blur-bg PiP ────────────────────────────────────────────
+    persist_task(task_uuid, ugc_status="processing_video")
     logger.info("[_finalize_ugc] task_id=%s  running FFmpeg composite…", task_id)
     composited, note = ugc_composite_service.try_composite_pip_blur(
         task_id=task_id,

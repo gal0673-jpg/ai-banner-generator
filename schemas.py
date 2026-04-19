@@ -199,6 +199,18 @@ class UgcReRenderRequest(BaseModel):
         le=2.0,
         description="FFmpeg playback rate for composite (1.0 = normal). Stored on the task row.",
     )
+    caption_animation: Literal["pop", "fade", "typewriter"] | None = Field(
+        default=None,
+        description="Stored under ugc_script.style.animation (Remotion caption styling).",
+    )
+    caption_position: Literal["bottom", "center", "top"] | None = Field(
+        default=None,
+        description="Stored under ugc_script.style.position.",
+    )
+    caption_font: Literal["heebo", "rubik", "assistant"] | None = Field(
+        default=None,
+        description="Stored under ugc_script.style.font.",
+    )
 
 
 class TaskPatchRequest(BaseModel):

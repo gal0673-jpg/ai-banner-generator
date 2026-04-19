@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import api, { API_BASE_URL, API_BASE_URL_DISPLAY } from './api.js'
 import { useAuth } from './AuthContext.jsx'
@@ -40,12 +40,13 @@ function ugcVideoTier(payload) {
 function formatUgcStatus(ugcStatus) {
   if (!ugcStatus) return 'מתחיל…'
   const map = {
-    pending: 'UGC: ממתין…',
-    scraped: 'UGC: נסרק…',
-    generating_script: 'UGC: מכין תסריט…',
-    generating_video: 'UGC: מייצר וידאו…',
-    rendering_captions: 'UGC: מרנדר כתוביות…',
-    completed: 'UGC: הושלם',
+    pending: 'UGC: בתור להכנה...',
+    scraped: 'UGC: סורק את האתר...',
+    generating_script: 'UGC: כותב תסריט בימוי...',
+    generating_video: 'UGC: מייצר וידאו באולפן AI (זה עשוי לקחת כמה דקות)...',
+    processing_video: 'UGC: מעבד וידאו ומשפר איכות...',
+    rendering_captions: 'UGC: מטמיע כתוביות ואנימציות...',
+    completed: 'UGC: הסרטון מוכן!',
     failed: 'UGC: נכשל',
   }
   return map[ugcStatus] || `UGC: ${ugcStatus.replace(/_/g, ' ')}`
@@ -57,6 +58,53 @@ function Spinner({ className = '' }) {
       className={`inline-block size-5 rounded-full border-2 border-violet-500/30 border-t-violet-500 animate-spin ${className}`}
       aria-hidden
     />
+  )
+}
+
+const UGC_STATUS_PROGRESS = {
+  pending: 5,
+  scraped: 10,
+  generating_script: 15,
+  generating_video: 50,
+  processing_video: 75,
+  rendering_captions: 95,
+  completed: 100,
+}
+
+/** Total job estimate (minutes) by target video length — used for ETA copy only. */
+const VIDEO_LENGTH_TOTAL_MINUTES = {
+  '15s': 3,
+  '30s': 5,
+  '50s': 8,
+}
+
+function UgcProgressTracker({ statusPayload, videoLength }) {
+  const ugcStatus = statusPayload?.ugc_status
+  const pct =
+    typeof ugcStatus === 'string' && ugcStatus in UGC_STATUS_PROGRESS ? UGC_STATUS_PROGRESS[ugcStatus] : 5
+
+  const totalMinutes = VIDEO_LENGTH_TOTAL_MINUTES[videoLength] ?? 5
+  const remainingMinutes = Math.max(1, Math.round(totalMinutes * (1 - pct / 100)))
+
+  return (
+    <div
+      className="rounded-2xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 p-6 space-y-4"
+      role="progressbar"
+      aria-valuemin={0}
+      aria-valuemax={100}
+      aria-valuenow={pct}
+      aria-label={formatUgcStatus(ugcStatus) || 'התקדמות UGC'}
+    >
+      <div className="h-3 w-full overflow-hidden rounded-full bg-slate-200/90 dark:bg-slate-700/90">
+        <div
+          className="h-full rounded-full bg-gradient-to-l from-violet-600 to-violet-500 shadow-[0_0_12px_rgba(124,58,237,0.45)] transition-all duration-1000 ease-out"
+          style={{ width: `${pct}%` }}
+        />
+      </div>
+      <p className="text-[13px] leading-relaxed text-slate-600 dark:text-slate-300" dir="rtl">
+        זמן משוער לסיום: כ-{remainingMinutes} דקות. המערכת עובדת ברקע, ניתן להשאיר את המסך פתוח.
+      </p>
+    </div>
   )
 }
 
@@ -103,6 +151,34 @@ function UgcScriptScenesBody({ scenes }) {
   )
 }
 
+const UGC_RERENDER_SPEEDS = [
+  { value: 1, label: '1.0× (רגיל)' },
+  { value: 1.15, label: '1.15×' },
+  { value: 1.25, label: '1.25×' },
+]
+
+const UGC_RERENDER_ANIMATIONS = [
+  { value: 'pop', label: 'פופ טיקטוק' },
+  { value: 'fade', label: 'כניסה חלקה' },
+  { value: 'typewriter', label: 'מכונת כתיבה' },
+]
+
+const UGC_RERENDER_POSITIONS = [
+  { value: 'bottom', label: 'תחתון' },
+  { value: 'center', label: 'מרכז' },
+  { value: 'top', label: 'עליון' },
+]
+
+const UGC_RERENDER_FONTS = [
+  { value: 'heebo', label: 'Heebo' },
+  { value: 'rubik', label: 'Rubik' },
+  { value: 'assistant', label: 'Assistant' },
+]
+
+const _ALLOWED_ANIM = new Set(['pop', 'fade', 'typewriter'])
+const _ALLOWED_POS = new Set(['bottom', 'center', 'top'])
+const _ALLOWED_FONT = new Set(['heebo', 'rubik', 'assistant'])
+
 export default function AvatarStudio() {
   const { user, logout } = useAuth()
   const navigate = useNavigate()
@@ -124,6 +200,15 @@ export default function AvatarStudio() {
   const [logoUploading, setLogoUploading] = useState(false)
   const [productUploading, setProductUploading] = useState(false)
 
+  const hydratedScriptKeyRef = useRef('')
+  const [rerenderSpeed, setRerenderSpeed] = useState(1)
+  const [rerenderAnimation, setRerenderAnimation] = useState('pop')
+  const [rerenderPosition, setRerenderPosition] = useState('bottom')
+  const [rerenderFont, setRerenderFont] = useState('heebo')
+  const [draftBrandColor, setDraftBrandColor] = useState('')
+  const [rerenderSubmitting, setRerenderSubmitting] = useState(false)
+  const [rerenderError, setRerenderError] = useState(null)
+
   const [taskId, setTaskId] = useState(null)
   const [statusPayload, setStatusPayload] = useState(null)
   const [submitError, setSubmitError] = useState(null)
@@ -136,6 +221,45 @@ export default function AvatarStudio() {
     statusPayload?.ugc_status === 'completed' || statusPayload?.ugc_status === 'failed'
   const terminal = bannerTerminal || ugcTerminal
   const isPolling = Boolean(taskId && !terminal)
+
+  useEffect(() => {
+    hydratedScriptKeyRef.current = ''
+    setDraftBrandColor('')
+    setRerenderSpeed(1)
+    setRerenderAnimation('pop')
+    setRerenderPosition('bottom')
+    setRerenderFont('heebo')
+    setRerenderError(null)
+  }, [taskId])
+
+  useLayoutEffect(() => {
+    if (statusPayload?.ugc_status !== 'completed' || !taskId) return
+    const key = `${taskId}|${String(statusPayload?.ugc_final_video_url || '')}|${String(statusPayload?.ugc_composited_video_url || '')}|${String(statusPayload?.ugc_raw_video_url || '')}`
+    if (hydratedScriptKeyRef.current === key) return
+    hydratedScriptKeyRef.current = key
+    const st = statusPayload?.ugc_script?.style
+    const anim = typeof st?.animation === 'string' && _ALLOWED_ANIM.has(st.animation) ? st.animation : 'pop'
+    const pos = typeof st?.position === 'string' && _ALLOWED_POS.has(st.position) ? st.position : 'bottom'
+    const font = typeof st?.font === 'string' && _ALLOWED_FONT.has(st.font) ? st.font : 'heebo'
+    setRerenderAnimation(anim)
+    setRerenderPosition(pos)
+    setRerenderFont(font)
+    const rawSf = Number(statusPayload?.ugc_speed_factor)
+    const nearest = UGC_RERENDER_SPEEDS.map((x) => x.value).reduce((best, v) =>
+      Math.abs(v - rawSf) < Math.abs(best - rawSf) ? v : best,
+    1)
+    setRerenderSpeed(nearest)
+    setDraftBrandColor(typeof statusPayload?.brand_color === 'string' ? statusPayload.brand_color.trim() : '')
+  }, [
+    taskId,
+    statusPayload?.ugc_status,
+    statusPayload?.ugc_script,
+    statusPayload?.ugc_final_video_url,
+    statusPayload?.ugc_composited_video_url,
+    statusPayload?.ugc_raw_video_url,
+    statusPayload?.ugc_speed_factor,
+    statusPayload?.brand_color,
+  ])
 
   useEffect(() => {
     if (!taskId) return undefined
@@ -171,6 +295,36 @@ export default function AvatarStudio() {
       sse.close()
     }
   }, [taskId, sseBump])
+
+  const handleUgcRerender = async () => {
+    if (!taskId) return
+    setRerenderError(null)
+    setRerenderSubmitting(true)
+    try {
+      const body = {
+        speed_factor: rerenderSpeed,
+        caption_animation: rerenderAnimation,
+        caption_position: rerenderPosition,
+        caption_font: rerenderFont,
+      }
+      const lu = logoUrl.trim()
+      if (lu) body.logo_url = lu
+      const pu = productImageUrl.trim()
+      if (pu) body.product_image_url = pu
+      const bc = draftBrandColor.trim()
+      if (bc) {
+        if (!/^#[0-9A-Fa-f]{6}$/.test(bc)) {
+          throw new Error('צבע מותג חייב להיות בפורמט #RRGGBB (שש ספרות הקסדצימליות)')
+        }
+        body.brand_color = bc.toUpperCase()
+      }
+      await api.post(`/tasks/${taskId}/ugc/re-render`, body)
+    } catch (err) {
+      setRerenderError(axiosErrorMessage(err))
+    } finally {
+      setRerenderSubmitting(false)
+    }
+  }
 
   const uploadTempAsset = async (file, kind) => {
     const setBusy = kind === 'logo' ? setLogoUploading : setProductUploading
@@ -640,13 +794,10 @@ export default function AvatarStudio() {
               )}
 
               {isPolling && (
-                <div className="rounded-2xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 p-6 animate-pulse space-y-3">
-                  <div className="h-4 w-1/3 rounded bg-slate-200 dark:bg-slate-700 ms-auto" />
-                  <div className="h-3 w-full rounded bg-slate-100 dark:bg-slate-800" />
-                </div>
+                <UgcProgressTracker statusPayload={statusPayload} videoLength={videoLength} />
               )}
 
-              {statusPayload?.ugc_script?.scenes?.length > 0 && (
+              {statusPayload?.ugc_script?.scenes?.length > 0 && statusPayload?.ugc_status !== 'completed' && (
                 <details className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm open:pb-2">
                   <summary className="cursor-pointer px-5 py-3.5 text-sm font-semibold">
                     תסריט (סצנות)
@@ -741,6 +892,138 @@ export default function AvatarStudio() {
                       </a>
                     )}
                   </div>
+
+                  {Array.isArray(statusPayload?.ugc_script?.scenes) && statusPayload.ugc_script.scenes.length > 0 && (
+                    <div className="mt-5 space-y-4 border-t border-slate-200 dark:border-slate-700 pt-5 text-right">
+                      <h4 className="text-sm font-semibold text-slate-800 dark:text-slate-100">
+                        עריכה ורינדור מחדש (בלי HeyGen)
+                      </h4>
+                      <p className="text-[11px] text-slate-500 dark:text-slate-400 leading-relaxed">
+                        לוגו ותמונת מוצר נשלחים מהשדות בטופס משמאל (אם מולאו). ניתן לשנות מהירות, סגנון כתוביות ומיקום
+                        ואז לרנדר שוב את שכבת הכיתוביות והעיצוב על אותו וידאו גלמי.
+                      </p>
+                      <div className="grid grid-cols-2 gap-4">
+                        <div>
+                          <label className="block text-xs font-medium text-slate-600 dark:text-slate-300 mb-1.5">
+                            מהירות וידאו
+                          </label>
+                          <select
+                            value={String(rerenderSpeed)}
+                            onChange={(ev) => setRerenderSpeed(Number(ev.target.value))}
+                            disabled={
+                              rerenderSubmitting || statusPayload?.ugc_status === 'rendering_captions'
+                            }
+                            className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2.5 text-sm outline-none disabled:opacity-60"
+                          >
+                            {UGC_RERENDER_SPEEDS.map((opt) => (
+                              <option key={opt.value} value={String(opt.value)}>
+                                {opt.label}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                        <div>
+                          <label className="block text-xs font-medium text-slate-600 dark:text-slate-300 mb-1.5">
+                            סגנון אנימציה
+                          </label>
+                          <select
+                            value={rerenderAnimation}
+                            onChange={(ev) => setRerenderAnimation(ev.target.value)}
+                            disabled={
+                              rerenderSubmitting || statusPayload?.ugc_status === 'rendering_captions'
+                            }
+                            className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2.5 text-sm outline-none disabled:opacity-60"
+                          >
+                            {UGC_RERENDER_ANIMATIONS.map((opt) => (
+                              <option key={opt.value} value={opt.value}>
+                                {opt.label}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                        <div>
+                          <label className="block text-xs font-medium text-slate-600 dark:text-slate-300 mb-1.5">
+                            מיקום כתוביות
+                          </label>
+                          <select
+                            value={rerenderPosition}
+                            onChange={(ev) => setRerenderPosition(ev.target.value)}
+                            disabled={
+                              rerenderSubmitting || statusPayload?.ugc_status === 'rendering_captions'
+                            }
+                            className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2.5 text-sm outline-none disabled:opacity-60"
+                          >
+                            {UGC_RERENDER_POSITIONS.map((opt) => (
+                              <option key={opt.value} value={opt.value}>
+                                {opt.label}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                        <div>
+                          <label className="block text-xs font-medium text-slate-600 dark:text-slate-300 mb-1.5">
+                            גופן (פונט)
+                          </label>
+                          <select
+                            value={rerenderFont}
+                            onChange={(ev) => setRerenderFont(ev.target.value)}
+                            disabled={
+                              rerenderSubmitting || statusPayload?.ugc_status === 'rendering_captions'
+                            }
+                            className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2.5 text-sm outline-none disabled:opacity-60"
+                          >
+                            {UGC_RERENDER_FONTS.map((opt) => (
+                              <option key={opt.value} value={opt.value}>
+                                {opt.label}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                      </div>
+                      <div>
+                        <label className="block text-xs font-medium text-slate-600 dark:text-slate-300 mb-1.5">
+                          צבע מותג <span className="text-slate-400 font-normal">(#RRGGBB, אופציונלי)</span>
+                        </label>
+                        <input
+                          type="text"
+                          value={draftBrandColor}
+                          onChange={(ev) => setDraftBrandColor(ev.target.value)}
+                          disabled={
+                            rerenderSubmitting || statusPayload?.ugc_status === 'rendering_captions'
+                          }
+                          placeholder="#7C3AED"
+                          className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2.5 text-sm outline-none disabled:opacity-60"
+                          dir="ltr"
+                          maxLength={32}
+                        />
+                      </div>
+                      {rerenderError && (
+                        <div
+                          role="alert"
+                          className="rounded-xl border border-red-200 dark:border-red-900/50 bg-red-50 dark:bg-red-950/40 px-3 py-2 text-xs text-red-800 dark:text-red-200"
+                        >
+                          {rerenderError}
+                        </div>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => void handleUgcRerender()}
+                        disabled={
+                          rerenderSubmitting || statusPayload?.ugc_status === 'rendering_captions'
+                        }
+                        className="w-full rounded-xl border border-violet-300 dark:border-violet-700 bg-violet-50 dark:bg-violet-950/50 px-4 py-3 text-sm font-semibold text-violet-900 dark:text-violet-100 hover:bg-violet-100 dark:hover:bg-violet-900/40 disabled:opacity-50 inline-flex items-center justify-center gap-2"
+                      >
+                        {(rerenderSubmitting || statusPayload?.ugc_status === 'rendering_captions') && (
+                          <Spinner className="!size-4 border-violet-400/40 border-t-violet-600" />
+                        )}
+                        {statusPayload?.ugc_status === 'rendering_captions'
+                          ? 'מרנדר מחדש…'
+                          : rerenderSubmitting
+                            ? 'שולח…'
+                            : 'רינדור מחדש'}
+                      </button>
+                    </div>
+                  )}
                 </div>
               )}
             </section>
