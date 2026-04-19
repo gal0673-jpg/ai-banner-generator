@@ -201,7 +201,7 @@ export default function AvatarStudio() {
   const [productUploading, setProductUploading] = useState(false)
 
   const hydratedScriptKeyRef = useRef('')
-  const [rerenderSpeed, setRerenderSpeed] = useState(1)
+  const [rerenderSpeed, setRerenderSpeed] = useState(1.15)
   const [rerenderAnimation, setRerenderAnimation] = useState('pop')
   const [rerenderPosition, setRerenderPosition] = useState('bottom')
   const [rerenderFont, setRerenderFont] = useState('heebo')
@@ -225,7 +225,7 @@ export default function AvatarStudio() {
   useEffect(() => {
     hydratedScriptKeyRef.current = ''
     setDraftBrandColor('')
-    setRerenderSpeed(1)
+    setRerenderSpeed(1.15)
     setRerenderAnimation('pop')
     setRerenderPosition('bottom')
     setRerenderFont('heebo')
@@ -247,7 +247,8 @@ export default function AvatarStudio() {
     const rawSf = Number(statusPayload?.ugc_speed_factor)
     const nearest = UGC_RERENDER_SPEEDS.map((x) => x.value).reduce((best, v) =>
       Math.abs(v - rawSf) < Math.abs(best - rawSf) ? v : best,
-    1)
+    1.15,
+    )
     setRerenderSpeed(nearest)
     setDraftBrandColor(typeof statusPayload?.brand_color === 'string' ? statusPayload.brand_color.trim() : '')
   }, [

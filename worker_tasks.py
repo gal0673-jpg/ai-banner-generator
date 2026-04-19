@@ -31,7 +31,7 @@ def _finalize_ugc_with_composite(
     task_id: str,
     video_url: str,
     ugc_script: dict | None = None,
-    speed_factor: float = 1.0,
+    speed_factor: float = 1.15,
 ) -> None:
     """Persist provider URL, run optional FFmpeg polish, then drive Remotion caption render.
 
@@ -726,7 +726,7 @@ def re_render_ugc_task(self: BannerGenerationTask, task_id: str) -> None:
             ugc_error="re_render_ugc_task: ugc_raw_video_url is missing.",
         )
         return
-    sf = float(row.ugc_speed_factor) if row.ugc_speed_factor is not None else 1.0
+    sf = float(row.ugc_speed_factor) if row.ugc_speed_factor is not None else 1.15
     logger.info(
         "[re_render_ugc_task] task_id=%s  speed_factor=%s  scenes=%d",
         task_id,
