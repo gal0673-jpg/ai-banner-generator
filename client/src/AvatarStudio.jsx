@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
-import api, { API_BASE_URL, API_BASE_URL_DISPLAY } from './api.js'
+import api, { API_BASE_URL, API_BASE_URL_DISPLAY, toAbsoluteApiUrl } from './api.js'
 import { useAuth } from './AuthContext.jsx'
 
 function axiosErrorMessage(err) {
@@ -192,6 +192,7 @@ export default function AvatarStudio() {
   const [avatarId, setAvatarId] = useState(DEFAULT_HEYGEN_ID)
   const [voiceId, setVoiceId] = useState('')
   const [videoLength, setVideoLength] = useState('15s')
+  const [videoFitMode, setVideoFitMode] = useState('crop')
   const [websiteUrl, setWebsiteUrl] = useState('')
   const [logoUrl, setLogoUrl] = useState('')
   const [productImageUrl, setProductImageUrl] = useState('')
@@ -208,6 +209,8 @@ export default function AvatarStudio() {
   const [draftBrandColor, setDraftBrandColor] = useState('')
   const [rerenderSubmitting, setRerenderSubmitting] = useState(false)
   const [rerenderError, setRerenderError] = useState(null)
+  /** Which aspect ratio re-render is in flight (for progressive 1:1 / 16:9 buttons). */
+  const [pendingAspectRatio, setPendingAspectRatio] = useState(null)
 
   const [taskId, setTaskId] = useState(null)
   const [statusPayload, setStatusPayload] = useState(null)
@@ -229,8 +232,15 @@ export default function AvatarStudio() {
     setRerenderAnimation('pop')
     setRerenderPosition('bottom')
     setRerenderFont('heebo')
+    setVideoFitMode('crop')
     setRerenderError(null)
   }, [taskId])
+
+  useEffect(() => {
+    if (statusPayload?.ugc_status === 'completed' || statusPayload?.ugc_status === 'failed') {
+      setPendingAspectRatio(null)
+    }
+  }, [statusPayload?.ugc_status])
 
   useLayoutEffect(() => {
     if (statusPayload?.ugc_status !== 'completed' || !taskId) return
@@ -251,6 +261,8 @@ export default function AvatarStudio() {
     )
     setRerenderSpeed(nearest)
     setDraftBrandColor(typeof statusPayload?.brand_color === 'string' ? statusPayload.brand_color.trim() : '')
+    const rawFm = statusPayload?.ugc_video_fit_mode
+    setVideoFitMode(rawFm === 'blur' || rawFm === 'crop' ? rawFm : 'crop')
   }, [
     taskId,
     statusPayload?.ugc_status,
@@ -260,6 +272,7 @@ export default function AvatarStudio() {
     statusPayload?.ugc_raw_video_url,
     statusPayload?.ugc_speed_factor,
     statusPayload?.brand_color,
+    statusPayload?.ugc_video_fit_mode,
   ])
 
   useEffect(() => {
@@ -297,16 +310,19 @@ export default function AvatarStudio() {
     }
   }, [taskId, sseBump])
 
-  const handleUgcRerender = async () => {
+  const handleUgcRerender = async (aspectRatio = '9:16') => {
     if (!taskId) return
     setRerenderError(null)
     setRerenderSubmitting(true)
+    setPendingAspectRatio(aspectRatio)
     try {
       const body = {
         speed_factor: rerenderSpeed,
         caption_animation: rerenderAnimation,
         caption_position: rerenderPosition,
         caption_font: rerenderFont,
+        aspect_ratio: aspectRatio,
+        video_fit_mode: videoFitMode,
       }
       const lu = logoUrl.trim()
       if (lu) body.logo_url = lu
@@ -322,6 +338,7 @@ export default function AvatarStudio() {
       await api.post(`/tasks/${taskId}/ugc/re-render`, body)
     } catch (err) {
       setRerenderError(axiosErrorMessage(err))
+      setPendingAspectRatio(null)
     } finally {
       setRerenderSubmitting(false)
     }
@@ -354,7 +371,7 @@ export default function AvatarStudio() {
         throw new Error(res.statusText || 'ההעלאה נכשלה')
       }
       const u = typeof data?.url === 'string' ? data.url.trim() : ''
-      if (u) setUrl(u)
+      if (u) setUrl(toAbsoluteApiUrl(u))
     } catch (err) {
       setSubmitError(axiosErrorMessage(err))
     } finally {
@@ -372,6 +389,7 @@ export default function AvatarStudio() {
         provider,
         avatar_id: avatarId.trim(),
         video_length: videoLength,
+        video_fit_mode: videoFitMode,
       }
       const v = voiceId.trim()
       if (v) body.voice_id = v
@@ -403,6 +421,21 @@ export default function AvatarStudio() {
   }
 
   const formLocked = isPosting || isPolling
+
+  const ugcFinal1_1 =
+    typeof statusPayload?.ugc_final_video_url_1_1 === 'string'
+      ? statusPayload.ugc_final_video_url_1_1.trim()
+      : ''
+  const ugcFinal16_9 =
+    typeof statusPayload?.ugc_final_video_url_16_9 === 'string'
+      ? statusPayload.ugc_final_video_url_16_9.trim()
+      : ''
+  const ugcPipelineBusy = ['processing_video', 'rendering_captions'].includes(statusPayload?.ugc_status)
+  const formatAspectLoading = (ar) =>
+    pendingAspectRatio === ar &&
+    (rerenderSubmitting ||
+      statusPayload?.ugc_status === 'processing_video' ||
+      statusPayload?.ugc_status === 'rendering_captions')
 
   const statusChip = useMemo(() => {
     const s = statusPayload?.status
@@ -639,6 +672,21 @@ export default function AvatarStudio() {
 
             <div>
               <label className="block text-xs font-medium text-slate-600 dark:text-slate-300 mb-1.5">
+                אופן תצוגת וידאו
+              </label>
+              <select
+                value={videoFitMode}
+                onChange={(ev) => setVideoFitMode(ev.target.value)}
+                disabled={formLocked}
+                className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2.5 text-sm outline-none disabled:opacity-60"
+              >
+                <option value="crop">מלא מסך (Crop)</option>
+                <option value="blur">התאמה עם רקע מטושטש (Blur)</option>
+              </select>
+            </div>
+
+            <div>
+              <label className="block text-xs font-medium text-slate-600 dark:text-slate-300 mb-1.5">
                 כתובת לאתר בווידאו{' '}
                 <span className="text-slate-400 font-normal">(אופציונלי)</span>
               </label>
@@ -821,7 +869,9 @@ export default function AvatarStudio() {
                     )}
                     {ugcVideoTier(statusPayload) === 'composited' && (
                       <span className="rounded-full bg-sky-100 dark:bg-sky-950/70 px-2.5 py-0.5 text-[11px] font-semibold text-sky-700 dark:text-sky-300 ring-1 ring-sky-200/80 dark:ring-sky-800/60">
-                        רקע מטושטש (FFmpeg)
+                        {statusPayload?.ugc_video_fit_mode === 'blur'
+                          ? 'רקע מטושטש (FFmpeg)'
+                          : 'מלא מסך (FFmpeg)'}
                       </span>
                     )}
                     {ugcVideoTier(statusPayload) === 'raw' && (
@@ -894,6 +944,68 @@ export default function AvatarStudio() {
                     )}
                   </div>
 
+                  {statusPayload?.ugc_final_video_url?.trim() && (
+                    <div className="rounded-xl border border-slate-200/90 dark:border-slate-700/90 bg-slate-50/80 dark:bg-slate-950/40 px-4 py-3 space-y-3">
+                      <h4 className="text-xs font-semibold text-slate-700 dark:text-slate-200">
+                        פורמטים נוספים (לפיד ולמחשב)
+                      </h4>
+                      <p className="text-[11px] text-slate-500 dark:text-slate-400 leading-relaxed">
+                        לאחר שהווידאו האנכי (9:16) מוכן, ניתן ליצור כאן גרסאות ריבועיות או אופקיות — ללא יצירה מחדש
+                        ב-HeyGen.
+                      </p>
+                      <div className="flex flex-col sm:flex-row flex-wrap gap-2">
+                        {ugcFinal1_1 ? (
+                          <a
+                            href={ugcFinal1_1.startsWith('/') ? toAbsoluteApiUrl(ugcFinal1_1) : ugcFinal1_1}
+                            download
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="inline-flex items-center justify-center rounded-lg border border-emerald-300/80 dark:border-emerald-700/60 bg-emerald-50/90 dark:bg-emerald-950/50 px-3 py-2 text-xs font-medium text-emerald-800 dark:text-emerald-200 hover:bg-emerald-100 dark:hover:bg-emerald-900/40"
+                            dir="ltr"
+                          >
+                            הורד וידאו ריבועי
+                          </a>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => void handleUgcRerender('1:1')}
+                            disabled={ugcPipelineBusy || rerenderSubmitting}
+                            className="inline-flex items-center justify-center gap-2 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 px-3 py-2 text-xs font-medium text-slate-800 dark:text-slate-100 hover:bg-slate-50 dark:hover:bg-slate-700 disabled:opacity-50 min-h-[2.5rem]"
+                          >
+                            {formatAspectLoading('1:1') && (
+                              <Spinner className="!size-3.5 border-violet-400/40 border-t-violet-600" />
+                            )}
+                            {formatAspectLoading('1:1') ? 'מייצר...' : 'צור גרסה ריבועית (1:1)'}
+                          </button>
+                        )}
+                        {ugcFinal16_9 ? (
+                          <a
+                            href={ugcFinal16_9.startsWith('/') ? toAbsoluteApiUrl(ugcFinal16_9) : ugcFinal16_9}
+                            download
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="inline-flex items-center justify-center rounded-lg border border-sky-300/80 dark:border-sky-700/60 bg-sky-50/90 dark:bg-sky-950/50 px-3 py-2 text-xs font-medium text-sky-800 dark:text-sky-200 hover:bg-sky-100 dark:hover:bg-sky-900/40"
+                            dir="ltr"
+                          >
+                            הורד וידאו אופקי
+                          </a>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => void handleUgcRerender('16:9')}
+                            disabled={ugcPipelineBusy || rerenderSubmitting}
+                            className="inline-flex items-center justify-center gap-2 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 px-3 py-2 text-xs font-medium text-slate-800 dark:text-slate-100 hover:bg-slate-50 dark:hover:bg-slate-700 disabled:opacity-50 min-h-[2.5rem]"
+                          >
+                            {formatAspectLoading('16:9') && (
+                              <Spinner className="!size-3.5 border-violet-400/40 border-t-violet-600" />
+                            )}
+                            {formatAspectLoading('16:9') ? 'מייצר...' : 'צור גרסה אופקית (16:9)'}
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  )}
+
                   {Array.isArray(statusPayload?.ugc_script?.scenes) && statusPayload.ugc_script.scenes.length > 0 && (
                     <div className="mt-5 space-y-4 border-t border-slate-200 dark:border-slate-700 pt-5 text-right">
                       <h4 className="text-sm font-semibold text-slate-800 dark:text-slate-100">
@@ -904,6 +1016,20 @@ export default function AvatarStudio() {
                         ואז לרנדר שוב את שכבת הכיתוביות והעיצוב על אותו וידאו גלמי.
                       </p>
                       <div className="grid grid-cols-2 gap-4">
+                        <div className="col-span-2">
+                          <label className="block text-xs font-medium text-slate-600 dark:text-slate-300 mb-1.5">
+                            אופן תצוגת וידאו
+                          </label>
+                          <select
+                            value={videoFitMode}
+                            onChange={(ev) => setVideoFitMode(ev.target.value)}
+                            disabled={rerenderSubmitting || ugcPipelineBusy}
+                            className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2.5 text-sm outline-none disabled:opacity-60"
+                          >
+                            <option value="crop">מלא מסך (Crop)</option>
+                            <option value="blur">התאמה עם רקע מטושטש (Blur)</option>
+                          </select>
+                        </div>
                         <div>
                           <label className="block text-xs font-medium text-slate-600 dark:text-slate-300 mb-1.5">
                             מהירות וידאו
@@ -911,9 +1037,7 @@ export default function AvatarStudio() {
                           <select
                             value={String(rerenderSpeed)}
                             onChange={(ev) => setRerenderSpeed(Number(ev.target.value))}
-                            disabled={
-                              rerenderSubmitting || statusPayload?.ugc_status === 'rendering_captions'
-                            }
+                            disabled={rerenderSubmitting || ugcPipelineBusy}
                             className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2.5 text-sm outline-none disabled:opacity-60"
                           >
                             {UGC_RERENDER_SPEEDS.map((opt) => (
@@ -930,9 +1054,7 @@ export default function AvatarStudio() {
                           <select
                             value={rerenderAnimation}
                             onChange={(ev) => setRerenderAnimation(ev.target.value)}
-                            disabled={
-                              rerenderSubmitting || statusPayload?.ugc_status === 'rendering_captions'
-                            }
+                            disabled={rerenderSubmitting || ugcPipelineBusy}
                             className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2.5 text-sm outline-none disabled:opacity-60"
                           >
                             {UGC_RERENDER_ANIMATIONS.map((opt) => (
@@ -949,9 +1071,7 @@ export default function AvatarStudio() {
                           <select
                             value={rerenderPosition}
                             onChange={(ev) => setRerenderPosition(ev.target.value)}
-                            disabled={
-                              rerenderSubmitting || statusPayload?.ugc_status === 'rendering_captions'
-                            }
+                            disabled={rerenderSubmitting || ugcPipelineBusy}
                             className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2.5 text-sm outline-none disabled:opacity-60"
                           >
                             {UGC_RERENDER_POSITIONS.map((opt) => (
@@ -968,9 +1088,7 @@ export default function AvatarStudio() {
                           <select
                             value={rerenderFont}
                             onChange={(ev) => setRerenderFont(ev.target.value)}
-                            disabled={
-                              rerenderSubmitting || statusPayload?.ugc_status === 'rendering_captions'
-                            }
+                            disabled={rerenderSubmitting || ugcPipelineBusy}
                             className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2.5 text-sm outline-none disabled:opacity-60"
                           >
                             {UGC_RERENDER_FONTS.map((opt) => (
@@ -989,9 +1107,7 @@ export default function AvatarStudio() {
                           type="text"
                           value={draftBrandColor}
                           onChange={(ev) => setDraftBrandColor(ev.target.value)}
-                          disabled={
-                            rerenderSubmitting || statusPayload?.ugc_status === 'rendering_captions'
-                          }
+                          disabled={rerenderSubmitting || ugcPipelineBusy}
                           placeholder="#7C3AED"
                           className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2.5 text-sm outline-none disabled:opacity-60"
                           dir="ltr"
@@ -1008,16 +1124,14 @@ export default function AvatarStudio() {
                       )}
                       <button
                         type="button"
-                        onClick={() => void handleUgcRerender()}
-                        disabled={
-                          rerenderSubmitting || statusPayload?.ugc_status === 'rendering_captions'
-                        }
+                        onClick={() => void handleUgcRerender('9:16')}
+                        disabled={rerenderSubmitting || ugcPipelineBusy}
                         className="w-full rounded-xl border border-violet-300 dark:border-violet-700 bg-violet-50 dark:bg-violet-950/50 px-4 py-3 text-sm font-semibold text-violet-900 dark:text-violet-100 hover:bg-violet-100 dark:hover:bg-violet-900/40 disabled:opacity-50 inline-flex items-center justify-center gap-2"
                       >
-                        {(rerenderSubmitting || statusPayload?.ugc_status === 'rendering_captions') && (
+                        {(rerenderSubmitting || ugcPipelineBusy) && (
                           <Spinner className="!size-4 border-violet-400/40 border-t-violet-600" />
                         )}
-                        {statusPayload?.ugc_status === 'rendering_captions'
+                        {ugcPipelineBusy
                           ? 'מרנדר מחדש…'
                           : rerenderSubmitting
                             ? 'שולח…'

@@ -3,8 +3,10 @@
 Triggered from Celery after HeyGen/D-ID returns a CDN URL.
 
 FFmpeg step (try_composite_pip_blur):
-  Converts the raw horizontal video to a 9:16 vertical format with a blurred
-  background.  On failure, callers keep ``ugc_raw_video_url`` only.
+  Converts the raw provider video to the target aspect (e.g. 9:16).  ``fit_mode=crop``
+  uses scale-to-cover plus centered crop; ``fit_mode=blur`` uses the legacy blurred
+  background + letterboxed foreground overlay.  On failure, callers keep
+  ``ugc_raw_video_url`` only.
 
 Remotion step (call_video_engine_render_ugc):
   Sends the raw CDN video + ugc_script to the Node.js video engine's /render-ugc
@@ -18,7 +20,7 @@ Env:
   VIDEO_ENGINE_URL          — base URL of the Remotion video engine
                                (default: ``http://127.0.0.1:9000``).
   VIDEO_ENGINE_RENDER_UGC_TIMEOUT — HTTP timeout in seconds for /render-ugc
-                               (default: 600; set to 960 in .env for blur-bg renders).
+                               (default: 600; set to 960 in .env for long UGC renders).
 """
 
 from __future__ import annotations
@@ -34,8 +36,47 @@ import requests
 
 logger = logging.getLogger(__name__)
 
-_COMPOSITED_FILENAME = "ugc_composited.mp4"
 _DOWNLOAD_FILENAME = "ugc_provider_source.mp4"
+
+
+def normalize_ugc_aspect_ratio(aspect_ratio: str | None) -> str:
+    """Whitelist ``1:1`` / ``16:9`` / ``9:16``; anything else → ``9:16`` (vertical default)."""
+    if not isinstance(aspect_ratio, str):
+        return "9:16"
+    a = aspect_ratio.strip()
+    if a in ("1:1", "16:9", "9:16"):
+        return a
+    return "9:16"
+
+
+def composited_filename_for_aspect_ratio(aspect_ratio: str = "9:16") -> str:
+    """Local FFmpeg output name under the task work dir (9:16 keeps legacy ``ugc_composited.mp4``)."""
+    ar = normalize_ugc_aspect_ratio(aspect_ratio)
+    if ar == "1:1":
+        return "ugc_composited_1_1.mp4"
+    if ar == "16:9":
+        return "ugc_composited_16_9.mp4"
+    return "ugc_composited.mp4"
+
+
+def _ugc_canvas_width_height(aspect_ratio: str | None) -> tuple[int, int]:
+    """FFmpeg output width × height for UGC crop-to-fill composite (strict mapping)."""
+    ar = normalize_ugc_aspect_ratio(aspect_ratio)
+    if ar == "1:1":
+        return (1080, 1080)
+    if ar == "16:9":
+        return (1920, 1080)
+    return (1080, 1920)
+
+
+def _ugc_script_scrub_reserved(script: dict | None) -> dict | None:
+    """Drop keys that could confuse tooling if GPT echoed them inside ``ugc_script``."""
+    if not isinstance(script, dict):
+        return script
+    reserved = frozenset({"aspect_ratio", "aspectRatio"})
+    if not reserved.intersection(script.keys()):
+        return script
+    return {k: v for k, v in script.items() if k not in reserved}
 
 
 def _ffmpeg_binary() -> str:
@@ -69,12 +110,16 @@ def try_composite_pip_blur(
     source_video_url: str,
     work_dir: Path,
     speed_factor: float = 1.0,
+    aspect_ratio: str = "9:16",
+    fit_mode: str = "crop",
 ) -> tuple[str | None, str | None]:
-    """Download provider MP4, run blur-bg PiP composite, write ``ugc_composited.mp4``.
+    """Download provider MP4, run FFmpeg composite, write aspect-specific composited MP4.
 
     Args:
         speed_factor: Playback rate for video+audio (1.0 = unchanged). Clamped to 0.5–2.0
             for FFmpeg ``atempo`` compatibility.
+        aspect_ratio: ``9:16`` (1080×1920), ``1:1`` (1080×1080), or ``16:9`` (1920×1080).
+        fit_mode: ``crop`` (fill frame, center crop) or ``blur`` (PiP on blurred bg).
 
     Returns:
         ``(relative_url, note)`` — relative_url like ``/task-files/<id>/ugc_composited.mp4``,
@@ -85,15 +130,28 @@ def try_composite_pip_blur(
         if shutil.which(bin_name) is None:
             return None, (
                 "FFmpeg is not installed on the server. Showing raw horizontal video. "
-                "To get the vertical 9:16 blurred-background effect, please install FFmpeg "
+                "To get the vertical 9:16 crop-to-fill composite, please install FFmpeg "
                 f"and set UGC_FFMPEG_BINARY to its full path (e.g. C:/laragon/ffpm/bin/ffmpeg.exe). "
                 f"[looked for: {bin_name!r}]"
             )
         return None, "UGC composite disabled (UGC_FFMPEG_COMPOSITE)."
 
     ffmpeg = _ffmpeg_binary()
-    out_path = work_dir / _COMPOSITED_FILENAME
+    out_name = composited_filename_for_aspect_ratio(aspect_ratio)
+    out_path = work_dir / out_name
     dl_path = work_dir / _DOWNLOAD_FILENAME
+    w, h = _ugc_canvas_width_height(aspect_ratio)
+    fm = (fit_mode or "crop").strip().lower()
+    if fm not in ("crop", "blur"):
+        fm = "crop"
+    logger.info(
+        "[ugc_composite] task_id=%s aspect=%s canvas=%d×%d fit=%s",
+        task_id,
+        normalize_ugc_aspect_ratio(aspect_ratio),
+        w,
+        h,
+        fm,
+    )
 
     try:
         logger.info(
@@ -105,15 +163,7 @@ def try_composite_pip_blur(
         logger.warning("[ugc_composite] task_id=%s %s", task_id, msg)
         return None, msg
 
-    # COVER-mode blur-bg composite (works for both portrait AND landscape sources).
-    #
-    # Background: `increase` + `crop` → cover-fills 1080×1920 without letterbox bars.
-    #
-    # Foreground: `decrease` → fits the full video within 1080×1920 without any
-    # cropping, then centred exactly in the middle of the canvas.  This preserves
-    # the avatar's head/forehead regardless of the source aspect ratio.
-    #
-    # speed_factor: playback rate (e.g. 1.15 = 15% faster).  PTS/speed_factor compresses
+    # speed_factor: playback rate (e.g. 1.15 = 15% faster).  setpts=PTS/sf compresses
     # the video timeline; atempo matches audio (FFmpeg atempo supports 0.5–2.0 per stage).
     sf = float(speed_factor)
     if sf <= 0 or sf != sf:  # NaN
@@ -121,18 +171,31 @@ def try_composite_pip_blur(
     else:
         sf = min(2.0, max(0.5, sf))
     use_speed = abs(sf - 1.0) > 1e-3
-    overlay_out = (
-        f"[bg_blurred][fg_scaled]overlay=(W-w)/2:(H-h)/2:shortest=1,setpts=PTS/{sf}[outv]"
-        if use_speed
-        else "[bg_blurred][fg_scaled]overlay=(W-w)/2:(H-h)/2:shortest=1[outv]"
-    )
-    fc = (
-        "[0:v]scale=1080:1920:force_original_aspect_ratio=increase,"
-        "crop=1080:1920,setsar=1,split=2[bg][fg_orig];"
-        "[bg]gblur=sigma=25[bg_blurred];"
-        "[fg_orig]scale=1080:1920:force_original_aspect_ratio=decrease[fg_scaled];"
-        + overlay_out
-    )
+
+    if fm == "crop":
+        if use_speed:
+            fc = (
+                f"[0:v]scale={w}:{h}:force_original_aspect_ratio=increase,"
+                f"crop={w}:{h}:(iw-ow)/2:(ih-oh)/2,setsar=1,setpts=PTS/{sf}[outv]"
+            )
+        else:
+            fc = (
+                f"[0:v]scale={w}:{h}:force_original_aspect_ratio=increase,"
+                f"crop={w}:{h}:(iw-ow)/2:(ih-oh)/2,setsar=1[outv]"
+            )
+    else:
+        overlay_out = (
+            f"[bg_blurred][fg_scaled]overlay=(W-w)/2:(H-h)/2:shortest=1,setpts=PTS/{sf}[outv]"
+            if use_speed
+            else "[bg_blurred][fg_scaled]overlay=(W-w)/2:(H-h)/2:shortest=1[outv]"
+        )
+        fc = (
+            f"[0:v]scale={w}:{h}:force_original_aspect_ratio=increase,"
+            f"crop={w}:{h},setsar=1,split=2[bg][fg_orig];"
+            "[bg]gblur=sigma=25[bg_blurred];"
+            f"[fg_orig]scale={w}:{h}:force_original_aspect_ratio=decrease[fg_scaled];"
+            + overlay_out
+        )
 
     def _run_ffmpeg(with_audio: bool) -> subprocess.CompletedProcess[str]:
         c = [
@@ -201,7 +264,7 @@ def try_composite_pip_blur(
         logger.error("[ugc_composite] task_id=%s %s", task_id, msg)
         return None, msg
 
-    rel = f"/task-files/{task_id}/{_COMPOSITED_FILENAME}"
+    rel = f"/task-files/{task_id}/{out_name}"
     logger.info("[ugc_composite] task_id=%s OK → %s", task_id, rel)
     return rel, None
 
@@ -255,6 +318,7 @@ def call_video_engine_render_ugc(
     logo_url: str | None = None,
     product_image_url: str | None = None,
     brand_color: str | None = None,
+    aspect_ratio: str = "9:16",
 ) -> tuple[str | None, str | None]:
     """POST to the Node.js video engine's /render-ugc endpoint.
 
@@ -275,10 +339,14 @@ def call_video_engine_render_ugc(
     endpoint = _video_engine_render_ugc_url()
     timeout = int(os.environ.get("VIDEO_ENGINE_RENDER_UGC_TIMEOUT", "600"))
 
+    ar = normalize_ugc_aspect_ratio(aspect_ratio)
+    script_out = _ugc_script_scrub_reserved(ugc_script) if isinstance(ugc_script, dict) else ugc_script
+
     payload: dict = {
         "task_id": task_id,
         "raw_video_url": raw_video_url,
-        "ugc_script": ugc_script,
+        "ugc_script": script_out,
+        "aspect_ratio": ar,
     }
     if bgm_url:
         payload["bgm_url"] = bgm_url
@@ -292,11 +360,12 @@ def call_video_engine_render_ugc(
         payload["brand_color"] = brand_color
 
     logger.info(
-        "[ugc_render] task_id=%s  POSTing to %s  scenes=%d  duration=%ss",
+        "[ugc_render] task_id=%s  POSTing to %s  aspect=%s  scenes=%d  duration=%ss",
         task_id,
         endpoint,
-        len(ugc_script.get("scenes") or []),
-        ugc_script.get("estimated_duration_seconds", "?"),
+        ar,
+        len((script_out or {}).get("scenes") or []),
+        (script_out or {}).get("estimated_duration_seconds", "?"),
     )
 
     try:

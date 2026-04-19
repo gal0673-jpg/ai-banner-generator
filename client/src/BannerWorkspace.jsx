@@ -169,6 +169,7 @@ export default function BannerWorkspace() {
   const [ugcVoiceId, setUgcVoiceId] = useState('')
   const [ugcCustomScript, setUgcCustomScript] = useState('')
   const [ugcWebsiteUrl, setUgcWebsiteUrl] = useState('')
+  const [ugcVideoFitMode, setUgcVideoFitMode] = useState('crop')
   const [ugcPosting, setUgcPosting] = useState(false)
   const [ugcError, setUgcError] = useState(null)
   // Tracks the taskId for which we've already initialised videoHook from the
@@ -471,6 +472,7 @@ export default function BannerWorkspace() {
       }
       const wu = ugcWebsiteUrl.trim()
       if (wu) body.website_url = wu
+      body.video_fit_mode = ugcVideoFitMode
       const { data } = await api.post('/generate-ugc', body)
       const id = data?.task_id
       if (!id) throw new Error('לא התקבל מזהה משימה מהשרת')
@@ -887,6 +889,24 @@ export default function BannerWorkspace() {
                       autoComplete="off"
                       maxLength={512}
                     />
+                  </div>
+                  <div>
+                    <label
+                      htmlFor="bw-ugc-video-fit"
+                      className="block text-xs font-medium text-slate-600 dark:text-slate-300 mb-1.5"
+                    >
+                      אופן תצוגת וידאו
+                    </label>
+                    <select
+                      id="bw-ugc-video-fit"
+                      value={ugcVideoFitMode}
+                      onChange={(ev) => setUgcVideoFitMode(ev.target.value)}
+                      disabled={formLocked}
+                      className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2.5 text-sm outline-none focus:border-violet-500 focus:ring-2 focus:ring-violet-500/20 disabled:opacity-60 transition"
+                    >
+                      <option value="crop">מלא מסך (Crop)</option>
+                      <option value="blur">התאמה עם רקע מטושטש (Blur)</option>
+                    </select>
                   </div>
                   <div>
                     <label

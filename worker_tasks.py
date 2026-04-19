@@ -20,6 +20,7 @@ from celery_app import celery_app
 from database import SessionLocal
 from main import crawl_from_url, quit_all_active_drivers, run_agency_banner_pipeline
 from models import BannerTask
+from services import ugc_composite_service
 from services.banner_service import TASKS_DIR, persist_task, rendered_banner_urls_for_task
 from services.video_service import video_engine_render_url, video_payload_for_engine
 
@@ -32,20 +33,23 @@ def _finalize_ugc_with_composite(
     video_url: str,
     ugc_script: dict | None = None,
     speed_factor: float = 1.15,
+    aspect_ratio: str = "9:16",
+    fit_mode: str | None = None,
 ) -> None:
     """Persist provider URL, run optional FFmpeg polish, then drive Remotion caption render.
 
     Pipeline (each step degrades gracefully on failure):
 
-    1. FFmpeg blur-bg PiP — converts the raw horizontal avatar video to a 9:16 vertical
-       format with a blurred background fill.  Saves ``ugc_composited.mp4`` locally and
-       sets ``ugc_composited_video_url``.  Skipped/failed → ``ugc_composited_video_url``
-       remains None and a note is recorded; pipeline continues.
+    1. FFmpeg composite — converts the raw avatar video to the requested aspect
+       (default 9:16 vertical) using ``ugc_video_fit_mode`` (crop-to-fill vs blur-bg PiP).
+       Saves a local composited MP4 and sets the matching ``ugc_composited_video_url``
+       column for that aspect.  Skipped/failed → that column stays None and a note is
+       recorded; pipeline continues.
 
     2. Remotion caption render — POSTs ``raw_video_url`` + ``ugc_script`` to the Node.js
        video engine's ``/render-ugc`` endpoint.  Remotion overlays animated Hebrew captions
-       and writes a finished MP4.  The URL is persisted as ``ugc_final_video_url``.
-       Skipped (no script) / failed → ``ugc_final_video_url`` remains None; pipeline still
+       and writes a finished MP4.  The URL is persisted on the aspect-specific ``ugc_final_*``
+       columns.  Skipped (no script) / failed → that aspect's final URL remains None; pipeline still
        completes successfully using whichever earlier step produced the best video.
 
     Status transitions:
@@ -53,19 +57,34 @@ def _finalize_ugc_with_composite(
       rendering_captions → completed  (normal path)
       rendering_captions → completed  (fallback: Remotion unavailable, best existing URL kept)
     """
-    from services import ugc_composite_service
-
+    ar = ugc_composite_service.normalize_ugc_aspect_ratio(aspect_ratio)
+    if fit_mode is not None:
+        _fm = str(fit_mode).strip().lower()
+        effective_fit = _fm if _fm in ("crop", "blur") else "crop"
+    else:
+        with SessionLocal() as db:
+            _row = db.get(BannerTask, task_uuid)
+        _raw = getattr(_row, "ugc_video_fit_mode", None) if _row is not None else None
+        _s = (_raw or "crop").strip().lower()
+        effective_fit = _s if _s in ("crop", "blur") else "crop"
     work_dir = TASKS_DIR / task_id
     work_dir.mkdir(parents=True, exist_ok=True)
 
-    # ── Step 1: FFmpeg blur-bg PiP ────────────────────────────────────────────
+    # ── Step 1: FFmpeg composite (crop-to-fill or blur-bg PiP) ───────────────
     persist_task(task_uuid, ugc_status="processing_video")
-    logger.info("[_finalize_ugc] task_id=%s  running FFmpeg composite…", task_id)
+    logger.info(
+        "[_finalize_ugc] task_id=%s  running FFmpeg composite (aspect=%s fit=%s)…",
+        task_id,
+        ar,
+        effective_fit,
+    )
     composited, note = ugc_composite_service.try_composite_pip_blur(
         task_id=task_id,
         source_video_url=video_url,
         work_dir=work_dir,
         speed_factor=speed_factor,
+        aspect_ratio=ar,
+        fit_mode=effective_fit,
     )
     if composited:
         logger.info("[_finalize_ugc] task_id=%s  FFmpeg composite OK → %s", task_id, composited)
@@ -74,12 +93,17 @@ def _finalize_ugc_with_composite(
 
     # Flush raw + composited URLs to DB before the potentially long Remotion render so the
     # task is already partially visible (and survives a crash in the next step).
-    persist_task(
-        task_uuid,
-        ugc_raw_video_url=video_url,
-        ugc_composited_video_url=composited,
-        ugc_composite_note=note,
-    )
+    _composite_flush: dict[str, Any] = {
+        "ugc_raw_video_url": video_url,
+        "ugc_composite_note": note,
+    }
+    if ar == "1:1":
+        _composite_flush["ugc_composited_video_url_1_1"] = composited
+    elif ar == "16:9":
+        _composite_flush["ugc_composited_video_url_16_9"] = composited
+    else:
+        _composite_flush["ugc_composited_video_url"] = composited
+    persist_task(task_uuid, **_composite_flush)
 
     # ── Step 2: Remotion caption render ──────────────────────────────────────
     scenes = (ugc_script or {}).get("scenes") or []
@@ -102,7 +126,7 @@ def _finalize_ugc_with_composite(
 
     # ── Choose best local video for Remotion input ────────────────────────────
     # Priority:
-    #   1. ugc_composited.mp4  — FFmpeg output: already 9:16, blur-bg, portrait-framed.
+    #   1. ugc_composited.mp4  — FFmpeg output: already target aspect (crop or blur-bg).
     #                            Remotion only needs to add captions (1 OffthreadVideo decode
     #                            per frame instead of 2 → roughly half the render time).
     #   2. ugc_provider_source.mp4 — raw landscape download; still local so fast, but
@@ -110,15 +134,17 @@ def _finalize_ugc_with_composite(
     #                            Remotion composition to gain this speed win).
     #   3. video_url (CDN)     — last resort if nothing was downloaded locally.
     _api_base = os.environ.get("VITE_API_URL", "http://127.0.0.1:8888").rstrip("/")
-    _composited_path = work_dir / "ugc_composited.mp4"
+    _composited_name = ugc_composite_service.composited_filename_for_aspect_ratio(ar)
+    _composited_path = work_dir / _composited_name
     _source_path = work_dir / "ugc_provider_source.mp4"
 
     if _composited_path.is_file() and _composited_path.stat().st_size > 1024:
-        render_video_url = f"{_api_base}/task-files/{task_id}/ugc_composited.mp4"
+        render_video_url = f"{_api_base}/task-files/{task_id}/{_composited_name}"
         logger.info(
             "[_finalize_ugc] task_id=%s  using FFmpeg-composited video for Remotion "
-            "(9:16 blur-bg, 1× decode): %s",
+            "(%s blur-bg, 1× decode): %s",
             task_id,
+            ar,
             render_video_url,
         )
     elif _source_path.is_file() and _source_path.stat().st_size > 1024:
@@ -196,6 +222,7 @@ def _finalize_ugc_with_composite(
         logo_url=logo_url,
         product_image_url=product_image_url,
         brand_color=brand_color,
+        aspect_ratio=ar,
     )
 
     if final_url:
@@ -204,12 +231,17 @@ def _finalize_ugc_with_composite(
             task_id,
             final_url,
         )
-        persist_task(
-            task_uuid,
-            ugc_final_video_url=final_url,
-            ugc_status="completed",
-            ugc_error=None,
-        )
+        _final_kw: dict[str, Any] = {
+            "ugc_status": "completed",
+            "ugc_error": None,
+        }
+        if ar == "1:1":
+            _final_kw["ugc_final_video_url_1_1"] = final_url
+        elif ar == "16:9":
+            _final_kw["ugc_final_video_url_16_9"] = final_url
+        else:
+            _final_kw["ugc_final_video_url"] = final_url
+        persist_task(task_uuid, **_final_kw)
     else:
         # Non-fatal: the task still completes; surface composited / raw video instead.
         # Build a combined note so both FFmpeg outcome and Remotion error are visible in the UI.
@@ -220,13 +252,18 @@ def _finalize_ugc_with_composite(
             task_id,
             render_note,
         )
-        persist_task(
-            task_uuid,
-            ugc_final_video_url=None,
-            ugc_composite_note=combined_note,
-            ugc_status="completed",
-            ugc_error=None,
-        )
+        _fail_final: dict[str, Any] = {
+            "ugc_composite_note": combined_note,
+            "ugc_status": "completed",
+            "ugc_error": None,
+        }
+        if ar == "1:1":
+            _fail_final["ugc_final_video_url_1_1"] = None
+        elif ar == "16:9":
+            _fail_final["ugc_final_video_url_16_9"] = None
+        else:
+            _fail_final["ugc_final_video_url"] = None
+        persist_task(task_uuid, **_fail_final)
 
 
 # ── Chrome leak-prevention: guarantee cleanup on any exit path ────────────────
@@ -710,7 +747,9 @@ def run_ugc_task(
     name="re_render_ugc_task",
     queue="video_queue",
 )
-def re_render_ugc_task(self: BannerGenerationTask, task_id: str) -> None:
+def re_render_ugc_task(
+    self: BannerGenerationTask, task_id: str, aspect_ratio: str = "9:16"
+) -> None:
     """Re-run FFmpeg composite + Remotion from ``ugc_raw_video_url`` (no HeyGen/D-ID)."""
     task_uuid = uuid.UUID(task_id)
     with SessionLocal() as db:
@@ -727,9 +766,11 @@ def re_render_ugc_task(self: BannerGenerationTask, task_id: str) -> None:
         )
         return
     sf = float(row.ugc_speed_factor) if row.ugc_speed_factor is not None else 1.15
+    ar = ugc_composite_service.normalize_ugc_aspect_ratio(aspect_ratio)
     logger.info(
-        "[re_render_ugc_task] task_id=%s  speed_factor=%s  scenes=%d",
+        "[re_render_ugc_task] task_id=%s  aspect_ratio=%s  speed_factor=%s  scenes=%d",
         task_id,
+        ar,
         sf,
         len((row.ugc_script or {}).get("scenes") or []),
     )
@@ -739,6 +780,7 @@ def re_render_ugc_task(self: BannerGenerationTask, task_id: str) -> None:
         raw,
         ugc_script=row.ugc_script,
         speed_factor=sf,
+        aspect_ratio=ar,
     )
 
 

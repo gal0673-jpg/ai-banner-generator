@@ -265,7 +265,7 @@ def _heygen_request_video(
                 },
             }
         ],
-        "dimension": {"width": 1080, "height": 1920},
+        "dimension": {"width": 1280, "height": 720},
     }
     print(
         f"Calling HeyGen: {_HEYGEN_VIDEO_GENERATE_URL} "

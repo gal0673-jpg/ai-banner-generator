@@ -86,11 +86,17 @@ class BannerTask(Base):
     ugc_composite_note: Mapped[str | None] = mapped_column(Text, nullable=True)
     #: Final Remotion-rendered MP4 with animated Hebrew captions from the video engine; null if skipped/failed.
     ugc_final_video_url: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    ugc_composited_video_url_1_1: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    ugc_final_video_url_1_1: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    ugc_composited_video_url_16_9: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    ugc_final_video_url_16_9: Mapped[str | None] = mapped_column(String(1024), nullable=True)
     #: Normalized site URL for Remotion overlay (no https/www), e.g. ``example.co.il``; optional.
     ugc_website_display: Mapped[str | None] = mapped_column(Text, nullable=True)
     ugc_status: Mapped[str | None] = mapped_column(String(64), nullable=True)
     ugc_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     #: Last FFmpeg / Remotion playback rate for UGC composite (1.0 = normal); optional.
     ugc_speed_factor: Mapped[float | None] = mapped_column(Float, nullable=True)
+    #: FFmpeg layout: ``crop`` (fill frame) vs ``blur`` (PiP on blurred background).
+    ugc_video_fit_mode: Mapped[str | None] = mapped_column(String(32), default="crop", nullable=True)
 
     user: Mapped["User"] = relationship("User", back_populates="tasks")

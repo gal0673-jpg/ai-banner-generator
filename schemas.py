@@ -86,6 +86,10 @@ class GenerateUGCRequest(BaseModel):
         default="30s",
         description="Target duration of the generated UGC video",
     )
+    video_fit_mode: Literal["crop", "blur"] = Field(
+        default="crop",
+        description="FFmpeg composite: crop-to-fill vs blurred-background PiP.",
+    )
     custom_script: str | None = Field(
         default=None,
         max_length=2000,
@@ -144,6 +148,10 @@ class GenerateAvatarStudioRequest(BaseModel):
     video_length: Literal["15s", "30s", "50s"] = Field(
         default="30s",
         description="Target video length for AI script pacing",
+    )
+    video_fit_mode: Literal["crop", "blur"] = Field(
+        default="crop",
+        description="FFmpeg composite: crop-to-fill vs blurred-background PiP.",
     )
     heygen_character_type: Literal["avatar", "talking_photo"] = Field(
         default="avatar",
@@ -210,6 +218,14 @@ class UgcReRenderRequest(BaseModel):
     caption_font: Literal["heebo", "rubik", "assistant"] | None = Field(
         default=None,
         description="Stored under ugc_script.style.font.",
+    )
+    aspect_ratio: Literal["9:16", "1:1", "16:9"] = Field(
+        default="9:16",
+        description="Output aspect for FFmpeg composite + Remotion (default 9:16 vertical).",
+    )
+    video_fit_mode: Literal["crop", "blur"] | None = Field(
+        default=None,
+        description="If set, updates stored FFmpeg fit mode before re-render.",
     )
 
 

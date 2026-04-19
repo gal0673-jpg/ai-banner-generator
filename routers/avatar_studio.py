@@ -56,6 +56,7 @@ def generate_avatar_studio(
         ugc_avatar_id=avatar_id,
         ugc_website_display=website_disp,
         ugc_status="pending",
+        ugc_video_fit_mode=body.video_fit_mode,
         error=None,
         headline=None,
         subhead=None,

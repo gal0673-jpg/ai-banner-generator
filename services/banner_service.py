@@ -70,10 +70,13 @@ def banner_task_status_dict(task_id: str, row: BannerTask) -> dict[str, Any]:
         "ugc_composited_video_url": row.ugc_composited_video_url,
         "ugc_composite_note": row.ugc_composite_note,
         "ugc_final_video_url": getattr(row, "ugc_final_video_url", None),
+        "ugc_final_video_url_1_1": getattr(row, "ugc_final_video_url_1_1", None),
+        "ugc_final_video_url_16_9": getattr(row, "ugc_final_video_url_16_9", None),
         "ugc_website_display": getattr(row, "ugc_website_display", None),
         "ugc_status": row.ugc_status,
         "ugc_error": row.ugc_error,
         "ugc_speed_factor": getattr(row, "ugc_speed_factor", None),
+        "ugc_video_fit_mode": getattr(row, "ugc_video_fit_mode", None),
     }
 
 

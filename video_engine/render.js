@@ -5,6 +5,11 @@ import { fileURLToPath } from "url";
 import { bundle } from "@remotion/bundler";
 import { renderMedia, selectComposition } from "@remotion/renderer";
 
+import {
+  normalizeUgcAspectRatio,
+  ugcCompositionDimensionsForRenderMedia,
+} from "./ugcAspectRatio.js";
+
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const COMPOSITION_ID = "Banner";
@@ -128,6 +133,7 @@ export function buildUgcInputProps(body) {
       typeof body.product_image_url === "string" && body.product_image_url.trim()
         ? resolveAssetUrl(body.product_image_url)
         : "",
+    aspect_ratio: normalizeUgcAspectRatio(body?.aspect_ratio),
   };
 }
 
@@ -246,12 +252,17 @@ export async function renderUgcVideo(inputProps, options = {}) {
     ...inputProps,
     bgm_url: hasCustomBgm ? String(inputProps.bgm_url).trim() : "",
     bundled_bgm: hasCustomBgm ? false : bundledBgm,
+    aspect_ratio: normalizeUgcAspectRatio(inputProps?.aspect_ratio),
     // Override duration to include end-card seconds
     ugc_script: {
       ...(inputProps.ugc_script ?? {}),
       estimated_duration_seconds: totalSeconds,
     },
   };
+
+  const { compositionWidth, compositionHeight } = ugcCompositionDimensionsForRenderMedia(
+    resolvedInputProps.aspect_ratio,
+  );
 
   const composition = await selectComposition({
     serveUrl,
@@ -269,6 +280,8 @@ export async function renderUgcVideo(inputProps, options = {}) {
     codec: "h264",
     outputLocation,
     inputProps: resolvedInputProps,
+    compositionWidth,
+    compositionHeight,
     logLevel: "warn",
     overwrite: true,
     // Limit frame-level parallelism — reduces Chrome RAM pressure significantly.

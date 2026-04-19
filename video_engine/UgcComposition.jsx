@@ -43,7 +43,9 @@ function resolveCaptionFontFamily(fontKey) {
 /** Frames per typed character for typewriter animation (see CaptionLayer). */
 const TYPEWRITER_FRAMES_PER_CHAR = 2;
 
-function getCaptionFillStyle(position) {
+/** @param {"top"|"center"|"bottom"} position @param {number} height composition height */
+function getCaptionFillStyle(position, height) {
+  const edgePad = Math.max(80, height * 0.1);
   const base = {
     display: "flex",
     flexDirection: "column",
@@ -54,7 +56,7 @@ function getCaptionFillStyle(position) {
     return {
       ...base,
       justifyContent: "flex-start",
-      paddingTop: 168,
+      paddingTop: edgePad,
       paddingBottom: 0,
     };
   }
@@ -69,7 +71,7 @@ function getCaptionFillStyle(position) {
   return {
     ...base,
     justifyContent: "flex-end",
-    paddingBottom: 168,
+    paddingBottom: edgePad,
     paddingTop: 0,
   };
 }
@@ -226,7 +228,7 @@ function WebsiteUrlOverlay({
   durationInFrames,
 }) {
   const frame = useCurrentFrame();
-  const { fps } = useVideoConfig();
+  const { fps, width, height } = useVideoConfig();
 
   const endCardFrames = Math.max(Math.round(END_CARD_SECONDS * fps), fps);
   const endCardStart = Math.max(0, durationInFrames - endCardFrames);
@@ -271,10 +273,10 @@ function WebsiteUrlOverlay({
 
   // Pill anchor (LTR): during speech, center horizontally so long hostnames are not clipped
   // by the left edge; keep CY below the safe top margin. End card still eases to (CX, CY).
-  const TL_CX = 1080 / 2;
-  const TL_CY = 102;
-  const CX = 1080 / 2;
-  const CY = 1920 * 0.44;
+  const TL_CX = width / 2;
+  const TL_CY = height * (102 / 1920);
+  const CX = width / 2;
+  const CY = height * 0.44;
   const cx = interpolate(t, [0, 1], [TL_CX, CX]);
   const cy = interpolate(t, [0, 1], [TL_CY, CY]);
 
@@ -463,7 +465,7 @@ function RtlText({ style, children }) {
  */
 function CaptionLayer({ text, brandHex = "#6366f1", stylePrefs = {} }) {
   const frame = useCurrentFrame();
-  const { fps } = useVideoConfig();
+  const { fps, height } = useVideoConfig();
 
   const position =
     stylePrefs.position === "top" ||
@@ -482,7 +484,7 @@ function CaptionLayer({ text, brandHex = "#6366f1", stylePrefs = {} }) {
   );
 
   const origin = captionTransformOrigin(position);
-  const fillStyle = getCaptionFillStyle(position);
+  const fillStyle = getCaptionFillStyle(position, height);
 
   const raw = String(text ?? "");
   const displayText =
@@ -576,9 +578,10 @@ function CaptionLayer({ text, brandHex = "#6366f1", stylePrefs = {} }) {
 }
 
 /**
- * Main UGC composition — 1080×1920 portrait (TikTok/Reels format).
+ * Main UGC composition — portrait 9:16 (1080×1920), square 1:1 (1080×1080), or 16:9 (1920×1080).
  *
  * Props:
+ *   aspect_ratio   — "9:16" | "1:1" | "16:9" (must match FFmpeg pre-compose & render.js dimensions).
  *   raw_video_url  — Full URL to the HeyGen/D-ID avatar video (CDN or local).
  *   ugc_script     — Validated script object from ugc_director.py:
  *                    { estimated_duration_seconds, scenes: [{ on_screen_text, … }] }
@@ -615,6 +618,7 @@ export function UgcComposition({
   logo_url = "",
   product_image_url = "",
   brand_hex = "#6366f1",
+  aspect_ratio = "9:16",
 }) {
   const { fps, durationInFrames } = useVideoConfig();
   const frame = useCurrentFrame();
@@ -859,4 +863,5 @@ export const defaultUgcProps = {
   website_display: "",
   logo_url: "",
   product_image_url: "",
+  aspect_ratio: "9:16",
 };

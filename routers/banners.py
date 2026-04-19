@@ -145,6 +145,7 @@ def generate_ugc(
         ugc_avatar_id=avatar_id,
         ugc_website_display=website_disp,
         ugc_status="pending",
+        ugc_video_fit_mode=body.video_fit_mode,
         # Banner-pipeline fields are not used for UGC tasks; left null.
         error=None,
         headline=None,
@@ -276,6 +277,8 @@ def ugc_re_render(
         row.product_image_url = (str(pi).strip() or None) if pi is not None else None
     if "speed_factor" in patch:
         row.ugc_speed_factor = patch["speed_factor"]
+    if "video_fit_mode" in patch and patch["video_fit_mode"] is not None:
+        row.ugc_video_fit_mode = patch["video_fit_mode"]
 
     _style_patch_keys = ("caption_animation", "caption_position", "caption_font")
     if any(k in patch for k in _style_patch_keys):
@@ -300,7 +303,9 @@ def ugc_re_render(
     db.commit()
 
     try:
-        re_render_ugc_task.apply_async(args=[task_id], queue="video_queue")
+        re_render_ugc_task.apply_async(
+            args=[task_id, body.aspect_ratio], queue="video_queue"
+        )
     except Exception as exc:
         persist_task(tid, ugc_status="failed", ugc_error=f"Could not queue UGC re-render: {exc}")
         raise HTTPException(

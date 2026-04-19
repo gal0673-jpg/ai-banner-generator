@@ -2,6 +2,7 @@ import { Composition, registerRoot } from "remotion";
 import { defaultBannerProps } from "./Composition1.jsx";
 import { UnifiedBannerComposition } from "./UnifiedComposition.jsx";
 import { UgcComposition, defaultUgcProps } from "./UgcComposition.jsx";
+import { normalizeUgcAspectRatio, ugcPixelDimensions } from "./ugcAspectRatio.js";
 
 const BASE_DURATION = 150;
 const HOOK_FRAMES = 60;
@@ -51,7 +52,11 @@ export const RemotionRoot = () => (
           UGC_FPS,
           Math.round((typeof seconds === "number" && seconds > 0 ? seconds : 30) * UGC_FPS),
         );
-        return { width: 1080, height: 1920, durationInFrames };
+        const ar = normalizeUgcAspectRatio(
+          props.aspect_ratio ?? props.aspectRatio,
+        );
+        const { width, height } = ugcPixelDimensions(ar);
+        return { width, height, durationInFrames };
       }}
     />
   </>

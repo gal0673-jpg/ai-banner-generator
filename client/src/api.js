@@ -21,6 +21,18 @@ function devProxyLabel() {
 export const API_BASE_URL_DISPLAY =
   API_BASE_URL || (import.meta.env.DEV ? devProxyLabel() : 'http://127.0.0.1:8888')
 
+/**
+ * Turn a server-relative path (e.g. `/task-files/temp/...`) into an absolute URL for
+ * Remotion / external fetches. Leaves `http(s)://` URLs unchanged.
+ */
+export function toAbsoluteApiUrl(pathOrUrl) {
+  const u = typeof pathOrUrl === 'string' ? pathOrUrl.trim() : ''
+  if (!u) return ''
+  if (/^https?:\/\//i.test(u)) return u
+  const base = (API_BASE_URL || 'http://127.0.0.1:8888').replace(/\/$/, '')
+  return u.startsWith('/') ? `${base}${u}` : `${base}/${u}`
+}
+
 export const api = axios.create({
   baseURL: API_BASE_URL,
   headers: {
