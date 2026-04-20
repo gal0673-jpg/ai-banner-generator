@@ -20,8 +20,8 @@ const MAX_QUEUE_DEPTH = Number(process.env.MAX_QUEUE_DEPTH) || 10;
 /** Hard wall-clock deadline for a single renderMedia call (milliseconds). */
 const RENDER_TIMEOUT_MS = Number(process.env.RENDER_TIMEOUT_MS) || 3 * 60 * 1000;
 /**
- * Separate deadline for UGC renders: long clips + 2× OffthreadVideo (blur-bg layer)
- * decode is much slower than a banner render.
+ * Separate deadline for UGC renders: long clips + OffthreadVideo decode is slower than
+ * a banner render.
  * Defaults to 25 min; override via UGC_RENDER_TIMEOUT_MS in .env.
  */
 const UGC_RENDER_TIMEOUT_MS = Number(process.env.UGC_RENDER_TIMEOUT_MS) || 25 * 60 * 1000;

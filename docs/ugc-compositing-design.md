@@ -5,7 +5,7 @@
 After HeyGen or D-ID returns a CDN URL, the Celery worker (see [`worker_tasks.py`](../worker_tasks.py) `_finalize_ugc_with_composite`) optionally:
 
 1. Downloads the provider MP4 into `tasks/<task_id>/ugc_provider_source.mp4`.
-2. Runs **FFmpeg** with a **blur-background + bottom picture-in-picture** layout (9:16), writing `tasks/<task_id>/ugc_composited.mp4`.
+2. Runs **FFmpeg** with **crop-to-fill** (scale + centered crop to the target aspect, e.g. 9:16), writing `tasks/<task_id>/ugc_composited.mp4`.
 3. Persists:
    - **`ugc_raw_video_url`** — original provider URL (unchanged).
    - **`ugc_composited_video_url`** — `/task-files/<task_id>/ugc_composited.mp4` when successful, else `null`.
@@ -27,7 +27,7 @@ Service: [`services/ugc_composite_service.py`](../services/ugc_composite_service
 | Topic | Decision |
 |-------|----------|
 | Raw vs final URL | **Both**: keep provider URL in `ugc_raw_video_url`; composited path in `ugc_composited_video_url` when FFmpeg succeeds. |
-| Background / B-roll source | **Automatic**: derived from the same video (blurred full-frame). No user uploads in this phase. |
+| Framing | **Crop-to-fill** from the provider video to the target canvas (9:16 / 1:1 / 16:9). |
 | Captions | **Not burned in** in-app. Use manual workflow or upload SRT to YouTube separately. |
 | Logo | **Not** overlaid automatically; add in editor or a later iteration. |
 
@@ -40,7 +40,7 @@ flowchart LR
   end
   subgraph composite [Worker optional]
     DL[Download MP4]
-    FF[ffmpeg pip_blur]
+    FF[ffmpeg crop-to-fill]
     C[ugc_composited_video_url]
     R --> DL --> FF --> C
   end
@@ -50,7 +50,7 @@ flowchart LR
 
 ## Manual workflow (off-tool, YouTube-grade)
 
-Use this when you want **B-roll, music, captions, bumpers**, or finer edit than the automatic blur-bg step.
+Use this when you want **B-roll, music, captions, bumpers**, or finer edit than the automatic FFmpeg step.
 
 1. **Download** the finished clip from the app (prefer **הורד** — uses composited file when available, else provider URL).
 2. **Editor** (CapCut, DaVinci Resolve, Premiere, etc.): import the MP4.

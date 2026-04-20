@@ -1,5 +1,5 @@
 AI BANNER CONTEXT EXPORT
-Generated (UTC): 2026-04-19 19:55:16 UTC
+Generated (UTC): 2026-04-20 08:01:16 UTC
 Project root: C:\laragon\www\python
 Output filename: ai-banner-context.txt
 
@@ -68,7 +68,8 @@ python/
 │   │   ├── h0c2d3e4f5g6_add_ugc_final_video_url.py
 │   │   ├── i1d2e3f4a5b6_add_ugc_website_display.py
 │   │   ├── j2e3f4a5b6c7_add_product_image_url_to_banner_tasks.py
-│   │   └── k3f4a5b6c7d8_add_ugc_speed_factor_to_banner_tasks.py
+│   │   ├── k3f4a5b6c7d8_add_ugc_speed_factor_to_banner_tasks.py
+│   │   └── m5b6c7d8e9f0_add_ugc_video_fit_mode_to_banner_tasks.py
 │   ├── env.py
 │   ├── README
 │   └── script.py.mako
@@ -132,7 +133,7 @@ python/
 │   ├── url_display.py
 │   └── video_service.py
 ├── tasks
-│   └── [149 task UUID folders — runtime outputs omitted]
+│   └── [156 task UUID folders — runtime outputs omitted]
 ├── video_engine
 │   ├── public
 │   │   ├── bgm.mp3
@@ -179,7 +180,7 @@ python/
 └── worker_tasks.py
 
 ================================================================================
-SECTION: PYTHON FILES (43)
+SECTION: PYTHON FILES (44)
 ================================================================================
 
 
@@ -1127,6 +1128,40 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     op.drop_column("banner_tasks", "ugc_speed_factor")
+
+
+================================================================================
+FILE: alembic/versions/m5b6c7d8e9f0_add_ugc_video_fit_mode_to_banner_tasks.py
+================================================================================
+
+"""Add ugc_video_fit_mode to banner_tasks (UGC crop vs blur composite).
+
+Revision ID: m5b6c7d8e9f0
+Revises: 8760fc55eaeb
+Create Date: 2026-04-19
+
+"""
+
+from typing import Sequence, Union
+
+import sqlalchemy as sa
+from alembic import op
+
+revision: str = "m5b6c7d8e9f0"
+down_revision: Union[str, Sequence[str], None] = "8760fc55eaeb"
+branch_labels: Union[str, Sequence[str], None] = None
+depends_on: Union[str, Sequence[str], None] = None
+
+
+def upgrade() -> None:
+    op.add_column(
+        "banner_tasks",
+        sa.Column("ugc_video_fit_mode", sa.String(length=32), nullable=True),
+    )
+
+
+def downgrade() -> None:
+    op.drop_column("banner_tasks", "ugc_video_fit_mode")
 
 
 ================================================================================
@@ -4461,7 +4496,7 @@ class BannerTask(Base):
     ugc_script: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     ugc_avatar_id: Mapped[str | None] = mapped_column(String(256), nullable=True)
     ugc_raw_video_url: Mapped[str | None] = mapped_column(String(1024), nullable=True)
-    #: Local /task-files/... MP4 after optional FFmpeg polish (blur-bg PiP); null if skipped/failed.
+    #: Local /task-files/... MP4 after optional FFmpeg crop-to-fill polish; null if skipped/failed.
     ugc_composited_video_url: Mapped[str | None] = mapped_column(String(1024), nullable=True)
     #: Non-fatal composite message (e.g. ffmpeg missing, fallback to raw only).
     ugc_composite_note: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -4477,6 +4512,8 @@ class BannerTask(Base):
     ugc_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     #: Last FFmpeg / Remotion playback rate for UGC composite (1.0 = normal); optional.
     ugc_speed_factor: Mapped[float | None] = mapped_column(Float, nullable=True)
+    #: Legacy column (unused); FFmpeg always uses crop-to-fill.
+    ugc_video_fit_mode: Mapped[str | None] = mapped_column(String(32), default="crop", nullable=True)
 
     user: Mapped["User"] = relationship("User", back_populates="tasks")
 
@@ -4747,6 +4784,7 @@ def generate_avatar_studio(
                 "director_notes": body.director_notes,
                 "spoken_script": body.spoken_script,
                 "heygen_character_type": body.heygen_character_type,
+                "aspect_ratio": body.aspect_ratio,
             },
             queue="video_queue",
         )
@@ -4950,6 +4988,7 @@ def generate_ugc(
                 "custom_script": custom_script,
                 "voice_id": voice_id,
                 "heygen_character_type": body.heygen_character_type,
+                "aspect_ratio": body.aspect_ratio,
             },
             queue="video_queue",
         )
@@ -5430,6 +5469,10 @@ class GenerateUGCRequest(BaseModel):
             "Stored without https:// and www."
         ),
     )
+    aspect_ratio: Literal["9:16", "16:9", "1:1"] = Field(
+        default="9:16",
+        description="HeyGen render dimensions + FFmpeg/Remotion composite target aspect.",
+    )
 
 
 class GenerateAvatarStudioRequest(BaseModel):
@@ -5489,6 +5532,10 @@ class GenerateAvatarStudioRequest(BaseModel):
         default=None,
         max_length=1024,
         description="Optional product image URL for Remotion (center / end card).",
+    )
+    aspect_ratio: Literal["9:16", "16:9", "1:1"] = Field(
+        default="9:16",
+        description="HeyGen render dimensions + FFmpeg/Remotion composite target aspect.",
     )
 
     @field_validator("creative_brief", "director_notes", "spoken_script", mode="before")
@@ -5683,8 +5730,8 @@ FILE: services/ugc_composite_service.py
 Triggered from Celery after HeyGen/D-ID returns a CDN URL.
 
 FFmpeg step (try_composite_pip_blur):
-  Converts the raw horizontal video to a 9:16 vertical format with a blurred
-  background.  On failure, callers keep ``ugc_raw_video_url`` only.
+  Converts the raw provider video to the target aspect (e.g. 9:16) using
+  scale-to-cover plus centered crop.  On failure, callers keep ``ugc_raw_video_url`` only.
 
 Remotion step (call_video_engine_render_ugc):
   Sends the raw CDN video + ugc_script to the Node.js video engine's /render-ugc
@@ -5698,7 +5745,7 @@ Env:
   VIDEO_ENGINE_URL          — base URL of the Remotion video engine
                                (default: ``http://127.0.0.1:9000``).
   VIDEO_ENGINE_RENDER_UGC_TIMEOUT — HTTP timeout in seconds for /render-ugc
-                               (default: 600; set to 960 in .env for blur-bg renders).
+                               (default: 600; set to 960 in .env for long UGC renders).
 """
 
 from __future__ import annotations
@@ -5738,7 +5785,7 @@ def composited_filename_for_aspect_ratio(aspect_ratio: str = "9:16") -> str:
 
 
 def _ugc_canvas_width_height(aspect_ratio: str | None) -> tuple[int, int]:
-    """FFmpeg canvas width × height for UGC blur-bg composite (strict mapping)."""
+    """FFmpeg output width × height for UGC crop-to-fill composite (strict mapping)."""
     ar = normalize_ugc_aspect_ratio(aspect_ratio)
     if ar == "1:1":
         return (1080, 1080)
@@ -5790,7 +5837,7 @@ def try_composite_pip_blur(
     speed_factor: float = 1.0,
     aspect_ratio: str = "9:16",
 ) -> tuple[str | None, str | None]:
-    """Download provider MP4, run blur-bg PiP composite, write aspect-specific composited MP4.
+    """Download provider MP4, run FFmpeg crop-to-fill composite, write aspect-specific MP4.
 
     Args:
         speed_factor: Playback rate for video+audio (1.0 = unchanged). Clamped to 0.5–2.0
@@ -5806,7 +5853,7 @@ def try_composite_pip_blur(
         if shutil.which(bin_name) is None:
             return None, (
                 "FFmpeg is not installed on the server. Showing raw horizontal video. "
-                "To get the vertical 9:16 blurred-background effect, please install FFmpeg "
+                "To get the vertical 9:16 crop-to-fill composite, please install FFmpeg "
                 f"and set UGC_FFMPEG_BINARY to its full path (e.g. C:/laragon/ffpm/bin/ffmpeg.exe). "
                 f"[looked for: {bin_name!r}]"
             )
@@ -5818,7 +5865,7 @@ def try_composite_pip_blur(
     dl_path = work_dir / _DOWNLOAD_FILENAME
     w, h = _ugc_canvas_width_height(aspect_ratio)
     logger.info(
-        "[ugc_composite] task_id=%s aspect=%s canvas=%d×%d",
+        "[ugc_composite] task_id=%s aspect=%s canvas=%d×%d (crop-to-fill)",
         task_id,
         normalize_ugc_aspect_ratio(aspect_ratio),
         w,
@@ -5835,15 +5882,7 @@ def try_composite_pip_blur(
         logger.warning("[ugc_composite] task_id=%s %s", task_id, msg)
         return None, msg
 
-    # COVER-mode blur-bg composite (works for both portrait AND landscape sources).
-    #
-    # Background: `increase` + `crop` → cover-fills 1080×1920 without letterbox bars.
-    #
-    # Foreground: `decrease` → fits the full video within 1080×1920 without any
-    # cropping, then centred exactly in the middle of the canvas.  This preserves
-    # the avatar's head/forehead regardless of the source aspect ratio.
-    #
-    # speed_factor: playback rate (e.g. 1.15 = 15% faster).  PTS/speed_factor compresses
+    # speed_factor: playback rate (e.g. 1.15 = 15% faster).  setpts=PTS/sf compresses
     # the video timeline; atempo matches audio (FFmpeg atempo supports 0.5–2.0 per stage).
     sf = float(speed_factor)
     if sf <= 0 or sf != sf:  # NaN
@@ -5851,18 +5890,17 @@ def try_composite_pip_blur(
     else:
         sf = min(2.0, max(0.5, sf))
     use_speed = abs(sf - 1.0) > 1e-3
-    overlay_out = (
-        f"[bg_blurred][fg_scaled]overlay=(W-w)/2:(H-h)/2:shortest=1,setpts=PTS/{sf}[outv]"
-        if use_speed
-        else "[bg_blurred][fg_scaled]overlay=(W-w)/2:(H-h)/2:shortest=1[outv]"
-    )
-    fc = (
-        f"[0:v]scale={w}:{h}:force_original_aspect_ratio=increase,"
-        f"crop={w}:{h},setsar=1,split=2[bg][fg_orig];"
-        "[bg]gblur=sigma=25[bg_blurred];"
-        f"[fg_orig]scale={w}:{h}:force_original_aspect_ratio=decrease[fg_scaled];"
-        + overlay_out
-    )
+
+    if use_speed:
+        fc = (
+            f"[0:v]scale={w}:{h}:force_original_aspect_ratio=increase,"
+            f"crop={w}:{h}:(iw-ow)/2:(ih-oh)/2,setsar=1,setpts=PTS/{sf}[outv]"
+        )
+    else:
+        fc = (
+            f"[0:v]scale={w}:{h}:force_original_aspect_ratio=increase,"
+            f"crop={w}:{h}:(iw-ow)/2:(ih-oh)/2,setsar=1[outv]"
+        )
 
     def _run_ffmpeg(with_audio: bool) -> subprocess.CompletedProcess[str]:
         c = [
@@ -6130,6 +6168,8 @@ from tenacity import (
     wait_exponential,
 )
 
+from services.ugc_composite_service import normalize_ugc_aspect_ratio
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -6152,6 +6192,16 @@ _HEYGEN_VIDEO_STATUS_URL = "https://api.heygen.com/v1/video_status.get"
 
 _POLL_INTERVAL_SECONDS = 10
 _MAX_POLL_ATTEMPTS = 72  # ~12 minutes ceiling; HeyGen can be slow on first renders
+
+
+def _heygen_dimension_for_aspect_ratio(aspect_ratio: str = "9:16") -> dict[str, int]:
+    """Match FFmpeg UGC canvas sizes (see ``ugc_composite_service._ugc_canvas_width_height``)."""
+    ar = normalize_ugc_aspect_ratio(aspect_ratio)
+    if ar == "1:1":
+        return {"width": 1080, "height": 1080}
+    if ar == "16:9":
+        return {"width": 1920, "height": 1080}
+    return {"width": 1080, "height": 1920}
 
 
 def _log_heygen_error_response(resp: requests.Response, context: str) -> None:
@@ -6323,6 +6373,7 @@ def _heygen_request_video(
     api_key: str,
     *,
     character_type: str = "avatar",
+    aspect_ratio: str = "9:16",
 ) -> str:
     """Submit a HeyGen /v2/video/generate job and return the ``video_id``.
 
@@ -6359,11 +6410,12 @@ def _heygen_request_video(
                 },
             }
         ],
-        "dimension": {"width": 1080, "height": 1920},
+        "dimension": _heygen_dimension_for_aspect_ratio(aspect_ratio),
     }
     print(
         f"Calling HeyGen: {_HEYGEN_VIDEO_GENERATE_URL} "
-        f"(character_type={character_type!r}, id={visual_id[:16]}…)"
+        f"(character_type={character_type!r}, id={visual_id[:16]}…, "
+        f"dimension={payload['dimension']})"
     )
     resp = requests.post(
         _HEYGEN_VIDEO_GENERATE_URL, json=payload, headers=headers, timeout=60
@@ -6468,6 +6520,7 @@ def generate_heygen_avatar_video(
     audio_bytes: bytes,
     *,
     character_type: str = "avatar",
+    aspect_ratio: str = "9:16",
 ) -> str:
     """Generate a HeyGen talking-avatar video from a pre-rendered audio track.
 
@@ -6479,6 +6532,7 @@ def generate_heygen_avatar_video(
         avatar_id:       HeyGen ``avatar_id`` or ``talking_photo_id`` (see *character_type*).
         character_type:  ``"avatar"`` or ``"talking_photo"`` — must match the ID kind from
                          `List All Avatars (V2) <https://docs.heygen.com/reference/list-avatars-v2>`_.
+        aspect_ratio:    ``"9:16"``, ``"16:9"``, or ``"1:1"`` — forwarded to HeyGen ``dimension``.
         audio_bytes: MP3 audio bytes (e.g. from :func:`generate_elevenlabs_audio`).
 
     Returns:
@@ -6523,7 +6577,11 @@ def generate_heygen_avatar_video(
     )
     try:
         video_id = _heygen_request_video(
-            avatar_id, audio_asset_id, api_key, character_type=character_type
+            avatar_id,
+            audio_asset_id,
+            api_key,
+            character_type=character_type,
+            aspect_ratio=aspect_ratio,
         )
     except UGCServiceError:
         raise  # already descriptive; propagate as-is
@@ -6746,6 +6804,7 @@ def dispatch_ugc_generation(
     visual_reference: str,
     voice_id: str | None = None,
     heygen_character_type: str | None = None,
+    aspect_ratio: str = "9:16",
 ) -> str:
     """Route UGC video generation to the correct provider pipeline.
 
@@ -6760,6 +6819,8 @@ def dispatch_ugc_generation(
         heygen_character_type: For ``heygen_elevenlabs`` only: ``"avatar"`` (default)
                           or ``"talking_photo"``. Must match the kind of id in
                           *visual_reference*. Ignored for ``d-id``.
+        aspect_ratio: For ``heygen_elevenlabs`` only: output frame aspect for HeyGen
+                          ``dimension`` (``"9:16"``, ``"16:9"``, ``"1:1"``). Ignored for ``d-id``.
 
     Returns:
         Final CDN video URL (``str``).
@@ -6778,7 +6839,10 @@ def dispatch_ugc_generation(
         el_voice_id = voice_id if voice_id else _ELEVENLABS_DEFAULT_VOICE_ID
         audio_bytes = generate_elevenlabs_audio(script_text, voice_id=el_voice_id)
         return generate_heygen_avatar_video(
-            visual_reference, audio_bytes, character_type=ct
+            visual_reference,
+            audio_bytes,
+            character_type=ct,
+            aspect_ratio=aspect_ratio,
         )
 
     if provider == "d-id":
@@ -7033,7 +7097,7 @@ def test_ugc_generation():
                     print("⚠️  וידאו Remotion לא נוצר (ראה הערה למטה).")
 
                 if comp:
-                    print(f"🎬 וידאו FFmpeg (blur-bg PiP):\n   {comp}")
+                    print(f"🎬 וידאו FFmpeg (crop-to-fill):\n   {comp}")
 
                 print(f"📹 וידאו גלמי (HeyGen/D-ID):\n   {raw}")
 
@@ -7612,6 +7676,7 @@ from celery_app import celery_app
 from database import SessionLocal
 from main import crawl_from_url, quit_all_active_drivers, run_agency_banner_pipeline
 from models import BannerTask
+from services import ugc_composite_service
 from services.banner_service import TASKS_DIR, persist_task, rendered_banner_urls_for_task
 from services.video_service import video_engine_render_url, video_payload_for_engine
 
@@ -7630,10 +7695,11 @@ def _finalize_ugc_with_composite(
 
     Pipeline (each step degrades gracefully on failure):
 
-    1. FFmpeg blur-bg PiP — converts the raw horizontal avatar video to the requested
-       aspect (default 9:16 vertical) with a blurred background fill.  Saves a local
-       composited MP4 and sets the matching ``ugc_composited_video_url`` column for that
-       aspect.  Skipped/failed → that column stays None and a note is recorded; pipeline continues.
+    1. FFmpeg composite — converts the raw avatar video to the requested aspect
+       (default 9:16 vertical) using crop-to-fill (scale + centered crop).
+       Saves a local composited MP4 and sets the matching ``ugc_composited_video_url``
+       column for that aspect.  Skipped/failed → that column stays None and a note is
+       recorded; pipeline continues.
 
     2. Remotion caption render — POSTs ``raw_video_url`` + ``ugc_script`` to the Node.js
        video engine's ``/render-ugc`` endpoint.  Remotion overlays animated Hebrew captions
@@ -7646,13 +7712,11 @@ def _finalize_ugc_with_composite(
       rendering_captions → completed  (normal path)
       rendering_captions → completed  (fallback: Remotion unavailable, best existing URL kept)
     """
-    from services import ugc_composite_service
-
     ar = ugc_composite_service.normalize_ugc_aspect_ratio(aspect_ratio)
     work_dir = TASKS_DIR / task_id
     work_dir.mkdir(parents=True, exist_ok=True)
 
-    # ── Step 1: FFmpeg blur-bg PiP ────────────────────────────────────────────
+    # ── Step 1: FFmpeg crop-to-fill composite ───────────────────────────────
     persist_task(task_uuid, ugc_status="processing_video")
     logger.info(
         "[_finalize_ugc] task_id=%s  running FFmpeg composite (aspect=%s)…",
@@ -7706,12 +7770,10 @@ def _finalize_ugc_with_composite(
 
     # ── Choose best local video for Remotion input ────────────────────────────
     # Priority:
-    #   1. ugc_composited.mp4  — FFmpeg output: already 9:16, blur-bg, portrait-framed.
+    #   1. ugc_composited.mp4  — FFmpeg output: already target aspect (crop-to-fill).
     #                            Remotion only needs to add captions (1 OffthreadVideo decode
     #                            per frame instead of 2 → roughly half the render time).
-    #   2. ugc_provider_source.mp4 — raw landscape download; still local so fast, but
-    #                            no blur-bg (the blur was intentionally removed from the
-    #                            Remotion composition to gain this speed win).
+    #   2. ugc_provider_source.mp4 — raw provider download; still local so fast.
     #   3. video_url (CDN)     — last resort if nothing was downloaded locally.
     _api_base = os.environ.get("VITE_API_URL", "http://127.0.0.1:8888").rstrip("/")
     _composited_name = ugc_composite_service.composited_filename_for_aspect_ratio(ar)
@@ -7722,7 +7784,7 @@ def _finalize_ugc_with_composite(
         render_video_url = f"{_api_base}/task-files/{task_id}/{_composited_name}"
         logger.info(
             "[_finalize_ugc] task_id=%s  using FFmpeg-composited video for Remotion "
-            "(%s blur-bg, 1× decode): %s",
+            "(%s, 1× decode): %s",
             task_id,
             ar,
             render_video_url,
@@ -8178,6 +8240,7 @@ def run_ugc_task(
     custom_script: str | None = None,
     voice_id: str | None = None,
     heygen_character_type: str | None = None,
+    aspect_ratio: str = "9:16",
 ) -> None:
     """End-to-end UGC video pipeline.
 
@@ -8203,9 +8266,16 @@ def run_ugc_task(
     work_dir = TASKS_DIR / task_id
     work_dir.mkdir(parents=True, exist_ok=True)
 
+    _ar = ugc_composite_service.normalize_ugc_aspect_ratio(aspect_ratio)
     logger.info(
-        "[run_ugc_task] task_id=%s  url=%s  avatar=%s  length=%s  provider=%s  voice_id=%s",
-        task_id, url, avatar_id, video_length, provider, voice_id or "(default)",
+        "[run_ugc_task] task_id=%s  url=%s  avatar=%s  length=%s  provider=%s  voice_id=%s  aspect=%s",
+        task_id,
+        url,
+        avatar_id,
+        video_length,
+        provider,
+        voice_id or "(default)",
+        _ar,
     )
 
     try:
@@ -8303,6 +8373,7 @@ def run_ugc_task(
                 visual_reference=avatar_id,
                 voice_id=voice_id,
                 heygen_character_type=heygen_character_type,
+                aspect_ratio=_ar,
             )
         except (UGCServiceError, ValueError) as exc:
             msg = f"Video generation failed ({provider}): {exc}"
@@ -8311,7 +8382,13 @@ def run_ugc_task(
             raise BannerPipelineFatalError(f"[run_ugc_task] {msg}") from exc
 
         # ── Step 5: FFmpeg polish + Remotion caption render + persist ────────
-        _finalize_ugc_with_composite(task_uuid, task_id, video_url, ugc_script=ugc_script)
+        _finalize_ugc_with_composite(
+            task_uuid,
+            task_id,
+            video_url,
+            ugc_script=ugc_script,
+            aspect_ratio=_ar,
+        )
         logger.info(
             "[run_ugc_task] task_id=%s  COMPLETED. video_url=%s",
             task_id,
@@ -8387,6 +8464,7 @@ def run_avatar_studio_task(
     director_notes: str | None = None,
     spoken_script: str | None = None,
     heygen_character_type: str | None = None,
+    aspect_ratio: str = "9:16",
 ) -> None:
     """Avatar marketing video from creative prompts only (no crawl)."""
     from services.ugc_service import (
@@ -8396,16 +8474,18 @@ def run_avatar_studio_task(
     import ugc_director
 
     task_uuid = uuid.UUID(task_id)
+    _ar = ugc_composite_service.normalize_ugc_aspect_ratio(aspect_ratio)
 
     logger.info(
         "[run_avatar_studio_task] task_id=%s  avatar=%s  length=%s  provider=%s  "
-        "script_source=%s  voice_id=%s",
+        "script_source=%s  voice_id=%s  aspect=%s",
         task_id,
         avatar_id,
         video_length,
         provider,
         script_source,
         voice_id or "(default)",
+        _ar,
     )
 
     try:
@@ -8485,6 +8565,7 @@ def run_avatar_studio_task(
                 visual_reference=avatar_id,
                 voice_id=voice_id,
                 heygen_character_type=heygen_character_type,
+                aspect_ratio=_ar,
             )
         except (UGCServiceError, ValueError) as exc:
             msg = f"Video generation failed ({provider}): {exc}"
@@ -8492,7 +8573,13 @@ def run_avatar_studio_task(
             persist_task(task_uuid, ugc_status="failed", ugc_error=msg)
             raise BannerPipelineFatalError(f"[run_avatar_studio_task] {msg}") from exc
 
-        _finalize_ugc_with_composite(task_uuid, task_id, video_url, ugc_script=ugc_script)
+        _finalize_ugc_with_composite(
+            task_uuid,
+            task_id,
+            video_url,
+            ugc_script=ugc_script,
+            aspect_ratio=_ar,
+        )
         logger.info(
             "[run_avatar_studio_task] task_id=%s  COMPLETED. video_url=%s",
             task_id,
@@ -9034,7 +9121,7 @@ const UGC_DEFAULT_VOICE_HINT = 'Wuv1s5YTNCjL9mFJTqo4'
 /**
  * Best-available video URL priority:
  *   1. ugc_final_video_url   — Remotion render: captions + animations (best)
- *   2. ugc_composited_video_url — FFmpeg blur-bg PiP (no captions)
+ *   2. ugc_composited_video_url — FFmpeg crop-to-fill (no captions)
  *   3. ugc_raw_video_url     — raw HeyGen/D-ID CDN URL
  */
 function ugcPlaybackUrl(payload) {
@@ -9208,6 +9295,7 @@ export default function AvatarStudio() {
   const [avatarId, setAvatarId] = useState(DEFAULT_HEYGEN_ID)
   const [voiceId, setVoiceId] = useState('')
   const [videoLength, setVideoLength] = useState('15s')
+  const [aspectRatio, setAspectRatio] = useState('9:16')
   const [websiteUrl, setWebsiteUrl] = useState('')
   const [logoUrl, setLogoUrl] = useState('')
   const [productImageUrl, setProductImageUrl] = useState('')
@@ -9399,6 +9487,7 @@ export default function AvatarStudio() {
         provider,
         avatar_id: avatarId.trim(),
         video_length: videoLength,
+        aspect_ratio: aspectRatio,
       }
       const v = voiceId.trim()
       if (v) body.voice_id = v
@@ -9679,6 +9768,22 @@ export default function AvatarStudio() {
               </select>
             </div>
 
+            <div dir="rtl">
+              <label className="block text-xs font-medium text-slate-600 dark:text-slate-300 mb-1.5">
+                יחס גובה-רוחב לווידאו
+              </label>
+              <select
+                value={aspectRatio}
+                onChange={(ev) => setAspectRatio(ev.target.value)}
+                disabled={formLocked}
+                className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2.5 text-sm text-right outline-none disabled:opacity-60"
+              >
+                <option value="9:16">9:16 (Story/Reels)</option>
+                <option value="16:9">16:9 (אופקי)</option>
+                <option value="1:1">1:1 (ריבועי)</option>
+              </select>
+            </div>
+
             <div>
               <label className="block text-xs font-medium text-slate-600 dark:text-slate-300 mb-1.5">
                 כתובת לאתר בווידאו{' '}
@@ -9863,7 +9968,7 @@ export default function AvatarStudio() {
                     )}
                     {ugcVideoTier(statusPayload) === 'composited' && (
                       <span className="rounded-full bg-sky-100 dark:bg-sky-950/70 px-2.5 py-0.5 text-[11px] font-semibold text-sky-700 dark:text-sky-300 ring-1 ring-sky-200/80 dark:ring-sky-800/60">
-                        רקע מטושטש (FFmpeg)
+                        מלא מסך — FFmpeg (ללא כיתוביות)
                       </span>
                     )}
                     {ugcVideoTier(statusPayload) === 'raw' && (
@@ -12419,6 +12524,7 @@ export default function BannerWorkspace() {
   const [ugcVoiceId, setUgcVoiceId] = useState('')
   const [ugcCustomScript, setUgcCustomScript] = useState('')
   const [ugcWebsiteUrl, setUgcWebsiteUrl] = useState('')
+  const [aspectRatio, setAspectRatio] = useState('9:16')
   const [ugcPosting, setUgcPosting] = useState(false)
   const [ugcError, setUgcError] = useState(null)
   // Tracks the taskId for which we've already initialised videoHook from the
@@ -12711,6 +12817,7 @@ export default function BannerWorkspace() {
         avatar_id: avatarRef,
         video_length: '30s',
         brief: brief.trim() || null,
+        aspect_ratio: aspectRatio,
       }
       const script = ugcCustomScript.trim()
       if (script) body.custom_script = script
@@ -13114,6 +13221,25 @@ export default function BannerWorkspace() {
                       dir="ltr"
                       autoComplete="off"
                     />
+                  </div>
+                  <div dir="rtl">
+                    <label
+                      htmlFor="bw-ugc-aspect"
+                      className="block text-xs font-medium text-slate-600 dark:text-slate-300 mb-1.5"
+                    >
+                      יחס גובה-רוחב לווידאו
+                    </label>
+                    <select
+                      id="bw-ugc-aspect"
+                      value={aspectRatio}
+                      onChange={(ev) => setAspectRatio(ev.target.value)}
+                      disabled={formLocked}
+                      className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2.5 text-sm text-right outline-none focus:border-violet-500 focus:ring-2 focus:ring-violet-500/20 disabled:opacity-60 transition"
+                    >
+                      <option value="9:16">9:16 (Story/Reels)</option>
+                      <option value="16:9">16:9 (אופקי)</option>
+                      <option value="1:1">1:1 (ריבועי)</option>
+                    </select>
                   </div>
                   <div>
                     <label
@@ -16913,8 +17039,8 @@ const MAX_QUEUE_DEPTH = Number(process.env.MAX_QUEUE_DEPTH) || 10;
 /** Hard wall-clock deadline for a single renderMedia call (milliseconds). */
 const RENDER_TIMEOUT_MS = Number(process.env.RENDER_TIMEOUT_MS) || 3 * 60 * 1000;
 /**
- * Separate deadline for UGC renders: long clips + 2× OffthreadVideo (blur-bg layer)
- * decode is much slower than a banner render.
+ * Separate deadline for UGC renders: long clips + OffthreadVideo decode is slower than
+ * a banner render.
  * Defaults to 25 min; override via UGC_RENDER_TIMEOUT_MS in .env.
  */
 const UGC_RENDER_TIMEOUT_MS = Number(process.env.UGC_RENDER_TIMEOUT_MS) || 25 * 60 * 1000;
@@ -18470,13 +18596,12 @@ function CaptionLayer({ text, brandHex = "#6366f1", stylePrefs = {} }) {
  *                    plus end-card stack (below logo, above URL pill) when overlay is shown.
  *
  * Architecture note:
- *   FFmpeg runs BEFORE Remotion and already produces a 1080×1920 9:16 video with blurred
- *   background fill (ugc_composited.mp4).  worker_tasks.py passes that file as raw_video_url
- *   so Remotion only needs ONE OffthreadVideo decode per frame instead of two.
- *   This halves render time compared to having Remotion also re-blur the background.
+ *   FFmpeg runs BEFORE Remotion and already produces a target-aspect video (crop-to-fill,
+ *   e.g. ugc_composited.mp4).  worker_tasks.py passes that file as raw_video_url so Remotion
+ *   only needs ONE OffthreadVideo decode per frame instead of two.
  *
  * Visual layers (bottom → top):
- *   1. Foreground video  — FFmpeg-composited (already 9:16 blur-bg) + Ken Burns + scene punch.
+ *   1. Foreground video  — FFmpeg-composited + Ken Burns + scene punch.
  *   2. Cinematic gradient — top+bottom dark bars for broadcast-TV depth.
  *   3. URL overlay        — hostname pill top-left → center end-card spring (+ logo/product).
  *   4. Product center pop — optional 2s window around speech midpoint.
@@ -18575,7 +18700,7 @@ export function UgcComposition({
       {raw_video_url ? (
         <>
           {/* ── Layer 1: Video — continuous float + entrance punch ────────────── */}
-          {/* Input is already a 9:16 blur-bg composited file (FFmpeg output).  */}
+          {/* Input is FFmpeg-composited (crop-to-fill) at the target aspect.  */}
           {/* ONE OffthreadVideo only — halves render time vs double-decode.     */}
           <AbsoluteFill
             style={{

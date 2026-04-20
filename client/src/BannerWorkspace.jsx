@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
-import api, { API_BASE_URL, API_BASE_URL_DISPLAY } from './api.js'
+import api, { API_BASE_URL, API_BASE_URL_DISPLAY, toAbsoluteApiUrl } from './api.js'
 import { useAuth } from './AuthContext.jsx'
 import BannerCanvas from './BannerCanvas.jsx'
 import BannerCanvas2 from './BannerCanvas2.jsx'
@@ -61,9 +61,12 @@ const UGC_DEFAULT_AVATAR_URL =
 const UGC_DEFAULT_VOICE_ID_HINT = 'Wuv1s5YTNCjL9mFJTqo4'
 
 function ugcPlaybackUrl(payload) {
+  const f = typeof payload?.ugc_final_video_url === 'string' ? payload.ugc_final_video_url.trim() : ''
+  const f1_1 = typeof payload?.ugc_final_video_url_1_1 === 'string' ? payload.ugc_final_video_url_1_1.trim() : ''
+  const f16_9 = typeof payload?.ugc_final_video_url_16_9 === 'string' ? payload.ugc_final_video_url_16_9.trim() : ''
   const c = typeof payload?.ugc_composited_video_url === 'string' ? payload.ugc_composited_video_url.trim() : ''
   const r = typeof payload?.ugc_raw_video_url === 'string' ? payload.ugc_raw_video_url.trim() : ''
-  return c || r || ''
+  return f || f1_1 || f16_9 || c || r || ''
 }
 
 function formatUgcStatus(ugcStatus) {
@@ -169,9 +172,14 @@ export default function BannerWorkspace() {
   const [ugcVoiceId, setUgcVoiceId] = useState('')
   const [ugcCustomScript, setUgcCustomScript] = useState('')
   const [ugcWebsiteUrl, setUgcWebsiteUrl] = useState('')
-  const [ugcVideoFitMode, setUgcVideoFitMode] = useState('crop')
+  const [aspectRatio, setAspectRatio] = useState('9:16')
   const [ugcPosting, setUgcPosting] = useState(false)
   const [ugcError, setUgcError] = useState(null)
+  const [ugcRerenderSubmitting, setUgcRerenderSubmitting] = useState(false)
+  const [ugcPendingAspectRatio, setUgcPendingAspectRatio] = useState(null)
+  const [ugcRerenderError, setUgcRerenderError] = useState(null)
+  /** Which format tab is shown in the preview player (null = auto-pick first available). */
+  const [activePreviewAspect, setActivePreviewAspect] = useState(null)
   // Tracks the taskId for which we've already initialised videoHook from the
   // server, so that subsequent statusPayload updates don't overwrite user edits.
   const hookSyncedForTask = useRef(null)
@@ -182,6 +190,16 @@ export default function BannerWorkspace() {
   useEffect(() => {
     taskIdRef.current = taskId
   }, [taskId])
+
+  useEffect(() => {
+    setActivePreviewAspect(null)
+  }, [taskId])
+
+  useEffect(() => {
+    if (statusPayload?.ugc_status === 'completed' || statusPayload?.ugc_status === 'failed') {
+      setUgcPendingAspectRatio(null)
+    }
+  }, [statusPayload?.ugc_status])
 
   const bannerTerminal =
     statusPayload?.status === 'completed' || statusPayload?.status === 'failed'
@@ -194,6 +212,27 @@ export default function BannerWorkspace() {
     statusPayload?.status === 'completed' &&
     statusPayload?.background_url &&
     statusPayload?.logo_url
+
+  const ugcFinal9_16 =
+    typeof statusPayload?.ugc_final_video_url === 'string' ? statusPayload.ugc_final_video_url.trim() : ''
+  const ugcFinal1_1 =
+    typeof statusPayload?.ugc_final_video_url_1_1 === 'string' ? statusPayload.ugc_final_video_url_1_1.trim() : ''
+  const ugcFinal16_9 =
+    typeof statusPayload?.ugc_final_video_url_16_9 === 'string' ? statusPayload.ugc_final_video_url_16_9.trim() : ''
+  const ugcBannerPipelineBusy = ['processing_video', 'rendering_captions'].includes(statusPayload?.ugc_status)
+  const formatUgcAspectLoading = (ar) =>
+    ugcPendingAspectRatio === ar && (ugcRerenderSubmitting || ugcBannerPipelineBusy)
+
+  const currentVideoUrl = (() => {
+    const c = typeof statusPayload?.ugc_composited_video_url === 'string' ? statusPayload.ugc_composited_video_url.trim() : ''
+    const r = typeof statusPayload?.ugc_raw_video_url === 'string' ? statusPayload.ugc_raw_video_url.trim() : ''
+    if (activePreviewAspect === '16:9') return ugcFinal16_9 || ''
+    if (activePreviewAspect === '1:1') return ugcFinal1_1 || ''
+    if (activePreviewAspect === '9:16') return ugcFinal9_16 || c || r || ''
+    return ugcFinal9_16 || ugcFinal16_9 || ugcFinal1_1 || c || r || ''
+  })()
+  const effectivePreviewAspect =
+    activePreviewAspect ?? (ugcFinal9_16 ? '9:16' : ugcFinal16_9 ? '16:9' : ugcFinal1_1 ? '1:1' : null)
 
   const squareVideoUrl = useMemo(() => {
     if (!statusPayload) return null
@@ -462,6 +501,7 @@ export default function BannerWorkspace() {
         avatar_id: avatarRef,
         video_length: '30s',
         brief: brief.trim() || null,
+        aspect_ratio: aspectRatio,
       }
       const script = ugcCustomScript.trim()
       if (script) body.custom_script = script
@@ -472,7 +512,6 @@ export default function BannerWorkspace() {
       }
       const wu = ugcWebsiteUrl.trim()
       if (wu) body.website_url = wu
-      body.video_fit_mode = ugcVideoFitMode
       const { data } = await api.post('/generate-ugc', body)
       const id = data?.task_id
       if (!id) throw new Error('לא התקבל מזהה משימה מהשרת')
@@ -563,6 +602,22 @@ export default function BannerWorkspace() {
       setVideoRenderError(null)
     } catch (err) {
       setVideoRenderError(axiosErrorMessage(err))
+    }
+  }, [taskId])
+
+  const handleUgcRerender = useCallback(async (ar = '9:16') => {
+    if (!taskId) return
+    setUgcRerenderError(null)
+    setUgcRerenderSubmitting(true)
+    setUgcPendingAspectRatio(ar)
+    try {
+      await api.post(`/tasks/${taskId}/ugc/re-render`, { aspect_ratio: ar })
+      setSseBump((n) => n + 1)
+    } catch (err) {
+      setUgcRerenderError(axiosErrorMessage(err))
+      setUgcPendingAspectRatio(null)
+    } finally {
+      setUgcRerenderSubmitting(false)
     }
   }, [taskId])
 
@@ -867,6 +922,25 @@ export default function BannerWorkspace() {
                       autoComplete="off"
                     />
                   </div>
+                  <div dir="rtl">
+                    <label
+                      htmlFor="bw-ugc-aspect"
+                      className="block text-xs font-medium text-slate-600 dark:text-slate-300 mb-1.5"
+                    >
+                      יחס גובה-רוחב לווידאו
+                    </label>
+                    <select
+                      id="bw-ugc-aspect"
+                      value={aspectRatio}
+                      onChange={(ev) => setAspectRatio(ev.target.value)}
+                      disabled={formLocked}
+                      className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2.5 text-sm text-right outline-none focus:border-violet-500 focus:ring-2 focus:ring-violet-500/20 disabled:opacity-60 transition"
+                    >
+                      <option value="9:16">9:16 (Story/Reels)</option>
+                      <option value="16:9">16:9 (אופקי)</option>
+                      <option value="1:1">1:1 (ריבועי)</option>
+                    </select>
+                  </div>
                   <div>
                     <label
                       htmlFor="bw-ugc-website"
@@ -889,24 +963,6 @@ export default function BannerWorkspace() {
                       autoComplete="off"
                       maxLength={512}
                     />
-                  </div>
-                  <div>
-                    <label
-                      htmlFor="bw-ugc-video-fit"
-                      className="block text-xs font-medium text-slate-600 dark:text-slate-300 mb-1.5"
-                    >
-                      אופן תצוגת וידאו
-                    </label>
-                    <select
-                      id="bw-ugc-video-fit"
-                      value={ugcVideoFitMode}
-                      onChange={(ev) => setUgcVideoFitMode(ev.target.value)}
-                      disabled={formLocked}
-                      className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2.5 text-sm outline-none focus:border-violet-500 focus:ring-2 focus:ring-violet-500/20 disabled:opacity-60 transition"
-                    >
-                      <option value="crop">מלא מסך (Crop)</option>
-                      <option value="blur">התאמה עם רקע מטושטש (Blur)</option>
-                    </select>
                   </div>
                   <div>
                     <label
@@ -1045,20 +1101,73 @@ export default function BannerWorkspace() {
                         </p>
                       </div>
                     )}
-                    {/* 9:16 letterbox container — keeps vertical frame even for raw horizontal video */}
-                    <div className="relative mx-auto w-full max-w-[280px] bg-black rounded-xl overflow-hidden"
-                         style={{ aspectRatio: '9 / 16' }}>
-                      <video
-                        key={ugcPlaybackUrl(statusPayload)}
-                        className="absolute inset-0 w-full h-full object-contain"
-                        src={ugcPlaybackUrl(statusPayload)}
-                        controls
-                        playsInline
-                        preload="metadata"
-                      >
-                        הדפדפן שלך אינו תומך בנגן וידאו.
-                      </video>
-                    </div>
+                    {(ugcFinal9_16 || ugcFinal1_1 || ugcFinal16_9) && (
+                      <div className="flex items-center gap-1.5 flex-wrap">
+                        <span className="text-[11px] text-slate-500 dark:text-slate-400 font-medium">תצוגה מקדימה:</span>
+                        {ugcFinal9_16 && (
+                          <button
+                            type="button"
+                            onClick={() => setActivePreviewAspect('9:16')}
+                            className={`rounded-lg px-2.5 py-1 text-xs font-semibold transition ${
+                              effectivePreviewAspect === '9:16'
+                                ? 'bg-violet-100 dark:bg-violet-900/50 text-violet-700 dark:text-violet-200 ring-1 ring-violet-300 dark:ring-violet-700'
+                                : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-700'
+                            }`}
+                          >
+                            9:16
+                          </button>
+                        )}
+                        {ugcFinal1_1 && (
+                          <button
+                            type="button"
+                            onClick={() => setActivePreviewAspect('1:1')}
+                            className={`rounded-lg px-2.5 py-1 text-xs font-semibold transition ${
+                              effectivePreviewAspect === '1:1'
+                                ? 'bg-violet-100 dark:bg-violet-900/50 text-violet-700 dark:text-violet-200 ring-1 ring-violet-300 dark:ring-violet-700'
+                                : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-700'
+                            }`}
+                          >
+                            1:1
+                          </button>
+                        )}
+                        {ugcFinal16_9 && (
+                          <button
+                            type="button"
+                            onClick={() => setActivePreviewAspect('16:9')}
+                            className={`rounded-lg px-2.5 py-1 text-xs font-semibold transition ${
+                              effectivePreviewAspect === '16:9'
+                                ? 'bg-violet-100 dark:bg-violet-900/50 text-violet-700 dark:text-violet-200 ring-1 ring-violet-300 dark:ring-violet-700'
+                                : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-700'
+                            }`}
+                          >
+                            16:9
+                          </button>
+                        )}
+                      </div>
+                    )}
+                    {(() => {
+                      const currentAspect = activePreviewAspect || aspectRatio || '9:16'
+                      return (
+                        <div
+                          className="relative mx-auto w-full bg-black rounded-xl overflow-hidden flex items-center justify-center shadow-lg"
+                          style={{
+                            maxWidth: currentAspect === '16:9' ? 640 : currentAspect === '1:1' ? 400 : 280,
+                            aspectRatio: currentAspect === '16:9' ? '16 / 9' : currentAspect === '1:1' ? '1 / 1' : '9 / 16',
+                          }}
+                        >
+                          <video
+                            key={currentVideoUrl}
+                            className="w-full h-full object-contain block"
+                            src={currentVideoUrl}
+                            controls
+                            playsInline
+                            preload="metadata"
+                          >
+                            הדפדפן שלך אינו תומך בנגן וידאו.
+                          </video>
+                        </div>
+                      )
+                    })()}
                     <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs">
                       <a
                         href={ugcPlaybackUrl(statusPayload)}
@@ -1085,6 +1194,99 @@ export default function BannerWorkspace() {
                           </a>
                         )}
                     </div>
+
+                    {statusPayload?.ugc_status === 'completed' && (
+                      <div className="rounded-xl border border-slate-200/90 dark:border-slate-700/90 bg-slate-50/80 dark:bg-slate-950/40 px-4 py-3 space-y-3">
+                        <h4 className="text-xs font-semibold text-slate-700 dark:text-slate-200">
+                          פורמטים נוספים
+                        </h4>
+                        <p className="text-[11px] text-slate-500 dark:text-slate-400 leading-relaxed">
+                          לאחר שהווידאו הראשי מוכן, ניתן ליצור כאן גרסאות בפורמטים נוספים — ללא יצירה מחדש ב-HeyGen.
+                        </p>
+                        {ugcRerenderError && (
+                          <div
+                            role="alert"
+                            className="rounded-xl border border-red-200 dark:border-red-900/50 bg-red-50 dark:bg-red-950/40 px-3 py-2 text-xs text-red-800 dark:text-red-200"
+                          >
+                            {ugcRerenderError}
+                          </div>
+                        )}
+                        <div className="flex flex-col sm:flex-row flex-wrap gap-2">
+                          {ugcFinal9_16 ? (
+                            <a
+                              href={ugcFinal9_16.startsWith('/') ? toAbsoluteApiUrl(ugcFinal9_16) : ugcFinal9_16}
+                              download
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="inline-flex items-center justify-center rounded-lg border border-violet-300/80 dark:border-violet-700/60 bg-violet-50/90 dark:bg-violet-950/50 px-3 py-2 text-xs font-medium text-violet-800 dark:text-violet-200 hover:bg-violet-100 dark:hover:bg-violet-900/40"
+                              dir="ltr"
+                            >
+                              הורד MP4 (9:16)
+                            </a>
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={() => void handleUgcRerender('9:16')}
+                              disabled={ugcBannerPipelineBusy || ugcRerenderSubmitting}
+                              className="inline-flex items-center justify-center gap-2 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 px-3 py-2 text-xs font-medium text-slate-800 dark:text-slate-100 hover:bg-slate-50 dark:hover:bg-slate-700 disabled:opacity-50 min-h-[2.5rem]"
+                            >
+                              {formatUgcAspectLoading('9:16') && (
+                                <Spinner className="!size-3.5 border-violet-400/40 border-t-violet-600" />
+                              )}
+                              {formatUgcAspectLoading('9:16') ? 'מייצר...' : 'צור גרסה 9:16'}
+                            </button>
+                          )}
+                          {ugcFinal1_1 ? (
+                            <a
+                              href={ugcFinal1_1.startsWith('/') ? toAbsoluteApiUrl(ugcFinal1_1) : ugcFinal1_1}
+                              download
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="inline-flex items-center justify-center rounded-lg border border-emerald-300/80 dark:border-emerald-700/60 bg-emerald-50/90 dark:bg-emerald-950/50 px-3 py-2 text-xs font-medium text-emerald-800 dark:text-emerald-200 hover:bg-emerald-100 dark:hover:bg-emerald-900/40"
+                              dir="ltr"
+                            >
+                              הורד MP4 (1:1)
+                            </a>
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={() => void handleUgcRerender('1:1')}
+                              disabled={ugcBannerPipelineBusy || ugcRerenderSubmitting}
+                              className="inline-flex items-center justify-center gap-2 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 px-3 py-2 text-xs font-medium text-slate-800 dark:text-slate-100 hover:bg-slate-50 dark:hover:bg-slate-700 disabled:opacity-50 min-h-[2.5rem]"
+                            >
+                              {formatUgcAspectLoading('1:1') && (
+                                <Spinner className="!size-3.5 border-violet-400/40 border-t-violet-600" />
+                              )}
+                              {formatUgcAspectLoading('1:1') ? 'מייצר...' : 'צור גרסה 1:1'}
+                            </button>
+                          )}
+                          {ugcFinal16_9 ? (
+                            <a
+                              href={ugcFinal16_9.startsWith('/') ? toAbsoluteApiUrl(ugcFinal16_9) : ugcFinal16_9}
+                              download
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="inline-flex items-center justify-center rounded-lg border border-sky-300/80 dark:border-sky-700/60 bg-sky-50/90 dark:bg-sky-950/50 px-3 py-2 text-xs font-medium text-sky-800 dark:text-sky-200 hover:bg-sky-100 dark:hover:bg-sky-900/40"
+                              dir="ltr"
+                            >
+                              הורד MP4 (16:9)
+                            </a>
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={() => void handleUgcRerender('16:9')}
+                              disabled={ugcBannerPipelineBusy || ugcRerenderSubmitting}
+                              className="inline-flex items-center justify-center gap-2 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 px-3 py-2 text-xs font-medium text-slate-800 dark:text-slate-100 hover:bg-slate-50 dark:hover:bg-slate-700 disabled:opacity-50 min-h-[2.5rem]"
+                            >
+                              {formatUgcAspectLoading('16:9') && (
+                                <Spinner className="!size-3.5 border-violet-400/40 border-t-violet-600" />
+                              )}
+                              {formatUgcAspectLoading('16:9') ? 'מייצר...' : 'צור גרסה 16:9'}
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    )}
                   </div>
                 )}
 

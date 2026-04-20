@@ -56,7 +56,6 @@ def generate_avatar_studio(
         ugc_avatar_id=avatar_id,
         ugc_website_display=website_disp,
         ugc_status="pending",
-        ugc_video_fit_mode=body.video_fit_mode,
         error=None,
         headline=None,
         subhead=None,
@@ -92,6 +91,7 @@ def generate_avatar_studio(
                 "director_notes": body.director_notes,
                 "spoken_script": body.spoken_script,
                 "heygen_character_type": body.heygen_character_type,
+                "aspect_ratio": body.aspect_ratio,
             },
             queue="video_queue",
         )

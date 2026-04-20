@@ -81,7 +81,7 @@ def test_ugc_generation():
                     print("⚠️  וידאו Remotion לא נוצר (ראה הערה למטה).")
 
                 if comp:
-                    print(f"🎬 וידאו FFmpeg (blur-bg PiP):\n   {comp}")
+                    print(f"🎬 וידאו FFmpeg (crop-to-fill):\n   {comp}")
 
                 print(f"📹 וידאו גלמי (HeyGen/D-ID):\n   {raw}")
 

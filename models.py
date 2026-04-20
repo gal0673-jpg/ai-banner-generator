@@ -80,7 +80,7 @@ class BannerTask(Base):
     ugc_script: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     ugc_avatar_id: Mapped[str | None] = mapped_column(String(256), nullable=True)
     ugc_raw_video_url: Mapped[str | None] = mapped_column(String(1024), nullable=True)
-    #: Local /task-files/... MP4 after optional FFmpeg polish (blur-bg PiP); null if skipped/failed.
+    #: Local /task-files/... MP4 after optional FFmpeg crop-to-fill polish; null if skipped/failed.
     ugc_composited_video_url: Mapped[str | None] = mapped_column(String(1024), nullable=True)
     #: Non-fatal composite message (e.g. ffmpeg missing, fallback to raw only).
     ugc_composite_note: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -96,7 +96,7 @@ class BannerTask(Base):
     ugc_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     #: Last FFmpeg / Remotion playback rate for UGC composite (1.0 = normal); optional.
     ugc_speed_factor: Mapped[float | None] = mapped_column(Float, nullable=True)
-    #: FFmpeg layout: ``crop`` (fill frame) vs ``blur`` (PiP on blurred background).
+    #: Legacy column (unused); FFmpeg always uses crop-to-fill.
     ugc_video_fit_mode: Mapped[str | None] = mapped_column(String(32), default="crop", nullable=True)
 
     user: Mapped["User"] = relationship("User", back_populates="tasks")

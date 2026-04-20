@@ -3,10 +3,9 @@
 Triggered from Celery after HeyGen/D-ID returns a CDN URL.
 
 FFmpeg step (try_composite_pip_blur):
-  Converts the raw provider video to the target aspect (e.g. 9:16).  ``fit_mode=crop``
-  uses scale-to-cover plus centered crop; ``fit_mode=blur`` uses the legacy blurred
-  background + letterboxed foreground overlay.  On failure, callers keep
-  ``ugc_raw_video_url`` only.
+  Converts the raw provider video to the target aspect (e.g. 9:16) using a blurred
+  full-frame background (scale+crop+blur) plus a letterbox-fit foreground centered on top.
+  On failure, callers keep ``ugc_raw_video_url`` only.
 
 Remotion step (call_video_engine_render_ugc):
   Sends the raw CDN video + ugc_script to the Node.js video engine's /render-ugc
@@ -60,7 +59,7 @@ def composited_filename_for_aspect_ratio(aspect_ratio: str = "9:16") -> str:
 
 
 def _ugc_canvas_width_height(aspect_ratio: str | None) -> tuple[int, int]:
-    """FFmpeg output width × height for UGC crop-to-fill composite (strict mapping)."""
+    """FFmpeg output width × height for UGC composite canvas (strict mapping)."""
     ar = normalize_ugc_aspect_ratio(aspect_ratio)
     if ar == "1:1":
         return (1080, 1080)
@@ -111,15 +110,13 @@ def try_composite_pip_blur(
     work_dir: Path,
     speed_factor: float = 1.0,
     aspect_ratio: str = "9:16",
-    fit_mode: str = "crop",
 ) -> tuple[str | None, str | None]:
-    """Download provider MP4, run FFmpeg composite, write aspect-specific composited MP4.
+    """Download provider MP4, run FFmpeg blurred-background composite, write aspect-specific MP4.
 
     Args:
         speed_factor: Playback rate for video+audio (1.0 = unchanged). Clamped to 0.5–2.0
             for FFmpeg ``atempo`` compatibility.
         aspect_ratio: ``9:16`` (1080×1920), ``1:1`` (1080×1080), or ``16:9`` (1920×1080).
-        fit_mode: ``crop`` (fill frame, center crop) or ``blur`` (PiP on blurred bg).
 
     Returns:
         ``(relative_url, note)`` — relative_url like ``/task-files/<id>/ugc_composited.mp4``,
@@ -129,8 +126,9 @@ def try_composite_pip_blur(
         bin_name = _ffmpeg_binary()
         if shutil.which(bin_name) is None:
             return None, (
-                "FFmpeg is not installed on the server. Showing raw horizontal video. "
-                "To get the vertical 9:16 crop-to-fill composite, please install FFmpeg "
+                "FFmpeg is not installed on the server. Showing raw provider video. "
+                "To enable the UGC FFmpeg composite (blurred background + fit foreground), "
+                "please install FFmpeg "
                 f"and set UGC_FFMPEG_BINARY to its full path (e.g. C:/laragon/ffpm/bin/ffmpeg.exe). "
                 f"[looked for: {bin_name!r}]"
             )
@@ -141,16 +139,12 @@ def try_composite_pip_blur(
     out_path = work_dir / out_name
     dl_path = work_dir / _DOWNLOAD_FILENAME
     w, h = _ugc_canvas_width_height(aspect_ratio)
-    fm = (fit_mode or "crop").strip().lower()
-    if fm not in ("crop", "blur"):
-        fm = "crop"
     logger.info(
-        "[ugc_composite] task_id=%s aspect=%s canvas=%d×%d fit=%s",
+        "[ugc_composite] task_id=%s aspect=%s canvas=%d×%d (blur-bg + fit-fg)",
         task_id,
         normalize_ugc_aspect_ratio(aspect_ratio),
         w,
         h,
-        fm,
     )
 
     try:
@@ -172,30 +166,19 @@ def try_composite_pip_blur(
         sf = min(2.0, max(0.5, sf))
     use_speed = abs(sf - 1.0) > 1e-3
 
-    if fm == "crop":
-        if use_speed:
-            fc = (
-                f"[0:v]scale={w}:{h}:force_original_aspect_ratio=increase,"
-                f"crop={w}:{h}:(iw-ow)/2:(ih-oh)/2,setsar=1,setpts=PTS/{sf}[outv]"
-            )
-        else:
-            fc = (
-                f"[0:v]scale={w}:{h}:force_original_aspect_ratio=increase,"
-                f"crop={w}:{h}:(iw-ow)/2:(ih-oh)/2,setsar=1[outv]"
-            )
-    else:
-        overlay_out = (
-            f"[bg_blurred][fg_scaled]overlay=(W-w)/2:(H-h)/2:shortest=1,setpts=PTS/{sf}[outv]"
-            if use_speed
-            else "[bg_blurred][fg_scaled]overlay=(W-w)/2:(H-h)/2:shortest=1[outv]"
-        )
-        fc = (
-            f"[0:v]scale={w}:{h}:force_original_aspect_ratio=increase,"
-            f"crop={w}:{h},setsar=1,split=2[bg][fg_orig];"
-            "[bg]gblur=sigma=25[bg_blurred];"
-            f"[fg_orig]scale={w}:{h}:force_original_aspect_ratio=decrease[fg_scaled];"
-            + overlay_out
-        )
+    # Background: fill canvas + crop + heavy blur. Foreground: fit inside canvas (no crop).
+    # Overlay centers fg on bg so aspect changes (e.g. 9:16 → 16:9) do not decapitate the avatar.
+    _overlay_tail = (
+        f"[bg][fg]overlay=(main_w-overlay_w)/2:(main_h-overlay_h)/2,setsar=1"
+        + (f",setpts=PTS/{sf}" if use_speed else "")
+        + "[outv]"
+    )
+    fc = (
+        f"[0:v]scale={w}:{h}:force_original_aspect_ratio=increase,"
+        f"crop={w}:{h}:(iw-ow)/2:(ih-oh)/2,boxblur=20:10[bg];"
+        f"[0:v]scale={w}:{h}:force_original_aspect_ratio=decrease[fg];"
+        f"{_overlay_tail}"
+    )
 
     def _run_ffmpeg(with_audio: bool) -> subprocess.CompletedProcess[str]:
         c = [

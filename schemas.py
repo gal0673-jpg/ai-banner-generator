@@ -86,10 +86,6 @@ class GenerateUGCRequest(BaseModel):
         default="30s",
         description="Target duration of the generated UGC video",
     )
-    video_fit_mode: Literal["crop", "blur"] = Field(
-        default="crop",
-        description="FFmpeg composite: crop-to-fill vs blurred-background PiP.",
-    )
     custom_script: str | None = Field(
         default=None,
         max_length=2000,
@@ -109,6 +105,10 @@ class GenerateUGCRequest(BaseModel):
             "Optional URL shown on the final UGC video (top-left, then animated to center at end). "
             "Stored without https:// and www."
         ),
+    )
+    aspect_ratio: Literal["9:16", "16:9", "1:1"] = Field(
+        default="9:16",
+        description="HeyGen render dimensions + FFmpeg/Remotion composite target aspect.",
     )
 
 
@@ -149,10 +149,6 @@ class GenerateAvatarStudioRequest(BaseModel):
         default="30s",
         description="Target video length for AI script pacing",
     )
-    video_fit_mode: Literal["crop", "blur"] = Field(
-        default="crop",
-        description="FFmpeg composite: crop-to-fill vs blurred-background PiP.",
-    )
     heygen_character_type: Literal["avatar", "talking_photo"] = Field(
         default="avatar",
         description=(
@@ -173,6 +169,10 @@ class GenerateAvatarStudioRequest(BaseModel):
         default=None,
         max_length=1024,
         description="Optional product image URL for Remotion (center / end card).",
+    )
+    aspect_ratio: Literal["9:16", "16:9", "1:1"] = Field(
+        default="9:16",
+        description="HeyGen render dimensions + FFmpeg/Remotion composite target aspect.",
     )
 
     @field_validator("creative_brief", "director_notes", "spoken_script", mode="before")
@@ -222,10 +222,6 @@ class UgcReRenderRequest(BaseModel):
     aspect_ratio: Literal["9:16", "1:1", "16:9"] = Field(
         default="9:16",
         description="Output aspect for FFmpeg composite + Remotion (default 9:16 vertical).",
-    )
-    video_fit_mode: Literal["crop", "blur"] | None = Field(
-        default=None,
-        description="If set, updates stored FFmpeg fit mode before re-render.",
     )
 
 

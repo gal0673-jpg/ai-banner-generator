@@ -596,13 +596,12 @@ function CaptionLayer({ text, brandHex = "#6366f1", stylePrefs = {} }) {
  *                    plus end-card stack (below logo, above URL pill) when overlay is shown.
  *
  * Architecture note:
- *   FFmpeg runs BEFORE Remotion and already produces a 1080×1920 9:16 video with blurred
- *   background fill (ugc_composited.mp4).  worker_tasks.py passes that file as raw_video_url
- *   so Remotion only needs ONE OffthreadVideo decode per frame instead of two.
- *   This halves render time compared to having Remotion also re-blur the background.
+ *   FFmpeg runs BEFORE Remotion and already produces a target-aspect video (crop-to-fill,
+ *   e.g. ugc_composited.mp4).  worker_tasks.py passes that file as raw_video_url so Remotion
+ *   only needs ONE OffthreadVideo decode per frame instead of two.
  *
  * Visual layers (bottom → top):
- *   1. Foreground video  — FFmpeg-composited (already 9:16 blur-bg) + Ken Burns + scene punch.
+ *   1. Foreground video  — FFmpeg-composited + Ken Burns + scene punch.
  *   2. Cinematic gradient — top+bottom dark bars for broadcast-TV depth.
  *   3. URL overlay        — hostname pill top-left → center end-card spring (+ logo/product).
  *   4. Product center pop — optional 2s window around speech midpoint.
@@ -701,7 +700,7 @@ export function UgcComposition({
       {raw_video_url ? (
         <>
           {/* ── Layer 1: Video — continuous float + entrance punch ────────────── */}
-          {/* Input is already a 9:16 blur-bg composited file (FFmpeg output).  */}
+          {/* Input is FFmpeg-composited (crop-to-fill) at the target aspect.  */}
           {/* ONE OffthreadVideo only — halves render time vs double-decode.     */}
           <AbsoluteFill
             style={{

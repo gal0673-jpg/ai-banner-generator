@@ -34,14 +34,13 @@ def _finalize_ugc_with_composite(
     ugc_script: dict | None = None,
     speed_factor: float = 1.15,
     aspect_ratio: str = "9:16",
-    fit_mode: str | None = None,
 ) -> None:
     """Persist provider URL, run optional FFmpeg polish, then drive Remotion caption render.
 
     Pipeline (each step degrades gracefully on failure):
 
     1. FFmpeg composite — converts the raw avatar video to the requested aspect
-       (default 9:16 vertical) using ``ugc_video_fit_mode`` (crop-to-fill vs blur-bg PiP).
+       (default 9:16 vertical) using blurred full-frame background + letterbox-fit foreground.
        Saves a local composited MP4 and sets the matching ``ugc_composited_video_url``
        column for that aspect.  Skipped/failed → that column stays None and a note is
        recorded; pipeline continues.
@@ -58,25 +57,15 @@ def _finalize_ugc_with_composite(
       rendering_captions → completed  (fallback: Remotion unavailable, best existing URL kept)
     """
     ar = ugc_composite_service.normalize_ugc_aspect_ratio(aspect_ratio)
-    if fit_mode is not None:
-        _fm = str(fit_mode).strip().lower()
-        effective_fit = _fm if _fm in ("crop", "blur") else "crop"
-    else:
-        with SessionLocal() as db:
-            _row = db.get(BannerTask, task_uuid)
-        _raw = getattr(_row, "ugc_video_fit_mode", None) if _row is not None else None
-        _s = (_raw or "crop").strip().lower()
-        effective_fit = _s if _s in ("crop", "blur") else "crop"
     work_dir = TASKS_DIR / task_id
     work_dir.mkdir(parents=True, exist_ok=True)
 
-    # ── Step 1: FFmpeg composite (crop-to-fill or blur-bg PiP) ───────────────
+    # ── Step 1: FFmpeg blurred-background composite ─────────────────────────
     persist_task(task_uuid, ugc_status="processing_video")
     logger.info(
-        "[_finalize_ugc] task_id=%s  running FFmpeg composite (aspect=%s fit=%s)…",
+        "[_finalize_ugc] task_id=%s  running FFmpeg composite (aspect=%s)…",
         task_id,
         ar,
-        effective_fit,
     )
     composited, note = ugc_composite_service.try_composite_pip_blur(
         task_id=task_id,
@@ -84,7 +73,6 @@ def _finalize_ugc_with_composite(
         work_dir=work_dir,
         speed_factor=speed_factor,
         aspect_ratio=ar,
-        fit_mode=effective_fit,
     )
     if composited:
         logger.info("[_finalize_ugc] task_id=%s  FFmpeg composite OK → %s", task_id, composited)
@@ -126,12 +114,10 @@ def _finalize_ugc_with_composite(
 
     # ── Choose best local video for Remotion input ────────────────────────────
     # Priority:
-    #   1. ugc_composited.mp4  — FFmpeg output: already target aspect (crop or blur-bg).
+    #   1. ugc_composited.mp4  — FFmpeg output: already target aspect (blur bg + fit fg).
     #                            Remotion only needs to add captions (1 OffthreadVideo decode
     #                            per frame instead of 2 → roughly half the render time).
-    #   2. ugc_provider_source.mp4 — raw landscape download; still local so fast, but
-    #                            no blur-bg (the blur was intentionally removed from the
-    #                            Remotion composition to gain this speed win).
+    #   2. ugc_provider_source.mp4 — raw provider download; still local so fast.
     #   3. video_url (CDN)     — last resort if nothing was downloaded locally.
     _api_base = os.environ.get("VITE_API_URL", "http://127.0.0.1:8888").rstrip("/")
     _composited_name = ugc_composite_service.composited_filename_for_aspect_ratio(ar)
@@ -142,7 +128,7 @@ def _finalize_ugc_with_composite(
         render_video_url = f"{_api_base}/task-files/{task_id}/{_composited_name}"
         logger.info(
             "[_finalize_ugc] task_id=%s  using FFmpeg-composited video for Remotion "
-            "(%s blur-bg, 1× decode): %s",
+            "(%s, 1× decode): %s",
             task_id,
             ar,
             render_video_url,
@@ -598,6 +584,7 @@ def run_ugc_task(
     custom_script: str | None = None,
     voice_id: str | None = None,
     heygen_character_type: str | None = None,
+    aspect_ratio: str = "9:16",
 ) -> None:
     """End-to-end UGC video pipeline.
 
@@ -623,9 +610,16 @@ def run_ugc_task(
     work_dir = TASKS_DIR / task_id
     work_dir.mkdir(parents=True, exist_ok=True)
 
+    _ar = ugc_composite_service.normalize_ugc_aspect_ratio(aspect_ratio)
     logger.info(
-        "[run_ugc_task] task_id=%s  url=%s  avatar=%s  length=%s  provider=%s  voice_id=%s",
-        task_id, url, avatar_id, video_length, provider, voice_id or "(default)",
+        "[run_ugc_task] task_id=%s  url=%s  avatar=%s  length=%s  provider=%s  voice_id=%s  aspect=%s",
+        task_id,
+        url,
+        avatar_id,
+        video_length,
+        provider,
+        voice_id or "(default)",
+        _ar,
     )
 
     try:
@@ -723,6 +717,7 @@ def run_ugc_task(
                 visual_reference=avatar_id,
                 voice_id=voice_id,
                 heygen_character_type=heygen_character_type,
+                aspect_ratio=_ar,
             )
         except (UGCServiceError, ValueError) as exc:
             msg = f"Video generation failed ({provider}): {exc}"
@@ -731,7 +726,13 @@ def run_ugc_task(
             raise BannerPipelineFatalError(f"[run_ugc_task] {msg}") from exc
 
         # ── Step 5: FFmpeg polish + Remotion caption render + persist ────────
-        _finalize_ugc_with_composite(task_uuid, task_id, video_url, ugc_script=ugc_script)
+        _finalize_ugc_with_composite(
+            task_uuid,
+            task_id,
+            video_url,
+            ugc_script=ugc_script,
+            aspect_ratio=_ar,
+        )
         logger.info(
             "[run_ugc_task] task_id=%s  COMPLETED. video_url=%s",
             task_id,
@@ -807,6 +808,7 @@ def run_avatar_studio_task(
     director_notes: str | None = None,
     spoken_script: str | None = None,
     heygen_character_type: str | None = None,
+    aspect_ratio: str = "9:16",
 ) -> None:
     """Avatar marketing video from creative prompts only (no crawl)."""
     from services.ugc_service import (
@@ -816,16 +818,18 @@ def run_avatar_studio_task(
     import ugc_director
 
     task_uuid = uuid.UUID(task_id)
+    _ar = ugc_composite_service.normalize_ugc_aspect_ratio(aspect_ratio)
 
     logger.info(
         "[run_avatar_studio_task] task_id=%s  avatar=%s  length=%s  provider=%s  "
-        "script_source=%s  voice_id=%s",
+        "script_source=%s  voice_id=%s  aspect=%s",
         task_id,
         avatar_id,
         video_length,
         provider,
         script_source,
         voice_id or "(default)",
+        _ar,
     )
 
     try:
@@ -905,6 +909,7 @@ def run_avatar_studio_task(
                 visual_reference=avatar_id,
                 voice_id=voice_id,
                 heygen_character_type=heygen_character_type,
+                aspect_ratio=_ar,
             )
         except (UGCServiceError, ValueError) as exc:
             msg = f"Video generation failed ({provider}): {exc}"
@@ -912,7 +917,13 @@ def run_avatar_studio_task(
             persist_task(task_uuid, ugc_status="failed", ugc_error=msg)
             raise BannerPipelineFatalError(f"[run_avatar_studio_task] {msg}") from exc
 
-        _finalize_ugc_with_composite(task_uuid, task_id, video_url, ugc_script=ugc_script)
+        _finalize_ugc_with_composite(
+            task_uuid,
+            task_id,
+            video_url,
+            ugc_script=ugc_script,
+            aspect_ratio=_ar,
+        )
         logger.info(
             "[run_avatar_studio_task] task_id=%s  COMPLETED. video_url=%s",
             task_id,

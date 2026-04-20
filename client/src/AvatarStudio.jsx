@@ -17,15 +17,17 @@ const UGC_DEFAULT_VOICE_HINT = 'Wuv1s5YTNCjL9mFJTqo4'
 
 /**
  * Best-available video URL priority:
- *   1. ugc_final_video_url   — Remotion render: captions + animations (best)
- *   2. ugc_composited_video_url — FFmpeg blur-bg PiP (no captions)
+ *   1. ugc_final_video_url / ugc_final_video_url_1_1 / ugc_final_video_url_16_9 — Remotion render (best)
+ *   2. ugc_composited_video_url — FFmpeg crop-to-fill (no captions)
  *   3. ugc_raw_video_url     — raw HeyGen/D-ID CDN URL
  */
 function ugcPlaybackUrl(payload) {
   const f = typeof payload?.ugc_final_video_url === 'string' ? payload.ugc_final_video_url.trim() : ''
+  const f1_1 = typeof payload?.ugc_final_video_url_1_1 === 'string' ? payload.ugc_final_video_url_1_1.trim() : ''
+  const f16_9 = typeof payload?.ugc_final_video_url_16_9 === 'string' ? payload.ugc_final_video_url_16_9.trim() : ''
   const c = typeof payload?.ugc_composited_video_url === 'string' ? payload.ugc_composited_video_url.trim() : ''
   const r = typeof payload?.ugc_raw_video_url === 'string' ? payload.ugc_raw_video_url.trim() : ''
-  return f || c || r || ''
+  return f || f1_1 || f16_9 || c || r || ''
 }
 
 /** Which tier is currently being shown, for the UI badge. */
@@ -192,7 +194,7 @@ export default function AvatarStudio() {
   const [avatarId, setAvatarId] = useState(DEFAULT_HEYGEN_ID)
   const [voiceId, setVoiceId] = useState('')
   const [videoLength, setVideoLength] = useState('15s')
-  const [videoFitMode, setVideoFitMode] = useState('crop')
+  const [aspectRatio, setAspectRatio] = useState('9:16')
   const [websiteUrl, setWebsiteUrl] = useState('')
   const [logoUrl, setLogoUrl] = useState('')
   const [productImageUrl, setProductImageUrl] = useState('')
@@ -211,6 +213,8 @@ export default function AvatarStudio() {
   const [rerenderError, setRerenderError] = useState(null)
   /** Which aspect ratio re-render is in flight (for progressive 1:1 / 16:9 buttons). */
   const [pendingAspectRatio, setPendingAspectRatio] = useState(null)
+  /** Which format tab is shown in the preview player (null = auto-pick first available). */
+  const [activePreviewAspect, setActivePreviewAspect] = useState(null)
 
   const [taskId, setTaskId] = useState(null)
   const [statusPayload, setStatusPayload] = useState(null)
@@ -232,8 +236,8 @@ export default function AvatarStudio() {
     setRerenderAnimation('pop')
     setRerenderPosition('bottom')
     setRerenderFont('heebo')
-    setVideoFitMode('crop')
     setRerenderError(null)
+    setActivePreviewAspect(null)
   }, [taskId])
 
   useEffect(() => {
@@ -261,8 +265,6 @@ export default function AvatarStudio() {
     )
     setRerenderSpeed(nearest)
     setDraftBrandColor(typeof statusPayload?.brand_color === 'string' ? statusPayload.brand_color.trim() : '')
-    const rawFm = statusPayload?.ugc_video_fit_mode
-    setVideoFitMode(rawFm === 'blur' || rawFm === 'crop' ? rawFm : 'crop')
   }, [
     taskId,
     statusPayload?.ugc_status,
@@ -272,7 +274,6 @@ export default function AvatarStudio() {
     statusPayload?.ugc_raw_video_url,
     statusPayload?.ugc_speed_factor,
     statusPayload?.brand_color,
-    statusPayload?.ugc_video_fit_mode,
   ])
 
   useEffect(() => {
@@ -322,7 +323,6 @@ export default function AvatarStudio() {
         caption_position: rerenderPosition,
         caption_font: rerenderFont,
         aspect_ratio: aspectRatio,
-        video_fit_mode: videoFitMode,
       }
       const lu = logoUrl.trim()
       if (lu) body.logo_url = lu
@@ -389,7 +389,7 @@ export default function AvatarStudio() {
         provider,
         avatar_id: avatarId.trim(),
         video_length: videoLength,
-        video_fit_mode: videoFitMode,
+        aspect_ratio: aspectRatio,
       }
       const v = voiceId.trim()
       if (v) body.voice_id = v
@@ -422,6 +422,10 @@ export default function AvatarStudio() {
 
   const formLocked = isPosting || isPolling
 
+  const ugcFinal9_16 =
+    typeof statusPayload?.ugc_final_video_url === 'string'
+      ? statusPayload.ugc_final_video_url.trim()
+      : ''
   const ugcFinal1_1 =
     typeof statusPayload?.ugc_final_video_url_1_1 === 'string'
       ? statusPayload.ugc_final_video_url_1_1.trim()
@@ -431,6 +435,17 @@ export default function AvatarStudio() {
       ? statusPayload.ugc_final_video_url_16_9.trim()
       : ''
   const ugcPipelineBusy = ['processing_video', 'rendering_captions'].includes(statusPayload?.ugc_status)
+
+  const currentVideoUrl = (() => {
+    const c = typeof statusPayload?.ugc_composited_video_url === 'string' ? statusPayload.ugc_composited_video_url.trim() : ''
+    const r = typeof statusPayload?.ugc_raw_video_url === 'string' ? statusPayload.ugc_raw_video_url.trim() : ''
+    if (activePreviewAspect === '16:9') return ugcFinal16_9 || ''
+    if (activePreviewAspect === '1:1') return ugcFinal1_1 || ''
+    if (activePreviewAspect === '9:16') return ugcFinal9_16 || c || r || ''
+    return ugcFinal9_16 || ugcFinal16_9 || ugcFinal1_1 || c || r || ''
+  })()
+  const effectivePreviewAspect =
+    activePreviewAspect ?? (ugcFinal9_16 ? '9:16' : ugcFinal16_9 ? '16:9' : ugcFinal1_1 ? '1:1' : null)
   const formatAspectLoading = (ar) =>
     pendingAspectRatio === ar &&
     (rerenderSubmitting ||
@@ -670,18 +685,19 @@ export default function AvatarStudio() {
               </select>
             </div>
 
-            <div>
+            <div dir="rtl">
               <label className="block text-xs font-medium text-slate-600 dark:text-slate-300 mb-1.5">
-                אופן תצוגת וידאו
+                יחס גובה-רוחב לווידאו
               </label>
               <select
-                value={videoFitMode}
-                onChange={(ev) => setVideoFitMode(ev.target.value)}
+                value={aspectRatio}
+                onChange={(ev) => setAspectRatio(ev.target.value)}
                 disabled={formLocked}
-                className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2.5 text-sm outline-none disabled:opacity-60"
+                className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2.5 text-sm text-right outline-none disabled:opacity-60"
               >
-                <option value="crop">מלא מסך (Crop)</option>
-                <option value="blur">התאמה עם רקע מטושטש (Blur)</option>
+                <option value="9:16">9:16 (Story/Reels)</option>
+                <option value="16:9">16:9 (אופקי)</option>
+                <option value="1:1">1:1 (ריבועי)</option>
               </select>
             </div>
 
@@ -869,9 +885,7 @@ export default function AvatarStudio() {
                     )}
                     {ugcVideoTier(statusPayload) === 'composited' && (
                       <span className="rounded-full bg-sky-100 dark:bg-sky-950/70 px-2.5 py-0.5 text-[11px] font-semibold text-sky-700 dark:text-sky-300 ring-1 ring-sky-200/80 dark:ring-sky-800/60">
-                        {statusPayload?.ugc_video_fit_mode === 'blur'
-                          ? 'רקע מטושטש (FFmpeg)'
-                          : 'מלא מסך (FFmpeg)'}
+                        מלא מסך — FFmpeg (ללא כיתוביות)
                       </span>
                     )}
                     {ugcVideoTier(statusPayload) === 'raw' && (
@@ -892,20 +906,71 @@ export default function AvatarStudio() {
                     </div>
                   )}
 
-                  {/* 9:16 letterbox — centers horizontal videos inside a vertical frame */}
-                  <div
-                    className="relative mx-auto w-full max-w-[280px] overflow-hidden rounded-xl bg-black"
-                    style={{ aspectRatio: '9/16' }}
-                  >
-                    <video
-                      key={ugcPlaybackUrl(statusPayload)}
-                      className="absolute inset-0 h-full w-full object-contain"
-                      src={ugcPlaybackUrl(statusPayload)}
-                      controls
-                      playsInline
-                      preload="metadata"
-                    />
-                  </div>
+                  {(ugcFinal9_16 || ugcFinal1_1 || ugcFinal16_9) && (
+                    <div className="flex items-center gap-1.5 flex-wrap">
+                      <span className="text-[11px] text-slate-500 dark:text-slate-400 font-medium">תצוגה מקדימה:</span>
+                      {ugcFinal9_16 && (
+                        <button
+                          type="button"
+                          onClick={() => setActivePreviewAspect('9:16')}
+                          className={`rounded-lg px-2.5 py-1 text-xs font-semibold transition ${
+                            effectivePreviewAspect === '9:16'
+                              ? 'bg-violet-100 dark:bg-violet-900/50 text-violet-700 dark:text-violet-200 ring-1 ring-violet-300 dark:ring-violet-700'
+                              : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-700'
+                          }`}
+                        >
+                          9:16
+                        </button>
+                      )}
+                      {ugcFinal1_1 && (
+                        <button
+                          type="button"
+                          onClick={() => setActivePreviewAspect('1:1')}
+                          className={`rounded-lg px-2.5 py-1 text-xs font-semibold transition ${
+                            effectivePreviewAspect === '1:1'
+                              ? 'bg-violet-100 dark:bg-violet-900/50 text-violet-700 dark:text-violet-200 ring-1 ring-violet-300 dark:ring-violet-700'
+                              : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-700'
+                          }`}
+                        >
+                          1:1
+                        </button>
+                      )}
+                      {ugcFinal16_9 && (
+                        <button
+                          type="button"
+                          onClick={() => setActivePreviewAspect('16:9')}
+                          className={`rounded-lg px-2.5 py-1 text-xs font-semibold transition ${
+                            effectivePreviewAspect === '16:9'
+                              ? 'bg-violet-100 dark:bg-violet-900/50 text-violet-700 dark:text-violet-200 ring-1 ring-violet-300 dark:ring-violet-700'
+                              : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-700'
+                          }`}
+                        >
+                          16:9
+                        </button>
+                      )}
+                    </div>
+                  )}
+                  {(() => {
+                    const currentAspect = activePreviewAspect || aspectRatio || '9:16'
+                    return (
+                      <div
+                        className="relative mx-auto w-full bg-black rounded-xl overflow-hidden flex items-center justify-center shadow-lg"
+                        style={{
+                          maxWidth: currentAspect === '16:9' ? 640 : currentAspect === '1:1' ? 400 : 280,
+                          aspectRatio: currentAspect === '16:9' ? '16 / 9' : currentAspect === '1:1' ? '1 / 1' : '9 / 16',
+                        }}
+                      >
+                        <video
+                          key={currentVideoUrl}
+                          className="w-full h-full object-contain block"
+                          src={currentVideoUrl}
+                          controls
+                          playsInline
+                          preload="metadata"
+                        />
+                      </div>
+                    )
+                  })()}
 
                   {/* Download links — one per available tier */}
                   <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs">
@@ -944,7 +1009,7 @@ export default function AvatarStudio() {
                     )}
                   </div>
 
-                  {statusPayload?.ugc_final_video_url?.trim() && (
+                  {statusPayload?.ugc_status === 'completed' && (
                     <div className="rounded-xl border border-slate-200/90 dark:border-slate-700/90 bg-slate-50/80 dark:bg-slate-950/40 px-4 py-3 space-y-3">
                       <h4 className="text-xs font-semibold text-slate-700 dark:text-slate-200">
                         פורמטים נוספים (לפיד ולמחשב)
@@ -954,6 +1019,30 @@ export default function AvatarStudio() {
                         ב-HeyGen.
                       </p>
                       <div className="flex flex-col sm:flex-row flex-wrap gap-2">
+                        {ugcFinal9_16 ? (
+                          <a
+                            href={ugcFinal9_16.startsWith('/') ? toAbsoluteApiUrl(ugcFinal9_16) : ugcFinal9_16}
+                            download
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="inline-flex items-center justify-center rounded-lg border border-violet-300/80 dark:border-violet-700/60 bg-violet-50/90 dark:bg-violet-950/50 px-3 py-2 text-xs font-medium text-violet-800 dark:text-violet-200 hover:bg-violet-100 dark:hover:bg-violet-900/40"
+                            dir="ltr"
+                          >
+                            הורד MP4 (9:16)
+                          </a>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => void handleUgcRerender('9:16')}
+                            disabled={ugcPipelineBusy || rerenderSubmitting}
+                            className="inline-flex items-center justify-center gap-2 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 px-3 py-2 text-xs font-medium text-slate-800 dark:text-slate-100 hover:bg-slate-50 dark:hover:bg-slate-700 disabled:opacity-50 min-h-[2.5rem]"
+                          >
+                            {formatAspectLoading('9:16') && (
+                              <Spinner className="!size-3.5 border-violet-400/40 border-t-violet-600" />
+                            )}
+                            {formatAspectLoading('9:16') ? 'מייצר...' : 'צור גרסה 9:16'}
+                          </button>
+                        )}
                         {ugcFinal1_1 ? (
                           <a
                             href={ugcFinal1_1.startsWith('/') ? toAbsoluteApiUrl(ugcFinal1_1) : ugcFinal1_1}
@@ -963,7 +1052,7 @@ export default function AvatarStudio() {
                             className="inline-flex items-center justify-center rounded-lg border border-emerald-300/80 dark:border-emerald-700/60 bg-emerald-50/90 dark:bg-emerald-950/50 px-3 py-2 text-xs font-medium text-emerald-800 dark:text-emerald-200 hover:bg-emerald-100 dark:hover:bg-emerald-900/40"
                             dir="ltr"
                           >
-                            הורד וידאו ריבועי
+                            הורד MP4 (1:1)
                           </a>
                         ) : (
                           <button
@@ -975,7 +1064,7 @@ export default function AvatarStudio() {
                             {formatAspectLoading('1:1') && (
                               <Spinner className="!size-3.5 border-violet-400/40 border-t-violet-600" />
                             )}
-                            {formatAspectLoading('1:1') ? 'מייצר...' : 'צור גרסה ריבועית (1:1)'}
+                            {formatAspectLoading('1:1') ? 'מייצר...' : 'צור גרסה 1:1'}
                           </button>
                         )}
                         {ugcFinal16_9 ? (
@@ -987,7 +1076,7 @@ export default function AvatarStudio() {
                             className="inline-flex items-center justify-center rounded-lg border border-sky-300/80 dark:border-sky-700/60 bg-sky-50/90 dark:bg-sky-950/50 px-3 py-2 text-xs font-medium text-sky-800 dark:text-sky-200 hover:bg-sky-100 dark:hover:bg-sky-900/40"
                             dir="ltr"
                           >
-                            הורד וידאו אופקי
+                            הורד MP4 (16:9)
                           </a>
                         ) : (
                           <button
@@ -999,7 +1088,7 @@ export default function AvatarStudio() {
                             {formatAspectLoading('16:9') && (
                               <Spinner className="!size-3.5 border-violet-400/40 border-t-violet-600" />
                             )}
-                            {formatAspectLoading('16:9') ? 'מייצר...' : 'צור גרסה אופקית (16:9)'}
+                            {formatAspectLoading('16:9') ? 'מייצר...' : 'צור גרסה 16:9'}
                           </button>
                         )}
                       </div>
@@ -1016,20 +1105,6 @@ export default function AvatarStudio() {
                         ואז לרנדר שוב את שכבת הכיתוביות והעיצוב על אותו וידאו גלמי.
                       </p>
                       <div className="grid grid-cols-2 gap-4">
-                        <div className="col-span-2">
-                          <label className="block text-xs font-medium text-slate-600 dark:text-slate-300 mb-1.5">
-                            אופן תצוגת וידאו
-                          </label>
-                          <select
-                            value={videoFitMode}
-                            onChange={(ev) => setVideoFitMode(ev.target.value)}
-                            disabled={rerenderSubmitting || ugcPipelineBusy}
-                            className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2.5 text-sm outline-none disabled:opacity-60"
-                          >
-                            <option value="crop">מלא מסך (Crop)</option>
-                            <option value="blur">התאמה עם רקע מטושטש (Blur)</option>
-                          </select>
-                        </div>
                         <div>
                           <label className="block text-xs font-medium text-slate-600 dark:text-slate-300 mb-1.5">
                             מהירות וידאו

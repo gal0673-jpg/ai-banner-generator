@@ -36,6 +36,8 @@ from tenacity import (
     wait_exponential,
 )
 
+from services.ugc_composite_service import normalize_ugc_aspect_ratio
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -58,6 +60,16 @@ _HEYGEN_VIDEO_STATUS_URL = "https://api.heygen.com/v1/video_status.get"
 
 _POLL_INTERVAL_SECONDS = 10
 _MAX_POLL_ATTEMPTS = 72  # ~12 minutes ceiling; HeyGen can be slow on first renders
+
+
+def _heygen_dimension_for_aspect_ratio(aspect_ratio: str = "9:16") -> dict[str, int]:
+    """Match FFmpeg UGC canvas sizes (see ``ugc_composite_service._ugc_canvas_width_height``)."""
+    ar = normalize_ugc_aspect_ratio(aspect_ratio)
+    if ar == "1:1":
+        return {"width": 1080, "height": 1080}
+    if ar == "16:9":
+        return {"width": 1920, "height": 1080}
+    return {"width": 1080, "height": 1920}
 
 
 def _log_heygen_error_response(resp: requests.Response, context: str) -> None:
@@ -229,6 +241,7 @@ def _heygen_request_video(
     api_key: str,
     *,
     character_type: str = "avatar",
+    aspect_ratio: str = "9:16",
 ) -> str:
     """Submit a HeyGen /v2/video/generate job and return the ``video_id``.
 
@@ -265,11 +278,12 @@ def _heygen_request_video(
                 },
             }
         ],
-        "dimension": {"width": 1280, "height": 720},
+        "dimension": _heygen_dimension_for_aspect_ratio(aspect_ratio),
     }
     print(
         f"Calling HeyGen: {_HEYGEN_VIDEO_GENERATE_URL} "
-        f"(character_type={character_type!r}, id={visual_id[:16]}…)"
+        f"(character_type={character_type!r}, id={visual_id[:16]}…, "
+        f"dimension={payload['dimension']})"
     )
     resp = requests.post(
         _HEYGEN_VIDEO_GENERATE_URL, json=payload, headers=headers, timeout=60
@@ -374,6 +388,7 @@ def generate_heygen_avatar_video(
     audio_bytes: bytes,
     *,
     character_type: str = "avatar",
+    aspect_ratio: str = "9:16",
 ) -> str:
     """Generate a HeyGen talking-avatar video from a pre-rendered audio track.
 
@@ -385,6 +400,7 @@ def generate_heygen_avatar_video(
         avatar_id:       HeyGen ``avatar_id`` or ``talking_photo_id`` (see *character_type*).
         character_type:  ``"avatar"`` or ``"talking_photo"`` — must match the ID kind from
                          `List All Avatars (V2) <https://docs.heygen.com/reference/list-avatars-v2>`_.
+        aspect_ratio:    ``"9:16"``, ``"16:9"``, or ``"1:1"`` — forwarded to HeyGen ``dimension``.
         audio_bytes: MP3 audio bytes (e.g. from :func:`generate_elevenlabs_audio`).
 
     Returns:
@@ -429,7 +445,11 @@ def generate_heygen_avatar_video(
     )
     try:
         video_id = _heygen_request_video(
-            avatar_id, audio_asset_id, api_key, character_type=character_type
+            avatar_id,
+            audio_asset_id,
+            api_key,
+            character_type=character_type,
+            aspect_ratio=aspect_ratio,
         )
     except UGCServiceError:
         raise  # already descriptive; propagate as-is
@@ -652,6 +672,7 @@ def dispatch_ugc_generation(
     visual_reference: str,
     voice_id: str | None = None,
     heygen_character_type: str | None = None,
+    aspect_ratio: str = "9:16",
 ) -> str:
     """Route UGC video generation to the correct provider pipeline.
 
@@ -666,6 +687,8 @@ def dispatch_ugc_generation(
         heygen_character_type: For ``heygen_elevenlabs`` only: ``"avatar"`` (default)
                           or ``"talking_photo"``. Must match the kind of id in
                           *visual_reference*. Ignored for ``d-id``.
+        aspect_ratio: For ``heygen_elevenlabs`` only: output frame aspect for HeyGen
+                          ``dimension`` (``"9:16"``, ``"16:9"``, ``"1:1"``). Ignored for ``d-id``.
 
     Returns:
         Final CDN video URL (``str``).
@@ -684,7 +707,10 @@ def dispatch_ugc_generation(
         el_voice_id = voice_id if voice_id else _ELEVENLABS_DEFAULT_VOICE_ID
         audio_bytes = generate_elevenlabs_audio(script_text, voice_id=el_voice_id)
         return generate_heygen_avatar_video(
-            visual_reference, audio_bytes, character_type=ct
+            visual_reference,
+            audio_bytes,
+            character_type=ct,
+            aspect_ratio=aspect_ratio,
         )
 
     if provider == "d-id":
