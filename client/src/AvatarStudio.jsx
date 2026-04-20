@@ -311,18 +311,19 @@ export default function AvatarStudio() {
     }
   }, [taskId, sseBump])
 
-  const handleUgcRerender = async (aspectRatio = '9:16') => {
+  const handleUgcRerender = async (ar) => {
+    const targetAspect = ar ?? activePreviewAspect ?? aspectRatio ?? '9:16'
     if (!taskId) return
     setRerenderError(null)
     setRerenderSubmitting(true)
-    setPendingAspectRatio(aspectRatio)
+    setPendingAspectRatio(targetAspect)
     try {
       const body = {
         speed_factor: rerenderSpeed,
         caption_animation: rerenderAnimation,
         caption_position: rerenderPosition,
         caption_font: rerenderFont,
-        aspect_ratio: aspectRatio,
+        aspect_ratio: targetAspect,
       }
       const lu = logoUrl.trim()
       if (lu) body.logo_url = lu
@@ -1199,7 +1200,7 @@ export default function AvatarStudio() {
                       )}
                       <button
                         type="button"
-                        onClick={() => void handleUgcRerender('9:16')}
+                        onClick={() => void handleUgcRerender()}
                         disabled={rerenderSubmitting || ugcPipelineBusy}
                         className="w-full rounded-xl border border-violet-300 dark:border-violet-700 bg-violet-50 dark:bg-violet-950/50 px-4 py-3 text-sm font-semibold text-violet-900 dark:text-violet-100 hover:bg-violet-100 dark:hover:bg-violet-900/40 disabled:opacity-50 inline-flex items-center justify-center gap-2"
                       >
@@ -1210,7 +1211,7 @@ export default function AvatarStudio() {
                           ? 'מרנדר מחדש…'
                           : rerenderSubmitting
                             ? 'שולח…'
-                            : 'רינדור מחדש'}
+                            : `רינדור מחדש לגרסת ${activePreviewAspect || aspectRatio || '9:16'}`}
                       </button>
                     </div>
                   )}

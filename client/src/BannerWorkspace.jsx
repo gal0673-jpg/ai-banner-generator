@@ -605,13 +605,14 @@ export default function BannerWorkspace() {
     }
   }, [taskId])
 
-  const handleUgcRerender = useCallback(async (ar = '9:16') => {
+  const handleUgcRerender = useCallback(async (ar) => {
+    const targetAspect = ar ?? activePreviewAspect ?? aspectRatio ?? '9:16'
     if (!taskId) return
     setUgcRerenderError(null)
     setUgcRerenderSubmitting(true)
-    setUgcPendingAspectRatio(ar)
+    setUgcPendingAspectRatio(targetAspect)
     try {
-      await api.post(`/tasks/${taskId}/ugc/re-render`, { aspect_ratio: ar })
+      await api.post(`/tasks/${taskId}/ugc/re-render`, { aspect_ratio: targetAspect })
       setSseBump((n) => n + 1)
     } catch (err) {
       setUgcRerenderError(axiosErrorMessage(err))
@@ -619,7 +620,7 @@ export default function BannerWorkspace() {
     } finally {
       setUgcRerenderSubmitting(false)
     }
-  }, [taskId])
+  }, [taskId, activePreviewAspect, aspectRatio])
 
   return (
     <div
