@@ -17,6 +17,31 @@ const UGC_COMPOSITION_ID = "Ugc";
 
 const OUTPUT_DIR = path.join(__dirname, "output");
 
+/**
+ * When `REMOTION_CONCURRENCY` is unset or empty, returns `undefined` so Remotion
+ * picks its default (parallelism across CPU cores). When set, parses a positive
+ * integer; invalid values fall back to `undefined`.
+ * @returns {number | undefined}
+ */
+function getRemotionConcurrencyFromEnv() {
+  const raw = process.env.REMOTION_CONCURRENCY;
+  if (raw === undefined || raw === null) return undefined;
+  const trimmed = String(raw).trim();
+  if (trimmed === "") return undefined;
+  const n = Number(trimmed);
+  if (!Number.isFinite(n) || n < 1) return undefined;
+  return Math.floor(n);
+}
+
+/** @returns {boolean} */
+function isRemotionSwiftShaderDisabledFromEnv() {
+  const raw = process.env.REMOTION_DISABLE_SWIFTSHADER;
+  if (raw === undefined || raw === null) return false;
+  const t = String(raw).trim();
+  if (t === "") return false;
+  return t === "1" || t.toLowerCase() === "true";
+}
+
 function normalizeDesignTemplate(v) {
   if (v === undefined || v === null) return 1;
   const n = Number(v);
@@ -274,6 +299,9 @@ export async function renderUgcVideo(inputProps, options = {}) {
   const fileName = `ugc-${randomUUID()}.mp4`;
   const outputLocation = path.join(taskDir, fileName);
 
+  const concurrency = getRemotionConcurrencyFromEnv();
+  const useSwiftShader = !isRemotionSwiftShaderDisabledFromEnv();
+
   await renderMedia({
     composition,
     serveUrl,
@@ -284,14 +312,16 @@ export async function renderUgcVideo(inputProps, options = {}) {
     compositionHeight,
     logLevel: "warn",
     overwrite: true,
-    // Limit frame-level parallelism — reduces Chrome RAM pressure significantly.
-    // Each concurrent "slot" spawns a Chrome tab; 1 is enough for local rendering.
-    concurrency: 1,
-    // SwiftShader = pure-software WebGL — no GPU memory allocated.
-    // Required on Windows machines without a discrete GPU / when GPU VRAM is low.
-    chromiumOptions: {
-      gl: "swiftshader",
-    },
+    ...(concurrency !== undefined ? { concurrency } : {}),
+    ...(useSwiftShader
+      ? {
+          // SwiftShader = pure-software WebGL — no GPU memory allocated.
+          // Default for local safety; omit in production via REMOTION_DISABLE_SWIFTSHADER.
+          chromiumOptions: {
+            gl: "swiftshader",
+          },
+        }
+      : {}),
   });
 
   const publicBase =

@@ -1,5 +1,5 @@
 AI BANNER CONTEXT EXPORT
-Generated (UTC): 2026-04-20 18:49:15 UTC
+Generated (UTC): 2026-04-21 06:16:53 UTC
 Project root: C:\laragon\www\python
 Output filename: ai-banner-context.txt
 
@@ -92,6 +92,7 @@ python/
 │   │   │       ├── TextControls.jsx
 │   │   │       ├── useBannerCanvasState.js
 │   │   │       └── useDebouncedCallback.js
+│   │   ├── AdminCatalog.jsx
 │   │   ├── api.js
 │   │   ├── App.css
 │   │   ├── App.jsx
@@ -124,7 +125,8 @@ python/
 │   ├── admin.py
 │   ├── auth.py
 │   ├── avatar_studio.py
-│   └── banners.py
+│   ├── banners.py
+│   └── catalog.py
 ├── services
 │   ├── __init__.py
 │   ├── banner_service.py
@@ -133,7 +135,7 @@ python/
 │   ├── url_display.py
 │   └── video_service.py
 ├── tasks
-│   └── [159 task UUID folders — runtime outputs omitted]
+│   └── [161 task UUID folders — runtime outputs omitted]
 ├── video_engine
 │   ├── public
 │   │   ├── bgm.mp3
@@ -180,7 +182,7 @@ python/
 └── worker_tasks.py
 
 ================================================================================
-SECTION: PYTHON FILES (44)
+SECTION: PYTHON FILES (45)
 ================================================================================
 
 
@@ -1200,6 +1202,7 @@ from routers import admin as admin_router  # noqa: E402
 from routers import auth as auth_router  # noqa: E402
 from routers import avatar_studio as avatar_studio_router  # noqa: E402
 from routers import banners as banners_router  # noqa: E402
+from routers import catalog as catalog_router  # noqa: E402
 from services.banner_service import TASKS_DIR, ensure_tasks_dir  # noqa: E402
 
 
@@ -1270,6 +1273,7 @@ app.include_router(auth_router.router)
 app.include_router(banners_router.router)
 app.include_router(avatar_studio_router.router)
 app.include_router(admin_router.router)
+app.include_router(catalog_router.router)
 
 
 ================================================================================
@@ -4414,7 +4418,7 @@ if __name__ == "__main__":
 FILE: models.py
 ================================================================================
 
-"""ORM models: User and BannerTask."""
+"""ORM models: User, BannerTask, VoiceCatalog, AvatarCatalog."""
 
 from __future__ import annotations
 
@@ -4516,6 +4520,46 @@ class BannerTask(Base):
     ugc_video_fit_mode: Mapped[str | None] = mapped_column(String(32), default="crop", nullable=True)
 
     user: Mapped["User"] = relationship("User", back_populates="tasks")
+
+
+class VoiceCatalog(Base):
+    """TTS voice entries available for avatar videos."""
+
+    __tablename__ = "voice_catalog"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    name: Mapped[str] = mapped_column(String(128), nullable=False)
+    gender: Mapped[str] = mapped_column(String(32), nullable=False)
+    provider: Mapped[str] = mapped_column(String(64), nullable=False)
+    external_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utc_now, nullable=False
+    )
+
+
+class AvatarCatalog(Base):
+    """Avatar entries available for avatar video generation."""
+
+    __tablename__ = "avatar_catalog"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    name: Mapped[str] = mapped_column(String(128), nullable=False)
+    gender: Mapped[str] = mapped_column(String(32), nullable=False)
+    aspect_ratio: Mapped[str] = mapped_column(String(16), nullable=False)
+    provider: Mapped[str] = mapped_column(String(64), nullable=False)
+    external_id: Mapped[str] = mapped_column(String(1024), nullable=False)
+    heygen_character_type: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    recommended_voice_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    thumbnail_url: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utc_now, nullable=False
+    )
 
 
 ================================================================================
@@ -5358,6 +5402,194 @@ def reset_stuck_video_render(
 
 
 ================================================================================
+FILE: routers/catalog.py
+================================================================================
+
+"""Avatar & Voice catalog — public read endpoints + superuser CRUD."""
+
+from __future__ import annotations
+
+import uuid
+from typing import Annotated
+
+from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
+from auth import get_current_superuser, get_current_user
+from database import get_db
+from models import AvatarCatalog, User, VoiceCatalog
+from schemas import (
+    AvatarCreate,
+    AvatarRead,
+    AvatarUpdate,
+    VoiceCreate,
+    VoiceRead,
+    VoiceUpdate,
+)
+
+router = APIRouter(tags=["catalog"])
+
+# ── Public (authenticated) ────────────────────────────────────────────────────
+
+
+@router.get("/catalog/avatars/active", response_model=list[AvatarRead])
+def list_active_avatars(
+    _: Annotated[User, Depends(get_current_user)],
+    db: Session = Depends(get_db),
+) -> list[AvatarCatalog]:
+    """Return all active avatars for the studio picker."""
+    return list(
+        db.scalars(
+            select(AvatarCatalog)
+            .where(AvatarCatalog.is_active.is_(True))
+            .order_by(AvatarCatalog.name)
+        ).all()
+    )
+
+
+@router.get("/catalog/voices/active", response_model=list[VoiceRead])
+def list_active_voices(
+    _: Annotated[User, Depends(get_current_user)],
+    db: Session = Depends(get_db),
+) -> list[VoiceCatalog]:
+    """Return all active voices for the studio picker."""
+    return list(
+        db.scalars(
+            select(VoiceCatalog)
+            .where(VoiceCatalog.is_active.is_(True))
+            .order_by(VoiceCatalog.name)
+        ).all()
+    )
+
+
+# ── Admin — Avatars ───────────────────────────────────────────────────────────
+
+
+@router.get("/admin/avatars", response_model=list[AvatarRead])
+def admin_list_avatars(
+    _: Annotated[User, Depends(get_current_superuser)],
+    db: Session = Depends(get_db),
+) -> list[AvatarCatalog]:
+    """Return all avatars (active and inactive) for the admin catalog UI."""
+    return list(
+        db.scalars(
+            select(AvatarCatalog).order_by(AvatarCatalog.name)
+        ).all()
+    )
+
+
+@router.post(
+    "/admin/avatars",
+    response_model=AvatarRead,
+    status_code=status.HTTP_201_CREATED,
+)
+def create_avatar(
+    body: AvatarCreate,
+    _: Annotated[User, Depends(get_current_superuser)],
+    db: Session = Depends(get_db),
+) -> AvatarCatalog:
+    row = AvatarCatalog(**body.model_dump())
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return row
+
+
+@router.put("/admin/avatars/{avatar_id}", response_model=AvatarRead)
+def update_avatar(
+    avatar_id: uuid.UUID,
+    body: AvatarUpdate,
+    _: Annotated[User, Depends(get_current_superuser)],
+    db: Session = Depends(get_db),
+) -> AvatarCatalog:
+    row = db.get(AvatarCatalog, avatar_id)
+    if row is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Avatar not found")
+    for field, value in body.model_dump(exclude_unset=True).items():
+        setattr(row, field, value)
+    db.commit()
+    db.refresh(row)
+    return row
+
+
+@router.delete("/admin/avatars/{avatar_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_avatar(
+    avatar_id: uuid.UUID,
+    _: Annotated[User, Depends(get_current_superuser)],
+    db: Session = Depends(get_db),
+) -> None:
+    row = db.get(AvatarCatalog, avatar_id)
+    if row is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Avatar not found")
+    db.delete(row)
+    db.commit()
+
+
+# ── Admin — Voices ────────────────────────────────────────────────────────────
+
+
+@router.get("/admin/voices", response_model=list[VoiceRead])
+def admin_list_voices(
+    _: Annotated[User, Depends(get_current_superuser)],
+    db: Session = Depends(get_db),
+) -> list[VoiceCatalog]:
+    """Return all voices (active and inactive) for the admin catalog UI."""
+    return list(
+        db.scalars(
+            select(VoiceCatalog).order_by(VoiceCatalog.name)
+        ).all()
+    )
+
+
+@router.post(
+    "/admin/voices",
+    response_model=VoiceRead,
+    status_code=status.HTTP_201_CREATED,
+)
+def create_voice(
+    body: VoiceCreate,
+    _: Annotated[User, Depends(get_current_superuser)],
+    db: Session = Depends(get_db),
+) -> VoiceCatalog:
+    row = VoiceCatalog(**body.model_dump())
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return row
+
+
+@router.put("/admin/voices/{voice_id}", response_model=VoiceRead)
+def update_voice(
+    voice_id: uuid.UUID,
+    body: VoiceUpdate,
+    _: Annotated[User, Depends(get_current_superuser)],
+    db: Session = Depends(get_db),
+) -> VoiceCatalog:
+    row = db.get(VoiceCatalog, voice_id)
+    if row is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Voice not found")
+    for field, value in body.model_dump(exclude_unset=True).items():
+        setattr(row, field, value)
+    db.commit()
+    db.refresh(row)
+    return row
+
+
+@router.delete("/admin/voices/{voice_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_voice(
+    voice_id: uuid.UUID,
+    _: Annotated[User, Depends(get_current_superuser)],
+    db: Session = Depends(get_db),
+) -> None:
+    row = db.get(VoiceCatalog, voice_id)
+    if row is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Voice not found")
+    db.delete(row)
+    db.commit()
+
+
+================================================================================
 FILE: schemas.py
 ================================================================================
 
@@ -5365,6 +5597,8 @@ FILE: schemas.py
 
 from __future__ import annotations
 
+import uuid
+from datetime import datetime
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -5588,6 +5822,76 @@ class UgcReRenderRequest(BaseModel):
     )
 
 
+# ── Catalog schemas ───────────────────────────────────────────────────────────
+
+class VoiceRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    name: str
+    gender: str
+    provider: str
+    external_id: str
+    is_active: bool
+    created_at: datetime
+
+
+class VoiceCreate(BaseModel):
+    name: str = Field(..., min_length=1, max_length=128)
+    gender: str = Field(..., min_length=1, max_length=32)
+    provider: str = Field(..., min_length=1, max_length=64)
+    external_id: str = Field(..., min_length=1, max_length=128)
+    is_active: bool = True
+
+
+class VoiceUpdate(BaseModel):
+    name: str | None = Field(default=None, max_length=128)
+    gender: str | None = Field(default=None, max_length=32)
+    provider: str | None = Field(default=None, max_length=64)
+    external_id: str | None = Field(default=None, max_length=128)
+    is_active: bool | None = None
+
+
+class AvatarRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    name: str
+    gender: str
+    aspect_ratio: str
+    provider: str
+    external_id: str
+    heygen_character_type: str | None
+    recommended_voice_id: str | None
+    thumbnail_url: str | None
+    is_active: bool
+    created_at: datetime
+
+
+class AvatarCreate(BaseModel):
+    name: str = Field(..., min_length=1, max_length=128)
+    gender: str = Field(..., min_length=1, max_length=32)
+    aspect_ratio: str = Field(..., min_length=1, max_length=16)
+    provider: str = Field(..., min_length=1, max_length=64)
+    external_id: str = Field(..., min_length=1, max_length=1024)
+    heygen_character_type: str | None = Field(default=None, max_length=64)
+    recommended_voice_id: str | None = Field(default=None, max_length=128)
+    thumbnail_url: str | None = Field(default=None, max_length=1024)
+    is_active: bool = True
+
+
+class AvatarUpdate(BaseModel):
+    name: str | None = Field(default=None, max_length=128)
+    gender: str | None = Field(default=None, max_length=32)
+    aspect_ratio: str | None = Field(default=None, max_length=16)
+    provider: str | None = Field(default=None, max_length=64)
+    external_id: str | None = Field(default=None, max_length=1024)
+    heygen_character_type: str | None = Field(default=None, max_length=64)
+    recommended_voice_id: str | None = Field(default=None, max_length=128)
+    thumbnail_url: str | None = Field(default=None, max_length=1024)
+    is_active: bool | None = None
+
+
 class TaskPatchRequest(BaseModel):
     """Partial update for an editable completed banner task."""
 
@@ -5730,9 +6034,9 @@ FILE: services/ugc_composite_service.py
 Triggered from Celery after HeyGen/D-ID returns a CDN URL.
 
 FFmpeg step (try_composite_pip_blur):
-  Converts the raw provider video to the target aspect (e.g. 9:16) using a blurred
-  full-frame background (scale+crop+blur) plus a letterbox-fit foreground centered on top.
-  On failure, callers keep ``ugc_raw_video_url`` only.
+  Converts the raw provider video to the target aspect (e.g. 9:16) with a **crop-to-fill**
+  center crop (scale with ``force_original_aspect_ratio=increase``, then ``crop``), matching
+  typical short-form vertical video framing.  On failure, callers keep ``ugc_raw_video_url`` only.
 
 Remotion step (call_video_engine_render_ugc):
   Sends the raw CDN video + ugc_script to the Node.js video engine's /render-ugc
@@ -5743,6 +6047,11 @@ Env:
   UGC_FFMPEG_COMPOSITE      — set to ``0`` / ``false`` / ``no`` to disable FFmpeg step
                                (default: enabled when ffmpeg exists).
   UGC_FFMPEG_BINARY         — override executable name/path (default: ``ffmpeg``).
+  UGC_FFMPEG_VCODEC         — video encoder (e.g. ``h264_nvenc``, ``h264_videotoolbox``,
+                               ``h264_qsv``); default ``libx264``.
+  UGC_FFMPEG_PRESET         — encoder preset (e.g. NVENC ``p4`` or libx264 ``fast``);
+                               default ``fast``.  For non-``libx264`` codecs, ``-crf`` is
+                               omitted (HW encoders use their own rate-control options).
   VIDEO_ENGINE_URL          — base URL of the Remotion video engine
                                (default: ``http://127.0.0.1:9000``).
   VIDEO_ENGINE_RENDER_UGC_TIMEOUT — HTTP timeout in seconds for /render-ugc
@@ -5809,6 +6118,22 @@ def _ffmpeg_binary() -> str:
     return os.environ.get("UGC_FFMPEG_BINARY", "ffmpeg").strip() or "ffmpeg"
 
 
+def _ugc_ffmpeg_vcodec() -> str:
+    """Video codec for UGC composite encode; default ``libx264`` when unset or blank."""
+    raw = os.environ.get("UGC_FFMPEG_VCODEC")
+    if raw is None or not str(raw).strip():
+        return "libx264"
+    return str(raw).strip()
+
+
+def _ugc_ffmpeg_preset() -> str:
+    """Encoder preset for UGC composite; default ``fast`` when unset or blank."""
+    raw = os.environ.get("UGC_FFMPEG_PRESET")
+    if raw is None or not str(raw).strip():
+        return "fast"
+    return str(raw).strip()
+
+
 def composite_enabled() -> bool:
     if os.environ.get("UGC_FFMPEG_COMPOSITE", "1").strip().lower() in (
         "0",
@@ -5838,7 +6163,7 @@ def try_composite_pip_blur(
     speed_factor: float = 1.0,
     aspect_ratio: str = "9:16",
 ) -> tuple[str | None, str | None]:
-    """Download provider MP4, run FFmpeg blurred-background composite, write aspect-specific MP4.
+    """Download provider MP4, run FFmpeg crop-to-fill composite, write aspect-specific MP4.
 
     Args:
         speed_factor: Playback rate for video+audio (1.0 = unchanged). Clamped to 0.5–2.0
@@ -5854,7 +6179,7 @@ def try_composite_pip_blur(
         if shutil.which(bin_name) is None:
             return None, (
                 "FFmpeg is not installed on the server. Showing raw provider video. "
-                "To enable the UGC FFmpeg composite (blurred background + fit foreground), "
+                "To enable the UGC FFmpeg composite (crop-to-fill aspect normalization), "
                 "please install FFmpeg "
                 f"and set UGC_FFMPEG_BINARY to its full path (e.g. C:/laragon/ffpm/bin/ffmpeg.exe). "
                 f"[looked for: {bin_name!r}]"
@@ -5867,7 +6192,7 @@ def try_composite_pip_blur(
     dl_path = work_dir / _DOWNLOAD_FILENAME
     w, h = _ugc_canvas_width_height(aspect_ratio)
     logger.info(
-        "[ugc_composite] task_id=%s aspect=%s canvas=%d×%d (blur-bg + fit-fg)",
+        "[ugc_composite] task_id=%s aspect=%s canvas=%d×%d (crop-to-fill)",
         task_id,
         normalize_ugc_aspect_ratio(aspect_ratio),
         w,
@@ -5893,19 +6218,17 @@ def try_composite_pip_blur(
         sf = min(2.0, max(0.5, sf))
     use_speed = abs(sf - 1.0) > 1e-3
 
-    # Background: fill canvas + crop + heavy blur. Foreground: fit inside canvas (no crop).
-    # Overlay centers fg on bg so aspect changes (e.g. 9:16 → 16:9) do not decapitate the avatar.
-    _overlay_tail = (
-        f"[bg][fg]overlay=(main_w-overlay_w)/2:(main_h-overlay_h)/2,setsar=1"
+    # TikTok/Reels-style crop-to-fill: scale so the frame covers w×h, then center-crop.
+    # Optional setpts speeds/slows video to match atempo on audio.
+    fc = (
+        f"[0:v]scale={w}:{h}:force_original_aspect_ratio=increase,"
+        f"crop={w}:{h}:(iw-ow)/2:(ih-oh)/2,setsar=1"
         + (f",setpts=PTS/{sf}" if use_speed else "")
         + "[outv]"
     )
-    fc = (
-        f"[0:v]scale={w}:{h}:force_original_aspect_ratio=increase,"
-        f"crop={w}:{h}:(iw-ow)/2:(ih-oh)/2,boxblur=20:10[bg];"
-        f"[0:v]scale={w}:{h}:force_original_aspect_ratio=decrease[fg];"
-        f"{_overlay_tail}"
-    )
+
+    vcodec = _ugc_ffmpeg_vcodec()
+    preset = _ugc_ffmpeg_preset()
 
     def _run_ffmpeg(with_audio: bool) -> subprocess.CompletedProcess[str]:
         c = [
@@ -5921,16 +6244,21 @@ def try_composite_pip_blur(
             "-map",
             "[outv]",
             "-c:v",
-            "libx264",
+            vcodec,
             "-pix_fmt",
             "yuv420p",
-            "-crf",
-            "20",
-            "-preset",
-            "fast",
-            "-movflags",
-            "+faststart",
         ]
+        # CRF is libx264-oriented; NVENC / QSV / VideoToolbox use other rate-control flags.
+        if vcodec == "libx264":
+            c.extend(["-crf", "20"])
+        c.extend(
+            [
+                "-preset",
+                preset,
+                "-movflags",
+                "+faststart",
+            ]
+        )
         if with_audio:
             audio_chain: list[str] = ["-map", "0:a?"]
             if use_speed:
@@ -8595,7 +8923,7 @@ def run_avatar_studio_task(
 
 
 ================================================================================
-SECTION: CLIENT SOURCE FILES (26)
+SECTION: CLIENT SOURCE FILES (27)
 ================================================================================
 
 
@@ -8690,6 +9018,686 @@ FILE: client/package.json
     "tailwindcss": "^4.2.2",
     "vite": "^8.0.1"
   }
+}
+
+
+================================================================================
+FILE: client/src/AdminCatalog.jsx
+================================================================================
+
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { Link, useNavigate } from 'react-router-dom'
+import api from './api.js'
+import { useAuth } from './AuthContext.jsx'
+
+// ─── constants ────────────────────────────────────────────────────────────────
+
+const GENDER_OPTIONS    = ['male', 'female']
+const ASPECT_OPTIONS    = ['9:16', '16:9', '1:1']
+const PROVIDER_AVATAR   = ['heygen_elevenlabs', 'd-id']
+const PROVIDER_VOICE    = ['elevenlabs']
+const HEYGEN_CHAR_TYPES = ['avatar', 'talking_photo']
+
+const AVATAR_DEFAULTS = {
+  name: '',
+  gender: 'male',
+  aspect_ratio: '9:16',
+  provider: 'heygen_elevenlabs',
+  external_id: '',
+  heygen_character_type: 'avatar',
+  recommended_voice_id: '',
+  thumbnail_url: '',
+  is_active: true,
+}
+
+const VOICE_DEFAULTS = {
+  name: '',
+  gender: 'male',
+  provider: 'elevenlabs',
+  external_id: '',
+  is_active: true,
+}
+
+// ─── helpers ──────────────────────────────────────────────────────────────────
+
+function axiosErrMsg(err) {
+  const d = err?.response?.data?.detail
+  if (typeof d === 'string') return d
+  if (Array.isArray(d)) return d.map((x) => x.msg || JSON.stringify(x)).join(' ')
+  return err?.message || 'הפעולה נכשלה'
+}
+
+// ─── shared UI primitives ────────────────────────────────────────────────────
+
+function Spinner({ className = '' }) {
+  return (
+    <span
+      className={`inline-block size-4 rounded-full border-2 border-indigo-400/30 border-t-indigo-500 animate-spin ${className}`}
+      aria-hidden
+    />
+  )
+}
+
+function Badge({ active }) {
+  return active
+    ? <span className="inline-flex items-center rounded-full bg-emerald-100 dark:bg-emerald-950/50 px-2 py-0.5 text-[10px] font-semibold text-emerald-700 dark:text-emerald-300 ring-1 ring-emerald-300/60 dark:ring-emerald-700/40">פעיל</span>
+    : <span className="inline-flex items-center rounded-full bg-slate-100 dark:bg-slate-800 px-2 py-0.5 text-[10px] font-semibold text-slate-500 dark:text-slate-400 ring-1 ring-slate-300/50 dark:ring-slate-700/40">כבוי</span>
+}
+
+function Sel({ id, value, onChange, options, disabled }) {
+  return (
+    <select
+      id={id}
+      value={value}
+      onChange={onChange}
+      disabled={disabled}
+      className="w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2 text-sm outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/20 disabled:opacity-60 transition"
+    >
+      {options.map((o) => <option key={o} value={o}>{o}</option>)}
+    </select>
+  )
+}
+
+function Field({ label, children, required }) {
+  return (
+    <div>
+      <label className="block text-xs font-medium text-slate-600 dark:text-slate-300 mb-1">
+        {required && <span className="text-red-500 me-0.5">*</span>}
+        {label}
+      </label>
+      {children}
+    </div>
+  )
+}
+
+const inputCls =
+  'w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2 text-sm outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/20 disabled:opacity-60 transition'
+
+// ─── Avatar form modal ───────────────────────────────────────────────────────
+
+function AvatarFormModal({ initial, onSave, onClose, loading, error }) {
+  const [f, setF] = useState({ ...AVATAR_DEFAULTS, ...initial })
+  const set = (k) => (e) => setF((p) => ({ ...p, [k]: e.target.type === 'checkbox' ? e.target.checked : e.target.value }))
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm" dir="rtl">
+      <div className="w-full max-w-lg bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-700 shadow-2xl overflow-y-auto max-h-[92vh]">
+        <div className="flex items-center justify-between px-5 py-4 border-b border-slate-200 dark:border-slate-700">
+          <h3 className="text-base font-semibold text-slate-900 dark:text-white">
+            {initial?.id ? 'עריכת אווטאר' : 'הוספת אווטאר חדש'}
+          </h3>
+          <button type="button" onClick={onClose} className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 transition text-xl leading-none">×</button>
+        </div>
+
+        <div className="p-5 space-y-3">
+          <Field label="שם (לתצוגה)" required>
+            <input className={inputCls} value={f.name} onChange={set('name')} placeholder="למשל: Daniel - Deep Voice" />
+          </Field>
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="מין" required>
+              <Sel value={f.gender} onChange={set('gender')} options={GENDER_OPTIONS} />
+            </Field>
+            <Field label="יחס גובה-רוחב" required>
+              <Sel value={f.aspect_ratio} onChange={set('aspect_ratio')} options={ASPECT_OPTIONS} />
+            </Field>
+          </div>
+          <Field label="ספק" required>
+            <Sel value={f.provider} onChange={set('provider')} options={PROVIDER_AVATAR} />
+          </Field>
+          <Field label="מזהה חיצוני (external_id)" required>
+            <input className={inputCls} value={f.external_id} onChange={set('external_id')} dir="ltr" placeholder="HeyGen avatar_id / D-ID image URL" />
+          </Field>
+          {f.provider === 'heygen_elevenlabs' && (
+            <Field label="סוג תו HeyGen">
+              <Sel value={f.heygen_character_type ?? 'avatar'} onChange={set('heygen_character_type')} options={HEYGEN_CHAR_TYPES} />
+            </Field>
+          )}
+          <Field label="מזהה קול מומלץ (ElevenLabs)">
+            <input className={inputCls} value={f.recommended_voice_id ?? ''} onChange={set('recommended_voice_id')} dir="ltr" placeholder="voice_id (אופציונלי)" />
+          </Field>
+          <Field label="URL לתמונה ממוזערת">
+            <input className={inputCls} value={f.thumbnail_url ?? ''} onChange={set('thumbnail_url')} dir="ltr" placeholder="https://… (אופציונלי)" />
+          </Field>
+          <label className="flex items-center gap-2 cursor-pointer select-none text-sm text-slate-700 dark:text-slate-200">
+            <input
+              type="checkbox"
+              checked={f.is_active}
+              onChange={set('is_active')}
+              className="rounded border-slate-300 dark:border-slate-600 text-indigo-600 focus:ring-indigo-500"
+            />
+            פעיל
+          </label>
+
+          {error && (
+            <div role="alert" className="rounded-lg border border-red-200 dark:border-red-900/50 bg-red-50 dark:bg-red-950/40 px-3 py-2 text-xs text-red-800 dark:text-red-200">
+              {error}
+            </div>
+          )}
+
+          <div className="flex justify-end gap-2 pt-2">
+            <button type="button" onClick={onClose} className="rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 px-4 py-2 text-sm font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-700 transition">
+              ביטול
+            </button>
+            <button
+              type="button"
+              onClick={() => onSave(f)}
+              disabled={loading}
+              className="inline-flex items-center gap-2 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white hover:bg-indigo-500 disabled:opacity-50 transition"
+            >
+              {loading && <Spinner />}
+              {initial?.id ? 'שמור שינויים' : 'הוסף אווטאר'}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ─── Voice form modal ────────────────────────────────────────────────────────
+
+function VoiceFormModal({ initial, onSave, onClose, loading, error }) {
+  const [f, setF] = useState({ ...VOICE_DEFAULTS, ...initial })
+  const set = (k) => (e) => setF((p) => ({ ...p, [k]: e.target.type === 'checkbox' ? e.target.checked : e.target.value }))
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm" dir="rtl">
+      <div className="w-full max-w-md bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-700 shadow-2xl overflow-y-auto max-h-[92vh]">
+        <div className="flex items-center justify-between px-5 py-4 border-b border-slate-200 dark:border-slate-700">
+          <h3 className="text-base font-semibold text-slate-900 dark:text-white">
+            {initial?.id ? 'עריכת קול' : 'הוספת קול חדש'}
+          </h3>
+          <button type="button" onClick={onClose} className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 transition text-xl leading-none">×</button>
+        </div>
+
+        <div className="p-5 space-y-3">
+          <Field label="שם (לתצוגה)" required>
+            <input className={inputCls} value={f.name} onChange={set('name')} placeholder="למשל: Daniel - Deep Voice" />
+          </Field>
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="מין" required>
+              <Sel value={f.gender} onChange={set('gender')} options={GENDER_OPTIONS} />
+            </Field>
+            <Field label="ספק" required>
+              <Sel value={f.provider} onChange={set('provider')} options={PROVIDER_VOICE} />
+            </Field>
+          </div>
+          <Field label="מזהה חיצוני (external_id)" required>
+            <input className={inputCls} value={f.external_id} onChange={set('external_id')} dir="ltr" placeholder="ElevenLabs voice_id" />
+          </Field>
+          <label className="flex items-center gap-2 cursor-pointer select-none text-sm text-slate-700 dark:text-slate-200">
+            <input
+              type="checkbox"
+              checked={f.is_active}
+              onChange={set('is_active')}
+              className="rounded border-slate-300 dark:border-slate-600 text-indigo-600 focus:ring-indigo-500"
+            />
+            פעיל
+          </label>
+
+          {error && (
+            <div role="alert" className="rounded-lg border border-red-200 dark:border-red-900/50 bg-red-50 dark:bg-red-950/40 px-3 py-2 text-xs text-red-800 dark:text-red-200">
+              {error}
+            </div>
+          )}
+
+          <div className="flex justify-end gap-2 pt-2">
+            <button type="button" onClick={onClose} className="rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 px-4 py-2 text-sm font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-700 transition">
+              ביטול
+            </button>
+            <button
+              type="button"
+              onClick={() => onSave(f)}
+              disabled={loading}
+              className="inline-flex items-center gap-2 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white hover:bg-indigo-500 disabled:opacity-50 transition"
+            >
+              {loading && <Spinner />}
+              {initial?.id ? 'שמור שינויים' : 'הוסף קול'}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ─── Delete confirm ───────────────────────────────────────────────────────────
+
+function DeleteConfirm({ name, onConfirm, onClose, loading }) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm" dir="rtl">
+      <div className="w-full max-w-sm bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-700 shadow-2xl p-6 space-y-4">
+        <h3 className="text-base font-semibold text-slate-900 dark:text-white">אישור מחיקה</h3>
+        <p className="text-sm text-slate-600 dark:text-slate-300">
+          האם למחוק את <strong className="text-slate-900 dark:text-white">«{name}»</strong>? הפעולה לא ניתנת לביטול.
+        </p>
+        <div className="flex justify-end gap-2">
+          <button type="button" onClick={onClose} className="rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 px-4 py-2 text-sm font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-700 transition">
+            ביטול
+          </button>
+          <button
+            type="button"
+            onClick={onConfirm}
+            disabled={loading}
+            className="inline-flex items-center gap-2 rounded-lg bg-red-600 px-4 py-2 text-sm font-semibold text-white hover:bg-red-500 disabled:opacity-50 transition"
+          >
+            {loading && <Spinner />}
+            מחק
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ─── Avatars tab ──────────────────────────────────────────────────────────────
+
+function AvatarsTab() {
+  const [rows, setRows] = useState([])
+  const [loading, setLoading] = useState(true)
+  const [fetchErr, setFetchErr] = useState(null)
+
+  const [modal, setModal] = useState(null)   // null | { mode: 'create'|'edit', row?: object }
+  const [saving, setSaving] = useState(false)
+  const [saveErr, setSaveErr] = useState(null)
+
+  const [deleteTarget, setDeleteTarget] = useState(null)
+  const [deleting, setDeleting] = useState(false)
+
+  const mountedRef = useRef(true)
+  useEffect(() => { mountedRef.current = true; return () => { mountedRef.current = false } }, [])
+
+  const fetchRows = useCallback(async () => {
+    setLoading(true)
+    setFetchErr(null)
+    try {
+      const { data } = await api.get('/admin/avatars')
+      if (mountedRef.current) setRows(data)
+    } catch (e) {
+      if (mountedRef.current) setFetchErr(axiosErrMsg(e))
+    } finally {
+      if (mountedRef.current) setLoading(false)
+    }
+  }, [])
+
+  useEffect(() => { fetchRows() }, [fetchRows])
+
+  const handleSave = async (fields) => {
+    setSaving(true)
+    setSaveErr(null)
+    try {
+      const { id, created_at, ...body } = fields
+      if (id) {
+        await api.put(`/admin/avatars/${id}`, body)
+      } else {
+        await api.post('/admin/avatars', body)
+      }
+      setModal(null)
+      await fetchRows()
+    } catch (e) {
+      setSaveErr(axiosErrMsg(e))
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const handleDelete = async () => {
+    if (!deleteTarget) return
+    setDeleting(true)
+    try {
+      await api.delete(`/admin/avatars/${deleteTarget.id}`)
+      setDeleteTarget(null)
+      await fetchRows()
+    } catch (e) {
+      setFetchErr(axiosErrMsg(e))
+    } finally {
+      setDeleting(false)
+    }
+  }
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between">
+        <h2 className="text-sm font-semibold text-slate-700 dark:text-slate-200">
+          אווטארים ({rows.length})
+        </h2>
+        <button
+          type="button"
+          onClick={() => { setSaveErr(null); setModal({ mode: 'create' }) }}
+          className="inline-flex items-center gap-1.5 rounded-lg bg-indigo-600 px-3 py-2 text-sm font-semibold text-white hover:bg-indigo-500 transition"
+        >
+          + הוסף אווטאר
+        </button>
+      </div>
+
+      {fetchErr && (
+        <div role="alert" className="rounded-lg border border-red-200 dark:border-red-900/50 bg-red-50 dark:bg-red-950/40 px-3 py-2 text-xs text-red-800 dark:text-red-200">
+          {fetchErr}
+        </div>
+      )}
+
+      {loading ? (
+        <div className="flex items-center justify-center py-12">
+          <Spinner className="size-6" />
+        </div>
+      ) : rows.length === 0 ? (
+        <div className="rounded-xl border border-dashed border-slate-300 dark:border-slate-700 bg-white/50 dark:bg-slate-900/40 px-6 py-10 text-center text-sm text-slate-500 dark:text-slate-400">
+          אין אווטארים במסד הנתונים עדיין. הוסף אחד עם הכפתור למעלה.
+        </div>
+      ) : (
+        <div className="overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 shadow-sm">
+          <table className="w-full text-sm text-right">
+            <thead>
+              <tr className="border-b border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/50">
+                {['שם', 'מין', 'AR', 'ספק', 'external_id', 'סוג', 'סטטוס', ''].map((h) => (
+                  <th key={h} className="px-3 py-2.5 text-xs font-semibold text-slate-500 dark:text-slate-400 whitespace-nowrap">{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+              {rows.map((row) => (
+                <tr key={row.id} className="hover:bg-slate-50/60 dark:hover:bg-slate-800/30 transition">
+                  <td className="px-3 py-2.5 font-medium text-slate-900 dark:text-slate-100 max-w-[150px] truncate" title={row.name}>{row.name}</td>
+                  <td className="px-3 py-2.5 text-slate-600 dark:text-slate-300">{row.gender}</td>
+                  <td className="px-3 py-2.5 text-slate-600 dark:text-slate-300">{row.aspect_ratio}</td>
+                  <td className="px-3 py-2.5 text-slate-600 dark:text-slate-300">{row.provider}</td>
+                  <td className="px-3 py-2.5 max-w-[180px]">
+                    <span className="block truncate font-mono text-xs text-slate-500 dark:text-slate-400" dir="ltr" title={row.external_id}>{row.external_id}</span>
+                  </td>
+                  <td className="px-3 py-2.5 text-slate-500 dark:text-slate-400 text-xs">{row.heygen_character_type || '—'}</td>
+                  <td className="px-3 py-2.5"><Badge active={row.is_active} /></td>
+                  <td className="px-3 py-2.5">
+                    <div className="flex items-center gap-1.5 justify-end">
+                      <button
+                        type="button"
+                        onClick={() => { setSaveErr(null); setModal({ mode: 'edit', row }) }}
+                        className="rounded-lg border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-800 px-2.5 py-1 text-xs font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-700 transition"
+                      >
+                        עריכה
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setDeleteTarget(row)}
+                        className="rounded-lg border border-red-200 dark:border-red-800/60 bg-red-50 dark:bg-red-950/30 px-2.5 py-1 text-xs font-medium text-red-700 dark:text-red-300 hover:bg-red-100 dark:hover:bg-red-950/50 transition"
+                      >
+                        מחק
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {modal && (
+        <AvatarFormModal
+          initial={modal.mode === 'edit' ? modal.row : undefined}
+          onSave={handleSave}
+          onClose={() => setModal(null)}
+          loading={saving}
+          error={saveErr}
+        />
+      )}
+      {deleteTarget && (
+        <DeleteConfirm
+          name={deleteTarget.name}
+          onConfirm={handleDelete}
+          onClose={() => setDeleteTarget(null)}
+          loading={deleting}
+        />
+      )}
+    </div>
+  )
+}
+
+// ─── Voices tab ───────────────────────────────────────────────────────────────
+
+function VoicesTab() {
+  const [rows, setRows] = useState([])
+  const [loading, setLoading] = useState(true)
+  const [fetchErr, setFetchErr] = useState(null)
+
+  const [modal, setModal] = useState(null)
+  const [saving, setSaving] = useState(false)
+  const [saveErr, setSaveErr] = useState(null)
+
+  const [deleteTarget, setDeleteTarget] = useState(null)
+  const [deleting, setDeleting] = useState(false)
+
+  const mountedRef = useRef(true)
+  useEffect(() => { mountedRef.current = true; return () => { mountedRef.current = false } }, [])
+
+  const fetchRows = useCallback(async () => {
+    setLoading(true)
+    setFetchErr(null)
+    try {
+      const { data } = await api.get('/admin/voices')
+      if (mountedRef.current) setRows(data)
+    } catch (e) {
+      if (mountedRef.current) setFetchErr(axiosErrMsg(e))
+    } finally {
+      if (mountedRef.current) setLoading(false)
+    }
+  }, [])
+
+  useEffect(() => { fetchRows() }, [fetchRows])
+
+  const handleSave = async (fields) => {
+    setSaving(true)
+    setSaveErr(null)
+    try {
+      const { id, created_at, ...body } = fields
+      if (id) {
+        await api.put(`/admin/voices/${id}`, body)
+      } else {
+        await api.post('/admin/voices', body)
+      }
+      setModal(null)
+      await fetchRows()
+    } catch (e) {
+      setSaveErr(axiosErrMsg(e))
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const handleDelete = async () => {
+    if (!deleteTarget) return
+    setDeleting(true)
+    try {
+      await api.delete(`/admin/voices/${deleteTarget.id}`)
+      setDeleteTarget(null)
+      await fetchRows()
+    } catch (e) {
+      setFetchErr(axiosErrMsg(e))
+    } finally {
+      setDeleting(false)
+    }
+  }
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between">
+        <h2 className="text-sm font-semibold text-slate-700 dark:text-slate-200">
+          קולות ({rows.length})
+        </h2>
+        <button
+          type="button"
+          onClick={() => { setSaveErr(null); setModal({ mode: 'create' }) }}
+          className="inline-flex items-center gap-1.5 rounded-lg bg-indigo-600 px-3 py-2 text-sm font-semibold text-white hover:bg-indigo-500 transition"
+        >
+          + הוסף קול
+        </button>
+      </div>
+
+      {fetchErr && (
+        <div role="alert" className="rounded-lg border border-red-200 dark:border-red-900/50 bg-red-50 dark:bg-red-950/40 px-3 py-2 text-xs text-red-800 dark:text-red-200">
+          {fetchErr}
+        </div>
+      )}
+
+      {loading ? (
+        <div className="flex items-center justify-center py-12">
+          <Spinner className="size-6" />
+        </div>
+      ) : rows.length === 0 ? (
+        <div className="rounded-xl border border-dashed border-slate-300 dark:border-slate-700 bg-white/50 dark:bg-slate-900/40 px-6 py-10 text-center text-sm text-slate-500 dark:text-slate-400">
+          אין קולות במסד הנתונים עדיין. הוסף אחד עם הכפתור למעלה.
+        </div>
+      ) : (
+        <div className="overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 shadow-sm">
+          <table className="w-full text-sm text-right">
+            <thead>
+              <tr className="border-b border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/50">
+                {['שם', 'מין', 'ספק', 'external_id', 'סטטוס', ''].map((h) => (
+                  <th key={h} className="px-3 py-2.5 text-xs font-semibold text-slate-500 dark:text-slate-400 whitespace-nowrap">{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+              {rows.map((row) => (
+                <tr key={row.id} className="hover:bg-slate-50/60 dark:hover:bg-slate-800/30 transition">
+                  <td className="px-3 py-2.5 font-medium text-slate-900 dark:text-slate-100 max-w-[160px] truncate" title={row.name}>{row.name}</td>
+                  <td className="px-3 py-2.5 text-slate-600 dark:text-slate-300">{row.gender}</td>
+                  <td className="px-3 py-2.5 text-slate-600 dark:text-slate-300">{row.provider}</td>
+                  <td className="px-3 py-2.5 max-w-[200px]">
+                    <span className="block truncate font-mono text-xs text-slate-500 dark:text-slate-400" dir="ltr" title={row.external_id}>{row.external_id}</span>
+                  </td>
+                  <td className="px-3 py-2.5"><Badge active={row.is_active} /></td>
+                  <td className="px-3 py-2.5">
+                    <div className="flex items-center gap-1.5 justify-end">
+                      <button
+                        type="button"
+                        onClick={() => { setSaveErr(null); setModal({ mode: 'edit', row }) }}
+                        className="rounded-lg border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-800 px-2.5 py-1 text-xs font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-700 transition"
+                      >
+                        עריכה
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setDeleteTarget(row)}
+                        className="rounded-lg border border-red-200 dark:border-red-800/60 bg-red-50 dark:bg-red-950/30 px-2.5 py-1 text-xs font-medium text-red-700 dark:text-red-300 hover:bg-red-100 dark:hover:bg-red-950/50 transition"
+                      >
+                        מחק
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {modal && (
+        <VoiceFormModal
+          initial={modal.mode === 'edit' ? modal.row : undefined}
+          onSave={handleSave}
+          onClose={() => setModal(null)}
+          loading={saving}
+          error={saveErr}
+        />
+      )}
+      {deleteTarget && (
+        <DeleteConfirm
+          name={deleteTarget.name}
+          onConfirm={handleDelete}
+          onClose={() => setDeleteTarget(null)}
+          loading={deleting}
+        />
+      )}
+    </div>
+  )
+}
+
+// ─── Main page ────────────────────────────────────────────────────────────────
+
+const TABS = [
+  { id: 'avatars', label: 'ניהול אווטארים' },
+  { id: 'voices',  label: 'ניהול קולות'   },
+]
+
+export default function AdminCatalog() {
+  const { user, logout } = useAuth()
+  const navigate = useNavigate()
+  const [activeTab, setActiveTab] = useState('avatars')
+
+  return (
+    <div
+      className="min-h-screen bg-slate-100 dark:bg-slate-950 text-slate-900 dark:text-slate-100"
+      dir="rtl"
+      lang="he"
+    >
+      {/* ── Header ─────────────────────────────────────────────── */}
+      <header className="sticky top-0 z-20 border-b border-slate-200/80 dark:border-slate-800 bg-white/90 dark:bg-slate-900/90 backdrop-blur-md">
+        <div className="mx-auto flex max-w-[96%] items-center justify-between gap-4 px-4 py-3 sm:px-6">
+          <div className="text-start">
+            <h1 className="text-lg font-semibold tracking-tight text-slate-900 dark:text-white">
+              ניהול קטלוג
+            </h1>
+            <p className="text-xs text-slate-500 dark:text-slate-400">
+              אווטארים וקולות — ניהול רשומות DB
+            </p>
+          </div>
+          <div className="flex items-center gap-3">
+            {user?.email && (
+              <span className="hidden text-sm text-slate-600 dark:text-slate-400 sm:inline max-w-[200px] truncate">
+                {user.email}
+              </span>
+            )}
+            <Link
+              to="/"
+              className="rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 px-3 py-2 text-sm font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-700 transition"
+            >
+              סטודיו באנרים
+            </Link>
+            <Link
+              to="/avatar-studio"
+              className="rounded-lg border border-violet-300/80 dark:border-violet-600/50 bg-violet-50 dark:bg-violet-950/40 px-3 py-2 text-sm font-medium text-violet-800 dark:text-violet-200 hover:bg-violet-100 dark:hover:bg-violet-900/50 transition"
+            >
+              סטודיו אווטאר
+            </Link>
+            <button
+              type="button"
+              onClick={() => { logout(); navigate('/login', { replace: true }) }}
+              className="rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 px-3 py-2 text-sm font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-700 transition"
+            >
+              התנתקות
+            </button>
+          </div>
+        </div>
+      </header>
+
+      {/* ── Content ────────────────────────────────────────────── */}
+      <div className="mx-auto max-w-[96%] px-4 py-6 sm:px-6 lg:py-8 space-y-6">
+
+        {/* Tab bar */}
+        <div className="flex items-center gap-1 rounded-xl bg-slate-200/70 dark:bg-slate-800/60 p-1 w-fit">
+          {TABS.map(({ id, label }) => (
+            <button
+              key={id}
+              type="button"
+              onClick={() => setActiveTab(id)}
+              className={`rounded-lg px-4 py-2 text-sm font-medium transition-all ${
+                activeTab === id
+                  ? 'bg-white dark:bg-slate-700 shadow text-slate-900 dark:text-white'
+                  : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200'
+              }`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+
+        {/* Tab content */}
+        <div className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white/70 dark:bg-slate-900/70 p-6 shadow-sm">
+          {activeTab === 'avatars' ? <AvatarsTab /> : <VoicesTab />}
+        </div>
+      </div>
+    </div>
+  )
 }
 
 
@@ -8959,6 +9967,7 @@ FILE: client/src/App.jsx
 ================================================================================
 
 import { Navigate, Route, Routes, useLocation } from 'react-router-dom'
+import AdminCatalog from './AdminCatalog.jsx'
 import AvatarStudio from './AvatarStudio.jsx'
 import BannerWorkspace from './BannerWorkspace.jsx'
 import { useAuth } from './AuthContext.jsx'
@@ -9001,6 +10010,14 @@ export default function App() {
           element={
             <ProtectedRoute>
               <AvatarStudio />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/admin/catalog"
+          element={
+            <ProtectedRoute>
+              <AdminCatalog />
             </ProtectedRoute>
           }
         />
@@ -9118,10 +10135,21 @@ function axiosErrorMessage(err) {
   return err.message || 'הבקשה נכשלה'
 }
 
-const DEFAULT_DID_URL =
-  'https://d-id-public-bucket.s3.us-west-2.amazonaws.com/alice.jpg'
-const DEFAULT_HEYGEN_ID = 'd365dda368044f6189ee68af637389ff'
-const UGC_DEFAULT_VOICE_HINT = 'Wuv1s5YTNCjL9mFJTqo4'
+/**
+ * FastAPI usually returns a JSON array as `res.data` directly.
+ * If the payload is wrapped, pick the first array among common keys.
+ */
+function extractCatalogArray(resData) {
+  if (Array.isArray(resData)) return resData
+  if (resData && typeof resData === 'object') {
+    const keys = ['items', 'data', 'avatars', 'voices', 'results']
+    for (const k of keys) {
+      const v = resData[k]
+      if (Array.isArray(v)) return v
+    }
+  }
+  return []
+}
 
 /**
  * Best-available video URL priority:
@@ -9289,18 +10317,24 @@ const _ALLOWED_ANIM = new Set(['pop', 'fade', 'typewriter'])
 const _ALLOWED_POS = new Set(['bottom', 'center', 'top'])
 const _ALLOWED_FONT = new Set(['heebo', 'rubik', 'assistant'])
 
+const PRIMARY_ADMIN_EMAIL = 'gal0673@gmail.com'
+
 export default function AvatarStudio() {
   const { user, logout } = useAuth()
   const navigate = useNavigate()
+  const isPrimaryAdmin = user?.email?.toLowerCase() === PRIMARY_ADMIN_EMAIL
+
+  // ── Catalog ──────────────────────────────────────────────────────────────
+  const [avatars, setAvatars] = useState([])
+  const [voices, setVoices] = useState([])
+  const [selectedAvatarDbId, setSelectedAvatarDbId] = useState('')
+  const [selectedVoiceDbId, setSelectedVoiceDbId] = useState('')
+  const [catalogLoading, setCatalogLoading] = useState(true)
 
   const [scriptSource, setScriptSource] = useState('spoken_only')
   const [creativeBrief, setCreativeBrief] = useState('')
   const [directorNotes, setDirectorNotes] = useState('')
   const [spokenScript, setSpokenScript] = useState('')
-  const [provider, setProvider] = useState('heygen_elevenlabs')
-  const [heygenCharacterType, setHeygenCharacterType] = useState('avatar')
-  const [avatarId, setAvatarId] = useState(DEFAULT_HEYGEN_ID)
-  const [voiceId, setVoiceId] = useState('')
   const [videoLength, setVideoLength] = useState('15s')
   const [aspectRatio, setAspectRatio] = useState('9:16')
   const [websiteUrl, setWebsiteUrl] = useState('')
@@ -9336,6 +10370,69 @@ export default function AvatarStudio() {
     statusPayload?.ugc_status === 'completed' || statusPayload?.ugc_status === 'failed'
   const terminal = bannerTerminal || ugcTerminal
   const isPolling = Boolean(taskId && !terminal)
+
+  // ── Catalog fetch (on mount) ──────────────────────────────────────────────
+  useEffect(() => {
+    let cancelled = false
+    setCatalogLoading(true)
+    Promise.all([
+      api.get('/catalog/avatars/active'),
+      api.get('/catalog/voices/active'),
+    ])
+      .then(([avRes, voRes]) => {
+        if (cancelled) return
+        const avRaw = avRes?.data
+        const voRaw = voRes?.data
+        const avList = extractCatalogArray(avRaw)
+        const voList = extractCatalogArray(voRaw)
+        // eslint-disable-next-line no-console -- intentional debug for catalog wiring
+        console.log('[AvatarStudio] catalog fetch OK', {
+          endpoints: ['/catalog/avatars/active', '/catalog/voices/active'],
+          avatarsRaw: avRaw,
+          voicesRaw: voRaw,
+          avatarsCount: avList.length,
+          voicesCount: voList.length,
+        })
+        setAvatars(avList)
+        setVoices(voList)
+        if (avList.length > 0) {
+          setSelectedAvatarDbId(avList[0].id)
+        }
+      })
+      .catch((err) => {
+        // eslint-disable-next-line no-console -- intentional debug for catalog wiring
+        console.error('[AvatarStudio] catalog fetch failed', {
+          message: err?.message,
+          status: err?.response?.status,
+          data: err?.response?.data,
+        })
+        if (!cancelled) {
+          setAvatars([])
+          setVoices([])
+        }
+      })
+      .finally(() => { if (!cancelled) setCatalogLoading(false) })
+    return () => { cancelled = true }
+  }, [])
+
+  // ── Avatar selection cascade (aspect ratio + default voice) ──────────────
+  useEffect(() => {
+    if (!selectedAvatarDbId || !Array.isArray(avatars) || avatars.length === 0) return
+    const avatar = avatars.find((a) => a.id === selectedAvatarDbId)
+    if (!avatar) return
+    if (avatar.aspect_ratio) setAspectRatio(avatar.aspect_ratio)
+    const safeVoices = Array.isArray(voices) ? voices : []
+    const filtered = safeVoices.filter((v) => v.gender === avatar.gender)
+    const recommended = filtered.find((v) => v.external_id === avatar.recommended_voice_id)
+    if (recommended) {
+      setSelectedVoiceDbId(recommended.id)
+    } else if (filtered.length > 0) {
+      setSelectedVoiceDbId(filtered[0].id)
+    } else {
+      setSelectedVoiceDbId(safeVoices[0]?.id ?? '')
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedAvatarDbId, avatars, voices])
 
   useEffect(() => {
     hydratedScriptKeyRef.current = ''
@@ -9488,22 +10585,43 @@ export default function AvatarStudio() {
     }
   }
 
+  // ── Derived catalog state ─────────────────────────────────────────────────
+  const selectedAvatar = useMemo(
+    () => (Array.isArray(avatars) ? avatars : []).find((a) => a.id === selectedAvatarDbId) ?? null,
+    [avatars, selectedAvatarDbId],
+  )
+  const filteredVoices = useMemo(() => {
+    const safeVoices = Array.isArray(voices) ? voices : []
+    if (!selectedAvatar) return safeVoices
+    return safeVoices.filter((v) => v.gender === selectedAvatar.gender)
+  }, [voices, selectedAvatar])
+  const selectedVoice = useMemo(
+    () => (Array.isArray(filteredVoices) ? filteredVoices : []).find((v) => v.id === selectedVoiceDbId) ?? null,
+    [filteredVoices, selectedVoiceDbId],
+  )
+
   const handleSubmit = async (e) => {
     e.preventDefault()
+    if (!selectedAvatar) {
+      setSubmitError('נא לבחור אווטאר לפני שליחה.')
+      return
+    }
     setSubmitError(null)
     setIsPosting(true)
     try {
       const body = {
         script_source: scriptSource,
-        provider,
-        avatar_id: avatarId.trim(),
+        provider: selectedAvatar.provider,
+        avatar_id: selectedAvatar.external_id,
         video_length: videoLength,
         aspect_ratio: aspectRatio,
       }
-      const v = voiceId.trim()
-      if (v) body.voice_id = v
-      if (provider === 'heygen_elevenlabs') {
-        body.heygen_character_type = heygenCharacterType
+      if (selectedVoice) body.voice_id = selectedVoice.external_id
+      if (
+        selectedAvatar.provider === 'heygen_elevenlabs' &&
+        selectedAvatar.heygen_character_type
+      ) {
+        body.heygen_character_type = selectedAvatar.heygen_character_type
       }
       if (scriptSource === 'from_brief_ai') {
         body.creative_brief = creativeBrief.trim()
@@ -9607,6 +10725,14 @@ export default function AvatarStudio() {
             >
               חזרה לבאנרים
             </Link>
+            {isPrimaryAdmin && (
+              <Link
+                to="/admin/catalog"
+                className="rounded-lg border border-amber-300/80 dark:border-amber-600/50 bg-amber-50 dark:bg-amber-950/40 px-3 py-2 text-sm font-medium text-amber-800 dark:text-amber-200 hover:bg-amber-100 dark:hover:bg-amber-900/50 transition"
+              >
+                ניהול קטלוג
+              </Link>
+            )}
             {user?.email && (
               <span className="hidden text-sm text-slate-600 dark:text-slate-400 sm:inline max-w-[180px] truncate">
                 {user.email}
@@ -9699,85 +10825,95 @@ export default function AvatarStudio() {
               </div>
             )}
 
+            {/* ── Avatar grid ─────────────────────────────────────────── */}
             <div>
-              <label className="block text-xs font-medium text-slate-600 dark:text-slate-300 mb-1.5">ספק</label>
-              <select
-                value={provider}
-                onChange={(ev) => {
-                  const v = ev.target.value
-                  setProvider(v)
+              <label className="block text-xs font-medium text-slate-600 dark:text-slate-300 mb-2">
+                <span className="text-red-500">*</span> בחר אווטאר
+              </label>
 
-                  const currentAvatar = avatarId.trim()
-                  if (v === 'd-id' && (currentAvatar === DEFAULT_HEYGEN_ID || currentAvatar === '')) {
-                    setAvatarId(DEFAULT_DID_URL)
-                  } else if (
-                    v === 'heygen_elevenlabs' &&
-                    (currentAvatar === DEFAULT_DID_URL || currentAvatar === '')
-                  ) {
-                    setAvatarId(DEFAULT_HEYGEN_ID)
-                  }
-                }}
-                disabled={formLocked}
-                className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2.5 text-sm outline-none disabled:opacity-60"
-              >
-                <option value="d-id">D-ID</option>
-                <option value="heygen_elevenlabs">HeyGen + ElevenLabs</option>
-              </select>
+              {catalogLoading ? (
+                <div className="flex items-center justify-center py-8 gap-2 text-xs text-slate-500 dark:text-slate-400">
+                  <Spinner className="!size-4" /> טוען קטלוג…
+                </div>
+              ) : avatars.length === 0 ? (
+                <div className="rounded-xl border border-dashed border-slate-300 dark:border-slate-700 px-4 py-6 text-center text-xs text-slate-500 dark:text-slate-400">
+                  אין אווטארים פעילים.{' '}
+                  <Link to="/admin/catalog" className="text-violet-600 dark:text-violet-400 hover:underline">
+                    הוסף בניהול הקטלוג
+                  </Link>
+                </div>
+              ) : (
+                <div className="grid grid-cols-3 gap-2">
+                  {avatars.map((av) => {
+                    const isSelected = selectedAvatarDbId === av.id
+                    return (
+                      <button
+                        key={av.id}
+                        type="button"
+                        onClick={() => setSelectedAvatarDbId(av.id)}
+                        disabled={formLocked}
+                        className={`relative flex flex-col overflow-hidden rounded-xl border-2 transition focus:outline-none disabled:opacity-60 ${
+                          isSelected
+                            ? 'border-violet-500 ring-2 ring-violet-500/30 shadow-md'
+                            : 'border-slate-200 dark:border-slate-700 hover:border-violet-300 dark:hover:border-violet-600'
+                        }`}
+                      >
+                        <div className="aspect-[9/16] w-full bg-slate-200 dark:bg-slate-800 overflow-hidden">
+                          {av.thumbnail_url ? (
+                            <img
+                              src={av.thumbnail_url}
+                              alt={av.name}
+                              className="w-full h-full object-cover"
+                              loading="lazy"
+                            />
+                          ) : (
+                            <div className="w-full h-full flex items-center justify-center text-2xl font-bold text-slate-400 dark:text-slate-600">
+                              {av.name.charAt(0).toUpperCase()}
+                            </div>
+                          )}
+                        </div>
+                        <div className={`px-1.5 py-1.5 text-center ${isSelected ? 'bg-violet-600' : 'bg-slate-50 dark:bg-slate-800'}`}>
+                          <p className={`text-[10px] font-semibold leading-tight truncate ${isSelected ? 'text-white' : 'text-slate-700 dark:text-slate-200'}`}>
+                            {av.name}
+                          </p>
+                          <p className={`text-[9px] mt-0.5 ${isSelected ? 'text-violet-200' : 'text-slate-400 dark:text-slate-500'}`}>
+                            {av.aspect_ratio}
+                          </p>
+                        </div>
+                        {isSelected && (
+                          <span className="absolute top-1.5 right-1.5 size-4 rounded-full bg-violet-500 border-2 border-white flex items-center justify-center">
+                            <svg width="8" height="8" viewBox="0 0 10 10" fill="white"><path d="M2 5l2.5 2.5L8 3" stroke="white" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" fill="none"/></svg>
+                          </span>
+                        )}
+                      </button>
+                    )
+                  })}
+                </div>
+              )}
             </div>
 
-            {provider === 'heygen_elevenlabs' && (
-              <div>
-                <label className="block text-xs font-medium text-slate-600 dark:text-slate-300 mb-1.5">
-                  סוג מזהה HeyGen
-                </label>
-                <select
-                  value={heygenCharacterType}
-                  onChange={(ev) => setHeygenCharacterType(ev.target.value)}
-                  disabled={formLocked}
-                  className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2.5 text-sm outline-none disabled:opacity-60"
-                >
-                  <option value="avatar">אווטאר סטודיו / Instant (avatar_id)</option>
-                  <option value="talking_photo">תמונה מדברת / Photo avatar (talking_photo_id)</option>
-                </select>
-                <p className="mt-1 text-[10px] text-slate-500 dark:text-slate-400 leading-relaxed text-right">
-                  אם HeyGen מחזיר &quot;avatar look not found&quot; — לרוב העתקת מזהה של תמונה מדברת אבל נשלח כ-avatar. נסה
-                  &quot;תמונה מדברת&quot;.
-                </p>
-              </div>
-            )}
-
-            <div>
-              <label className="block text-xs font-medium text-slate-600 dark:text-slate-300 mb-1.5">אווטאר / תמונה</label>
-              <input
-                type="text"
-                value={avatarId}
-                onChange={(ev) => setAvatarId(ev.target.value)}
-                disabled={formLocked}
-                placeholder={
-                  provider === 'd-id'
-                    ? 'URL תמונת פנים'
-                    : heygenCharacterType === 'talking_photo'
-                      ? 'talking_photo_id מ-List Avatars V2'
-                      : 'avatar_id מ-HeyGen'
-                }
-                className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2.5 text-sm outline-none disabled:opacity-60"
-                dir="ltr"
-              />
-            </div>
-
+            {/* ── Voice dropdown (filtered by selected avatar's gender) ── */}
             <div>
               <label className="block text-xs font-medium text-slate-600 dark:text-slate-300 mb-1.5">
-                קול ElevenLabs <span className="text-slate-400 font-normal">(אופציונלי)</span>
+                קול{' '}
+                {selectedAvatar && (
+                  <span className="text-slate-400 font-normal">({selectedAvatar.gender === 'male' ? 'גברי' : 'נשי'})</span>
+                )}
               </label>
-              <input
-                type="text"
-                value={voiceId}
-                onChange={(ev) => setVoiceId(ev.target.value)}
-                disabled={formLocked}
-                placeholder={`ברירת מחדל: ${UGC_DEFAULT_VOICE_HINT}`}
-                className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2.5 text-sm outline-none disabled:opacity-60"
-                dir="ltr"
-              />
+              <select
+                value={selectedVoiceDbId}
+                onChange={(ev) => setSelectedVoiceDbId(ev.target.value)}
+                disabled={formLocked || filteredVoices.length === 0}
+                className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2.5 text-sm outline-none focus:border-violet-500 focus:ring-2 focus:ring-violet-500/20 disabled:opacity-60"
+              >
+                {filteredVoices.length === 0 ? (
+                  <option value="">אין קולות זמינים לקטגוריה זו</option>
+                ) : (
+                  filteredVoices.map((v) => (
+                    <option key={v.id} value={v.id}>{v.name}</option>
+                  ))
+                )}
+              </select>
             </div>
 
             <div>
@@ -9796,13 +10932,13 @@ export default function AvatarStudio() {
 
             <div dir="rtl">
               <label className="block text-xs font-medium text-slate-600 dark:text-slate-300 mb-1.5">
-                יחס גובה-רוחב לווידאו
+                יחס גובה-רוחב{' '}
+                <span className="text-slate-400 font-normal">(נקבע לפי האווטאר)</span>
               </label>
               <select
                 value={aspectRatio}
-                onChange={(ev) => setAspectRatio(ev.target.value)}
-                disabled={formLocked}
-                className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2.5 text-sm text-right outline-none disabled:opacity-60"
+                disabled
+                className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-100 dark:bg-slate-800 px-3 py-2.5 text-sm text-right outline-none opacity-70 cursor-not-allowed"
               >
                 <option value="9:16">9:16 (Story/Reels)</option>
                 <option value="16:9">16:9 (אופקי)</option>
@@ -13108,15 +14244,23 @@ export default function BannerWorkspace() {
               סטודיו אווטאר
             </Link>
             {isPrimaryAdmin && (
-              <button
-                type="button"
-                onClick={handleDownloadAiContext}
-                disabled={aiContextBusy}
-                className="rounded-lg border border-indigo-300/80 dark:border-indigo-500/50 bg-indigo-50 dark:bg-indigo-950/50 px-3 py-2 text-sm font-medium text-indigo-800 dark:text-indigo-200 hover:bg-indigo-100 dark:hover:bg-indigo-900/60 disabled:opacity-50 transition"
-                title="מייצר מחדש את הקובץ בשורש הפרויקט ומוריד אותו"
-              >
-                {aiContextBusy ? 'מייצא…' : 'הורד ai-banner-context'}
-              </button>
+              <>
+                <Link
+                  to="/admin/catalog"
+                  className="rounded-lg border border-amber-300/80 dark:border-amber-600/50 bg-amber-50 dark:bg-amber-950/40 px-3 py-2 text-sm font-medium text-amber-800 dark:text-amber-200 hover:bg-amber-100 dark:hover:bg-amber-900/50 transition"
+                >
+                  ניהול קטלוג
+                </Link>
+                <button
+                  type="button"
+                  onClick={handleDownloadAiContext}
+                  disabled={aiContextBusy}
+                  className="rounded-lg border border-indigo-300/80 dark:border-indigo-500/50 bg-indigo-50 dark:bg-indigo-950/50 px-3 py-2 text-sm font-medium text-indigo-800 dark:text-indigo-200 hover:bg-indigo-100 dark:hover:bg-indigo-900/60 disabled:opacity-50 transition"
+                  title="מייצר מחדש את הקובץ בשורש הפרויקט ומוריד אותו"
+                >
+                  {aiContextBusy ? 'מייצא…' : 'הורד ai-banner-context'}
+                </button>
+              </>
             )}
             <button
               type="button"
@@ -15859,6 +17003,8 @@ export default defineConfig({
       '/status': { target: 'http://127.0.0.1:8888', changeOrigin: true },
       '/tasks': { target: 'http://127.0.0.1:8888', changeOrigin: true },
       '/upload-temp-asset': { target: 'http://127.0.0.1:8888', changeOrigin: true },
+      // Avatar Studio catalog (must match FastAPI routers/catalog.py)
+      '/catalog': { target: 'http://127.0.0.1:8888', changeOrigin: true },
       '/admin': { target: 'http://127.0.0.1:8888', changeOrigin: true },
       '/task-files': { target: 'http://127.0.0.1:8888', changeOrigin: true },
     },
@@ -17883,6 +19029,31 @@ const UGC_COMPOSITION_ID = "Ugc";
 
 const OUTPUT_DIR = path.join(__dirname, "output");
 
+/**
+ * When `REMOTION_CONCURRENCY` is unset or empty, returns `undefined` so Remotion
+ * picks its default (parallelism across CPU cores). When set, parses a positive
+ * integer; invalid values fall back to `undefined`.
+ * @returns {number | undefined}
+ */
+function getRemotionConcurrencyFromEnv() {
+  const raw = process.env.REMOTION_CONCURRENCY;
+  if (raw === undefined || raw === null) return undefined;
+  const trimmed = String(raw).trim();
+  if (trimmed === "") return undefined;
+  const n = Number(trimmed);
+  if (!Number.isFinite(n) || n < 1) return undefined;
+  return Math.floor(n);
+}
+
+/** @returns {boolean} */
+function isRemotionSwiftShaderDisabledFromEnv() {
+  const raw = process.env.REMOTION_DISABLE_SWIFTSHADER;
+  if (raw === undefined || raw === null) return false;
+  const t = String(raw).trim();
+  if (t === "") return false;
+  return t === "1" || t.toLowerCase() === "true";
+}
+
 function normalizeDesignTemplate(v) {
   if (v === undefined || v === null) return 1;
   const n = Number(v);
@@ -18140,6 +19311,9 @@ export async function renderUgcVideo(inputProps, options = {}) {
   const fileName = `ugc-${randomUUID()}.mp4`;
   const outputLocation = path.join(taskDir, fileName);
 
+  const concurrency = getRemotionConcurrencyFromEnv();
+  const useSwiftShader = !isRemotionSwiftShaderDisabledFromEnv();
+
   await renderMedia({
     composition,
     serveUrl,
@@ -18150,14 +19324,16 @@ export async function renderUgcVideo(inputProps, options = {}) {
     compositionHeight,
     logLevel: "warn",
     overwrite: true,
-    // Limit frame-level parallelism — reduces Chrome RAM pressure significantly.
-    // Each concurrent "slot" spawns a Chrome tab; 1 is enough for local rendering.
-    concurrency: 1,
-    // SwiftShader = pure-software WebGL — no GPU memory allocated.
-    // Required on Windows machines without a discrete GPU / when GPU VRAM is low.
-    chromiumOptions: {
-      gl: "swiftshader",
-    },
+    ...(concurrency !== undefined ? { concurrency } : {}),
+    ...(useSwiftShader
+      ? {
+          // SwiftShader = pure-software WebGL — no GPU memory allocated.
+          // Default for local safety; omit in production via REMOTION_DISABLE_SWIFTSHADER.
+          chromiumOptions: {
+            gl: "swiftshader",
+          },
+        }
+      : {}),
   });
 
   const publicBase =

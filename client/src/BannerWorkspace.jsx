@@ -652,15 +652,23 @@ export default function BannerWorkspace() {
               סטודיו אווטאר
             </Link>
             {isPrimaryAdmin && (
-              <button
-                type="button"
-                onClick={handleDownloadAiContext}
-                disabled={aiContextBusy}
-                className="rounded-lg border border-indigo-300/80 dark:border-indigo-500/50 bg-indigo-50 dark:bg-indigo-950/50 px-3 py-2 text-sm font-medium text-indigo-800 dark:text-indigo-200 hover:bg-indigo-100 dark:hover:bg-indigo-900/60 disabled:opacity-50 transition"
-                title="מייצר מחדש את הקובץ בשורש הפרויקט ומוריד אותו"
-              >
-                {aiContextBusy ? 'מייצא…' : 'הורד ai-banner-context'}
-              </button>
+              <>
+                <Link
+                  to="/admin/catalog"
+                  className="rounded-lg border border-amber-300/80 dark:border-amber-600/50 bg-amber-50 dark:bg-amber-950/40 px-3 py-2 text-sm font-medium text-amber-800 dark:text-amber-200 hover:bg-amber-100 dark:hover:bg-amber-900/50 transition"
+                >
+                  ניהול קטלוג
+                </Link>
+                <button
+                  type="button"
+                  onClick={handleDownloadAiContext}
+                  disabled={aiContextBusy}
+                  className="rounded-lg border border-indigo-300/80 dark:border-indigo-500/50 bg-indigo-50 dark:bg-indigo-950/50 px-3 py-2 text-sm font-medium text-indigo-800 dark:text-indigo-200 hover:bg-indigo-100 dark:hover:bg-indigo-900/60 disabled:opacity-50 transition"
+                  title="מייצר מחדש את הקובץ בשורש הפרויקט ומוריד אותו"
+                >
+                  {aiContextBusy ? 'מייצא…' : 'הורד ai-banner-context'}
+                </button>
+              </>
             )}
             <button
               type="button"

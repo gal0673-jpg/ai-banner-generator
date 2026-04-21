@@ -30,6 +30,7 @@ from routers import admin as admin_router  # noqa: E402
 from routers import auth as auth_router  # noqa: E402
 from routers import avatar_studio as avatar_studio_router  # noqa: E402
 from routers import banners as banners_router  # noqa: E402
+from routers import catalog as catalog_router  # noqa: E402
 from services.banner_service import TASKS_DIR, ensure_tasks_dir  # noqa: E402
 
 
@@ -100,3 +101,4 @@ app.include_router(auth_router.router)
 app.include_router(banners_router.router)
 app.include_router(avatar_studio_router.router)
 app.include_router(admin_router.router)
+app.include_router(catalog_router.router)

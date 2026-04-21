@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import uuid
+from datetime import datetime
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -223,6 +225,76 @@ class UgcReRenderRequest(BaseModel):
         default="9:16",
         description="Output aspect for FFmpeg composite + Remotion (default 9:16 vertical).",
     )
+
+
+# ── Catalog schemas ───────────────────────────────────────────────────────────
+
+class VoiceRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    name: str
+    gender: str
+    provider: str
+    external_id: str
+    is_active: bool
+    created_at: datetime
+
+
+class VoiceCreate(BaseModel):
+    name: str = Field(..., min_length=1, max_length=128)
+    gender: str = Field(..., min_length=1, max_length=32)
+    provider: str = Field(..., min_length=1, max_length=64)
+    external_id: str = Field(..., min_length=1, max_length=128)
+    is_active: bool = True
+
+
+class VoiceUpdate(BaseModel):
+    name: str | None = Field(default=None, max_length=128)
+    gender: str | None = Field(default=None, max_length=32)
+    provider: str | None = Field(default=None, max_length=64)
+    external_id: str | None = Field(default=None, max_length=128)
+    is_active: bool | None = None
+
+
+class AvatarRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    name: str
+    gender: str
+    aspect_ratio: str
+    provider: str
+    external_id: str
+    heygen_character_type: str | None
+    recommended_voice_id: str | None
+    thumbnail_url: str | None
+    is_active: bool
+    created_at: datetime
+
+
+class AvatarCreate(BaseModel):
+    name: str = Field(..., min_length=1, max_length=128)
+    gender: str = Field(..., min_length=1, max_length=32)
+    aspect_ratio: str = Field(..., min_length=1, max_length=16)
+    provider: str = Field(..., min_length=1, max_length=64)
+    external_id: str = Field(..., min_length=1, max_length=1024)
+    heygen_character_type: str | None = Field(default=None, max_length=64)
+    recommended_voice_id: str | None = Field(default=None, max_length=128)
+    thumbnail_url: str | None = Field(default=None, max_length=1024)
+    is_active: bool = True
+
+
+class AvatarUpdate(BaseModel):
+    name: str | None = Field(default=None, max_length=128)
+    gender: str | None = Field(default=None, max_length=32)
+    aspect_ratio: str | None = Field(default=None, max_length=16)
+    provider: str | None = Field(default=None, max_length=64)
+    external_id: str | None = Field(default=None, max_length=1024)
+    heygen_character_type: str | None = Field(default=None, max_length=64)
+    recommended_voice_id: str | None = Field(default=None, max_length=128)
+    thumbnail_url: str | None = Field(default=None, max_length=1024)
+    is_active: bool | None = None
 
 
 class TaskPatchRequest(BaseModel):

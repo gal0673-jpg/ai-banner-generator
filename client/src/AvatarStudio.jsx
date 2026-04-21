@@ -10,10 +10,21 @@ function axiosErrorMessage(err) {
   return err.message || 'הבקשה נכשלה'
 }
 
-const DEFAULT_DID_URL =
-  'https://d-id-public-bucket.s3.us-west-2.amazonaws.com/alice.jpg'
-const DEFAULT_HEYGEN_ID = 'd365dda368044f6189ee68af637389ff'
-const UGC_DEFAULT_VOICE_HINT = 'Wuv1s5YTNCjL9mFJTqo4'
+/**
+ * FastAPI usually returns a JSON array as `res.data` directly.
+ * If the payload is wrapped, pick the first array among common keys.
+ */
+function extractCatalogArray(resData) {
+  if (Array.isArray(resData)) return resData
+  if (resData && typeof resData === 'object') {
+    const keys = ['items', 'data', 'avatars', 'voices', 'results']
+    for (const k of keys) {
+      const v = resData[k]
+      if (Array.isArray(v)) return v
+    }
+  }
+  return []
+}
 
 /**
  * Best-available video URL priority:
@@ -181,18 +192,24 @@ const _ALLOWED_ANIM = new Set(['pop', 'fade', 'typewriter'])
 const _ALLOWED_POS = new Set(['bottom', 'center', 'top'])
 const _ALLOWED_FONT = new Set(['heebo', 'rubik', 'assistant'])
 
+const PRIMARY_ADMIN_EMAIL = 'gal0673@gmail.com'
+
 export default function AvatarStudio() {
   const { user, logout } = useAuth()
   const navigate = useNavigate()
+  const isPrimaryAdmin = user?.email?.toLowerCase() === PRIMARY_ADMIN_EMAIL
+
+  // ── Catalog ──────────────────────────────────────────────────────────────
+  const [avatars, setAvatars] = useState([])
+  const [voices, setVoices] = useState([])
+  const [selectedAvatarDbId, setSelectedAvatarDbId] = useState('')
+  const [selectedVoiceDbId, setSelectedVoiceDbId] = useState('')
+  const [catalogLoading, setCatalogLoading] = useState(true)
 
   const [scriptSource, setScriptSource] = useState('spoken_only')
   const [creativeBrief, setCreativeBrief] = useState('')
   const [directorNotes, setDirectorNotes] = useState('')
   const [spokenScript, setSpokenScript] = useState('')
-  const [provider, setProvider] = useState('heygen_elevenlabs')
-  const [heygenCharacterType, setHeygenCharacterType] = useState('avatar')
-  const [avatarId, setAvatarId] = useState(DEFAULT_HEYGEN_ID)
-  const [voiceId, setVoiceId] = useState('')
   const [videoLength, setVideoLength] = useState('15s')
   const [aspectRatio, setAspectRatio] = useState('9:16')
   const [websiteUrl, setWebsiteUrl] = useState('')
@@ -228,6 +245,69 @@ export default function AvatarStudio() {
     statusPayload?.ugc_status === 'completed' || statusPayload?.ugc_status === 'failed'
   const terminal = bannerTerminal || ugcTerminal
   const isPolling = Boolean(taskId && !terminal)
+
+  // ── Catalog fetch (on mount) ──────────────────────────────────────────────
+  useEffect(() => {
+    let cancelled = false
+    setCatalogLoading(true)
+    Promise.all([
+      api.get('/catalog/avatars/active'),
+      api.get('/catalog/voices/active'),
+    ])
+      .then(([avRes, voRes]) => {
+        if (cancelled) return
+        const avRaw = avRes?.data
+        const voRaw = voRes?.data
+        const avList = extractCatalogArray(avRaw)
+        const voList = extractCatalogArray(voRaw)
+        // eslint-disable-next-line no-console -- intentional debug for catalog wiring
+        console.log('[AvatarStudio] catalog fetch OK', {
+          endpoints: ['/catalog/avatars/active', '/catalog/voices/active'],
+          avatarsRaw: avRaw,
+          voicesRaw: voRaw,
+          avatarsCount: avList.length,
+          voicesCount: voList.length,
+        })
+        setAvatars(avList)
+        setVoices(voList)
+        if (avList.length > 0) {
+          setSelectedAvatarDbId(avList[0].id)
+        }
+      })
+      .catch((err) => {
+        // eslint-disable-next-line no-console -- intentional debug for catalog wiring
+        console.error('[AvatarStudio] catalog fetch failed', {
+          message: err?.message,
+          status: err?.response?.status,
+          data: err?.response?.data,
+        })
+        if (!cancelled) {
+          setAvatars([])
+          setVoices([])
+        }
+      })
+      .finally(() => { if (!cancelled) setCatalogLoading(false) })
+    return () => { cancelled = true }
+  }, [])
+
+  // ── Avatar selection cascade (aspect ratio + default voice) ──────────────
+  useEffect(() => {
+    if (!selectedAvatarDbId || !Array.isArray(avatars) || avatars.length === 0) return
+    const avatar = avatars.find((a) => a.id === selectedAvatarDbId)
+    if (!avatar) return
+    if (avatar.aspect_ratio) setAspectRatio(avatar.aspect_ratio)
+    const safeVoices = Array.isArray(voices) ? voices : []
+    const filtered = safeVoices.filter((v) => v.gender === avatar.gender)
+    const recommended = filtered.find((v) => v.external_id === avatar.recommended_voice_id)
+    if (recommended) {
+      setSelectedVoiceDbId(recommended.id)
+    } else if (filtered.length > 0) {
+      setSelectedVoiceDbId(filtered[0].id)
+    } else {
+      setSelectedVoiceDbId(safeVoices[0]?.id ?? '')
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedAvatarDbId, avatars, voices])
 
   useEffect(() => {
     hydratedScriptKeyRef.current = ''
@@ -380,22 +460,43 @@ export default function AvatarStudio() {
     }
   }
 
+  // ── Derived catalog state ─────────────────────────────────────────────────
+  const selectedAvatar = useMemo(
+    () => (Array.isArray(avatars) ? avatars : []).find((a) => a.id === selectedAvatarDbId) ?? null,
+    [avatars, selectedAvatarDbId],
+  )
+  const filteredVoices = useMemo(() => {
+    const safeVoices = Array.isArray(voices) ? voices : []
+    if (!selectedAvatar) return safeVoices
+    return safeVoices.filter((v) => v.gender === selectedAvatar.gender)
+  }, [voices, selectedAvatar])
+  const selectedVoice = useMemo(
+    () => (Array.isArray(filteredVoices) ? filteredVoices : []).find((v) => v.id === selectedVoiceDbId) ?? null,
+    [filteredVoices, selectedVoiceDbId],
+  )
+
   const handleSubmit = async (e) => {
     e.preventDefault()
+    if (!selectedAvatar) {
+      setSubmitError('נא לבחור אווטאר לפני שליחה.')
+      return
+    }
     setSubmitError(null)
     setIsPosting(true)
     try {
       const body = {
         script_source: scriptSource,
-        provider,
-        avatar_id: avatarId.trim(),
+        provider: selectedAvatar.provider,
+        avatar_id: selectedAvatar.external_id,
         video_length: videoLength,
         aspect_ratio: aspectRatio,
       }
-      const v = voiceId.trim()
-      if (v) body.voice_id = v
-      if (provider === 'heygen_elevenlabs') {
-        body.heygen_character_type = heygenCharacterType
+      if (selectedVoice) body.voice_id = selectedVoice.external_id
+      if (
+        selectedAvatar.provider === 'heygen_elevenlabs' &&
+        selectedAvatar.heygen_character_type
+      ) {
+        body.heygen_character_type = selectedAvatar.heygen_character_type
       }
       if (scriptSource === 'from_brief_ai') {
         body.creative_brief = creativeBrief.trim()
@@ -499,6 +600,14 @@ export default function AvatarStudio() {
             >
               חזרה לבאנרים
             </Link>
+            {isPrimaryAdmin && (
+              <Link
+                to="/admin/catalog"
+                className="rounded-lg border border-amber-300/80 dark:border-amber-600/50 bg-amber-50 dark:bg-amber-950/40 px-3 py-2 text-sm font-medium text-amber-800 dark:text-amber-200 hover:bg-amber-100 dark:hover:bg-amber-900/50 transition"
+              >
+                ניהול קטלוג
+              </Link>
+            )}
             {user?.email && (
               <span className="hidden text-sm text-slate-600 dark:text-slate-400 sm:inline max-w-[180px] truncate">
                 {user.email}
@@ -591,85 +700,95 @@ export default function AvatarStudio() {
               </div>
             )}
 
+            {/* ── Avatar grid ─────────────────────────────────────────── */}
             <div>
-              <label className="block text-xs font-medium text-slate-600 dark:text-slate-300 mb-1.5">ספק</label>
-              <select
-                value={provider}
-                onChange={(ev) => {
-                  const v = ev.target.value
-                  setProvider(v)
+              <label className="block text-xs font-medium text-slate-600 dark:text-slate-300 mb-2">
+                <span className="text-red-500">*</span> בחר אווטאר
+              </label>
 
-                  const currentAvatar = avatarId.trim()
-                  if (v === 'd-id' && (currentAvatar === DEFAULT_HEYGEN_ID || currentAvatar === '')) {
-                    setAvatarId(DEFAULT_DID_URL)
-                  } else if (
-                    v === 'heygen_elevenlabs' &&
-                    (currentAvatar === DEFAULT_DID_URL || currentAvatar === '')
-                  ) {
-                    setAvatarId(DEFAULT_HEYGEN_ID)
-                  }
-                }}
-                disabled={formLocked}
-                className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2.5 text-sm outline-none disabled:opacity-60"
-              >
-                <option value="d-id">D-ID</option>
-                <option value="heygen_elevenlabs">HeyGen + ElevenLabs</option>
-              </select>
+              {catalogLoading ? (
+                <div className="flex items-center justify-center py-8 gap-2 text-xs text-slate-500 dark:text-slate-400">
+                  <Spinner className="!size-4" /> טוען קטלוג…
+                </div>
+              ) : avatars.length === 0 ? (
+                <div className="rounded-xl border border-dashed border-slate-300 dark:border-slate-700 px-4 py-6 text-center text-xs text-slate-500 dark:text-slate-400">
+                  אין אווטארים פעילים.{' '}
+                  <Link to="/admin/catalog" className="text-violet-600 dark:text-violet-400 hover:underline">
+                    הוסף בניהול הקטלוג
+                  </Link>
+                </div>
+              ) : (
+                <div className="grid grid-cols-3 gap-2">
+                  {avatars.map((av) => {
+                    const isSelected = selectedAvatarDbId === av.id
+                    return (
+                      <button
+                        key={av.id}
+                        type="button"
+                        onClick={() => setSelectedAvatarDbId(av.id)}
+                        disabled={formLocked}
+                        className={`relative flex flex-col overflow-hidden rounded-xl border-2 transition focus:outline-none disabled:opacity-60 ${
+                          isSelected
+                            ? 'border-violet-500 ring-2 ring-violet-500/30 shadow-md'
+                            : 'border-slate-200 dark:border-slate-700 hover:border-violet-300 dark:hover:border-violet-600'
+                        }`}
+                      >
+                        <div className="aspect-[9/16] w-full bg-slate-200 dark:bg-slate-800 overflow-hidden">
+                          {av.thumbnail_url ? (
+                            <img
+                              src={av.thumbnail_url}
+                              alt={av.name}
+                              className="w-full h-full object-cover"
+                              loading="lazy"
+                            />
+                          ) : (
+                            <div className="w-full h-full flex items-center justify-center text-2xl font-bold text-slate-400 dark:text-slate-600">
+                              {av.name.charAt(0).toUpperCase()}
+                            </div>
+                          )}
+                        </div>
+                        <div className={`px-1.5 py-1.5 text-center ${isSelected ? 'bg-violet-600' : 'bg-slate-50 dark:bg-slate-800'}`}>
+                          <p className={`text-[10px] font-semibold leading-tight truncate ${isSelected ? 'text-white' : 'text-slate-700 dark:text-slate-200'}`}>
+                            {av.name}
+                          </p>
+                          <p className={`text-[9px] mt-0.5 ${isSelected ? 'text-violet-200' : 'text-slate-400 dark:text-slate-500'}`}>
+                            {av.aspect_ratio}
+                          </p>
+                        </div>
+                        {isSelected && (
+                          <span className="absolute top-1.5 right-1.5 size-4 rounded-full bg-violet-500 border-2 border-white flex items-center justify-center">
+                            <svg width="8" height="8" viewBox="0 0 10 10" fill="white"><path d="M2 5l2.5 2.5L8 3" stroke="white" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" fill="none"/></svg>
+                          </span>
+                        )}
+                      </button>
+                    )
+                  })}
+                </div>
+              )}
             </div>
 
-            {provider === 'heygen_elevenlabs' && (
-              <div>
-                <label className="block text-xs font-medium text-slate-600 dark:text-slate-300 mb-1.5">
-                  סוג מזהה HeyGen
-                </label>
-                <select
-                  value={heygenCharacterType}
-                  onChange={(ev) => setHeygenCharacterType(ev.target.value)}
-                  disabled={formLocked}
-                  className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2.5 text-sm outline-none disabled:opacity-60"
-                >
-                  <option value="avatar">אווטאר סטודיו / Instant (avatar_id)</option>
-                  <option value="talking_photo">תמונה מדברת / Photo avatar (talking_photo_id)</option>
-                </select>
-                <p className="mt-1 text-[10px] text-slate-500 dark:text-slate-400 leading-relaxed text-right">
-                  אם HeyGen מחזיר &quot;avatar look not found&quot; — לרוב העתקת מזהה של תמונה מדברת אבל נשלח כ-avatar. נסה
-                  &quot;תמונה מדברת&quot;.
-                </p>
-              </div>
-            )}
-
-            <div>
-              <label className="block text-xs font-medium text-slate-600 dark:text-slate-300 mb-1.5">אווטאר / תמונה</label>
-              <input
-                type="text"
-                value={avatarId}
-                onChange={(ev) => setAvatarId(ev.target.value)}
-                disabled={formLocked}
-                placeholder={
-                  provider === 'd-id'
-                    ? 'URL תמונת פנים'
-                    : heygenCharacterType === 'talking_photo'
-                      ? 'talking_photo_id מ-List Avatars V2'
-                      : 'avatar_id מ-HeyGen'
-                }
-                className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2.5 text-sm outline-none disabled:opacity-60"
-                dir="ltr"
-              />
-            </div>
-
+            {/* ── Voice dropdown (filtered by selected avatar's gender) ── */}
             <div>
               <label className="block text-xs font-medium text-slate-600 dark:text-slate-300 mb-1.5">
-                קול ElevenLabs <span className="text-slate-400 font-normal">(אופציונלי)</span>
+                קול{' '}
+                {selectedAvatar && (
+                  <span className="text-slate-400 font-normal">({selectedAvatar.gender === 'male' ? 'גברי' : 'נשי'})</span>
+                )}
               </label>
-              <input
-                type="text"
-                value={voiceId}
-                onChange={(ev) => setVoiceId(ev.target.value)}
-                disabled={formLocked}
-                placeholder={`ברירת מחדל: ${UGC_DEFAULT_VOICE_HINT}`}
-                className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2.5 text-sm outline-none disabled:opacity-60"
-                dir="ltr"
-              />
+              <select
+                value={selectedVoiceDbId}
+                onChange={(ev) => setSelectedVoiceDbId(ev.target.value)}
+                disabled={formLocked || filteredVoices.length === 0}
+                className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2.5 text-sm outline-none focus:border-violet-500 focus:ring-2 focus:ring-violet-500/20 disabled:opacity-60"
+              >
+                {filteredVoices.length === 0 ? (
+                  <option value="">אין קולות זמינים לקטגוריה זו</option>
+                ) : (
+                  filteredVoices.map((v) => (
+                    <option key={v.id} value={v.id}>{v.name}</option>
+                  ))
+                )}
+              </select>
             </div>
 
             <div>
@@ -688,13 +807,13 @@ export default function AvatarStudio() {
 
             <div dir="rtl">
               <label className="block text-xs font-medium text-slate-600 dark:text-slate-300 mb-1.5">
-                יחס גובה-רוחב לווידאו
+                יחס גובה-רוחב{' '}
+                <span className="text-slate-400 font-normal">(נקבע לפי האווטאר)</span>
               </label>
               <select
                 value={aspectRatio}
-                onChange={(ev) => setAspectRatio(ev.target.value)}
-                disabled={formLocked}
-                className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2.5 text-sm text-right outline-none disabled:opacity-60"
+                disabled
+                className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-100 dark:bg-slate-800 px-3 py-2.5 text-sm text-right outline-none opacity-70 cursor-not-allowed"
               >
                 <option value="9:16">9:16 (Story/Reels)</option>
                 <option value="16:9">16:9 (אופקי)</option>

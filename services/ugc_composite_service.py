@@ -3,9 +3,9 @@
 Triggered from Celery after HeyGen/D-ID returns a CDN URL.
 
 FFmpeg step (try_composite_pip_blur):
-  Converts the raw provider video to the target aspect (e.g. 9:16) using a blurred
-  full-frame background (scale+crop+blur) plus a letterbox-fit foreground centered on top.
-  On failure, callers keep ``ugc_raw_video_url`` only.
+  Converts the raw provider video to the target aspect (e.g. 9:16) with a **crop-to-fill**
+  center crop (scale with ``force_original_aspect_ratio=increase``, then ``crop``), matching
+  typical short-form vertical video framing.  On failure, callers keep ``ugc_raw_video_url`` only.
 
 Remotion step (call_video_engine_render_ugc):
   Sends the raw CDN video + ugc_script to the Node.js video engine's /render-ugc
@@ -16,6 +16,11 @@ Env:
   UGC_FFMPEG_COMPOSITE      — set to ``0`` / ``false`` / ``no`` to disable FFmpeg step
                                (default: enabled when ffmpeg exists).
   UGC_FFMPEG_BINARY         — override executable name/path (default: ``ffmpeg``).
+  UGC_FFMPEG_VCODEC         — video encoder (e.g. ``h264_nvenc``, ``h264_videotoolbox``,
+                               ``h264_qsv``); default ``libx264``.
+  UGC_FFMPEG_PRESET         — encoder preset (e.g. NVENC ``p4`` or libx264 ``fast``);
+                               default ``fast``.  For non-``libx264`` codecs, ``-crf`` is
+                               omitted (HW encoders use their own rate-control options).
   VIDEO_ENGINE_URL          — base URL of the Remotion video engine
                                (default: ``http://127.0.0.1:9000``).
   VIDEO_ENGINE_RENDER_UGC_TIMEOUT — HTTP timeout in seconds for /render-ugc
@@ -82,6 +87,22 @@ def _ffmpeg_binary() -> str:
     return os.environ.get("UGC_FFMPEG_BINARY", "ffmpeg").strip() or "ffmpeg"
 
 
+def _ugc_ffmpeg_vcodec() -> str:
+    """Video codec for UGC composite encode; default ``libx264`` when unset or blank."""
+    raw = os.environ.get("UGC_FFMPEG_VCODEC")
+    if raw is None or not str(raw).strip():
+        return "libx264"
+    return str(raw).strip()
+
+
+def _ugc_ffmpeg_preset() -> str:
+    """Encoder preset for UGC composite; default ``fast`` when unset or blank."""
+    raw = os.environ.get("UGC_FFMPEG_PRESET")
+    if raw is None or not str(raw).strip():
+        return "fast"
+    return str(raw).strip()
+
+
 def composite_enabled() -> bool:
     if os.environ.get("UGC_FFMPEG_COMPOSITE", "1").strip().lower() in (
         "0",
@@ -111,7 +132,7 @@ def try_composite_pip_blur(
     speed_factor: float = 1.0,
     aspect_ratio: str = "9:16",
 ) -> tuple[str | None, str | None]:
-    """Download provider MP4, run FFmpeg blurred-background composite, write aspect-specific MP4.
+    """Download provider MP4, run FFmpeg crop-to-fill composite, write aspect-specific MP4.
 
     Args:
         speed_factor: Playback rate for video+audio (1.0 = unchanged). Clamped to 0.5–2.0
@@ -127,7 +148,7 @@ def try_composite_pip_blur(
         if shutil.which(bin_name) is None:
             return None, (
                 "FFmpeg is not installed on the server. Showing raw provider video. "
-                "To enable the UGC FFmpeg composite (blurred background + fit foreground), "
+                "To enable the UGC FFmpeg composite (crop-to-fill aspect normalization), "
                 "please install FFmpeg "
                 f"and set UGC_FFMPEG_BINARY to its full path (e.g. C:/laragon/ffpm/bin/ffmpeg.exe). "
                 f"[looked for: {bin_name!r}]"
@@ -140,7 +161,7 @@ def try_composite_pip_blur(
     dl_path = work_dir / _DOWNLOAD_FILENAME
     w, h = _ugc_canvas_width_height(aspect_ratio)
     logger.info(
-        "[ugc_composite] task_id=%s aspect=%s canvas=%d×%d (blur-bg + fit-fg)",
+        "[ugc_composite] task_id=%s aspect=%s canvas=%d×%d (crop-to-fill)",
         task_id,
         normalize_ugc_aspect_ratio(aspect_ratio),
         w,
@@ -166,19 +187,17 @@ def try_composite_pip_blur(
         sf = min(2.0, max(0.5, sf))
     use_speed = abs(sf - 1.0) > 1e-3
 
-    # Background: fill canvas + crop + heavy blur. Foreground: fit inside canvas (no crop).
-    # Overlay centers fg on bg so aspect changes (e.g. 9:16 → 16:9) do not decapitate the avatar.
-    _overlay_tail = (
-        f"[bg][fg]overlay=(main_w-overlay_w)/2:(main_h-overlay_h)/2,setsar=1"
+    # TikTok/Reels-style crop-to-fill: scale so the frame covers w×h, then center-crop.
+    # Optional setpts speeds/slows video to match atempo on audio.
+    fc = (
+        f"[0:v]scale={w}:{h}:force_original_aspect_ratio=increase,"
+        f"crop={w}:{h}:(iw-ow)/2:(ih-oh)/2,setsar=1"
         + (f",setpts=PTS/{sf}" if use_speed else "")
         + "[outv]"
     )
-    fc = (
-        f"[0:v]scale={w}:{h}:force_original_aspect_ratio=increase,"
-        f"crop={w}:{h}:(iw-ow)/2:(ih-oh)/2,boxblur=20:10[bg];"
-        f"[0:v]scale={w}:{h}:force_original_aspect_ratio=decrease[fg];"
-        f"{_overlay_tail}"
-    )
+
+    vcodec = _ugc_ffmpeg_vcodec()
+    preset = _ugc_ffmpeg_preset()
 
     def _run_ffmpeg(with_audio: bool) -> subprocess.CompletedProcess[str]:
         c = [
@@ -194,16 +213,21 @@ def try_composite_pip_blur(
             "-map",
             "[outv]",
             "-c:v",
-            "libx264",
+            vcodec,
             "-pix_fmt",
             "yuv420p",
-            "-crf",
-            "20",
-            "-preset",
-            "fast",
-            "-movflags",
-            "+faststart",
         ]
+        # CRF is libx264-oriented; NVENC / QSV / VideoToolbox use other rate-control flags.
+        if vcodec == "libx264":
+            c.extend(["-crf", "20"])
+        c.extend(
+            [
+                "-preset",
+                preset,
+                "-movflags",
+                "+faststart",
+            ]
+        )
         if with_audio:
             audio_chain: list[str] = ["-map", "0:a?"]
             if use_speed:

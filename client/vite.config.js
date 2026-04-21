@@ -18,6 +18,8 @@ export default defineConfig({
       '/status': { target: 'http://127.0.0.1:8888', changeOrigin: true },
       '/tasks': { target: 'http://127.0.0.1:8888', changeOrigin: true },
       '/upload-temp-asset': { target: 'http://127.0.0.1:8888', changeOrigin: true },
+      // Avatar Studio catalog (must match FastAPI routers/catalog.py)
+      '/catalog': { target: 'http://127.0.0.1:8888', changeOrigin: true },
       '/admin': { target: 'http://127.0.0.1:8888', changeOrigin: true },
       '/task-files': { target: 'http://127.0.0.1:8888', changeOrigin: true },
     },

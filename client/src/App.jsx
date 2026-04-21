@@ -1,4 +1,5 @@
 import { Navigate, Route, Routes, useLocation } from 'react-router-dom'
+import AdminCatalog from './AdminCatalog.jsx'
 import AvatarStudio from './AvatarStudio.jsx'
 import BannerWorkspace from './BannerWorkspace.jsx'
 import { useAuth } from './AuthContext.jsx'
@@ -41,6 +42,14 @@ export default function App() {
           element={
             <ProtectedRoute>
               <AvatarStudio />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/admin/catalog"
+          element={
+            <ProtectedRoute>
+              <AdminCatalog />
             </ProtectedRoute>
           }
         />

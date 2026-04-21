@@ -1,4 +1,4 @@
-"""ORM models: User and BannerTask."""
+"""ORM models: User, BannerTask, VoiceCatalog, AvatarCatalog."""
 
 from __future__ import annotations
 
@@ -100,3 +100,43 @@ class BannerTask(Base):
     ugc_video_fit_mode: Mapped[str | None] = mapped_column(String(32), default="crop", nullable=True)
 
     user: Mapped["User"] = relationship("User", back_populates="tasks")
+
+
+class VoiceCatalog(Base):
+    """TTS voice entries available for avatar videos."""
+
+    __tablename__ = "voice_catalog"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    name: Mapped[str] = mapped_column(String(128), nullable=False)
+    gender: Mapped[str] = mapped_column(String(32), nullable=False)
+    provider: Mapped[str] = mapped_column(String(64), nullable=False)
+    external_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utc_now, nullable=False
+    )
+
+
+class AvatarCatalog(Base):
+    """Avatar entries available for avatar video generation."""
+
+    __tablename__ = "avatar_catalog"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    name: Mapped[str] = mapped_column(String(128), nullable=False)
+    gender: Mapped[str] = mapped_column(String(32), nullable=False)
+    aspect_ratio: Mapped[str] = mapped_column(String(16), nullable=False)
+    provider: Mapped[str] = mapped_column(String(64), nullable=False)
+    external_id: Mapped[str] = mapped_column(String(1024), nullable=False)
+    heygen_character_type: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    recommended_voice_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    thumbnail_url: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utc_now, nullable=False
+    )
