@@ -184,10 +184,39 @@ export function buildPersistSliceFromState(state, brandColor) {
  * state value.  Replaces `applyBannerPersistSlice` (which required individual
  * setters) when the reducer pattern is used.
  *
- * @param {object} state  — current reducer state (will NOT be mutated)
+ * @param {object} state  — current canvas state / `history.present` (will NOT be mutated)
  * @param {object} slice  — persisted slice (may be null / undefined)
  * @returns {object} new state with slice values applied
  */
+/**
+ * Deep-clone banner canvas reducer state (text, bullets, boxes, style).
+ * Used for undo history snapshots.
+ *
+ * @param {object} state
+ * @returns {object}
+ */
+export function cloneBannerCanvasState(state) {
+  if (typeof structuredClone === 'function') {
+    return structuredClone(state)
+  }
+  return JSON.parse(JSON.stringify(state))
+}
+
+/**
+ * Stable JSON equality for undo dedupe (e.g. drag that ends at the same coords).
+ *
+ * @param {object} a
+ * @param {object} b
+ * @returns {boolean}
+ */
+export function bannerCanvasStatesEqual(a, b) {
+  try {
+    return JSON.stringify(a) === JSON.stringify(b)
+  } catch {
+    return a === b
+  }
+}
+
 export function mergePersistSliceIntoState(state, slice) {
   if (!slice || typeof slice !== 'object') return state
   const boxes = { ...state.boxes }

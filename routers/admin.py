@@ -25,12 +25,21 @@ def admin_list_tasks(
     _: Annotated[User, Depends(get_current_superuser)],
     db: Session = Depends(get_db),
 ) -> list[dict[str, Any]]:
-    stmt = select(BannerTask).options(joinedload(BannerTask.user)).order_by(BannerTask.id)
+    stmt = (
+        select(BannerTask)
+        .options(
+            joinedload(BannerTask.user),
+            joinedload(BannerTask.creative),
+            joinedload(BannerTask.ugc_video),
+        )
+        .order_by(BannerTask.id)
+    )
     rows = db.scalars(stmt).unique().all()
     out: list[dict[str, Any]] = []
     for t in rows:
         tid = str(t.id)
         fs1, fs2 = rendered_banner_urls_for_task(tid)
+        c = t.creative
         out.append(
             {
                 "task_id": tid,
@@ -40,25 +49,25 @@ def admin_list_tasks(
                 "url": t.url,
                 "brief": t.brief,
                 "error": t.error,
-                "headline": t.headline,
-                "subhead": t.subhead,
-                "bullet_points": t.bullet_points,
-                "cta": t.cta,
-                "video_hook": t.video_hook,
-                "brand_color": t.brand_color,
-                "background_url": t.background_url,
-                "logo_url": t.logo_url,
-                "rendered_banner_1_url": t.rendered_banner_1_url or fs1,
-                "rendered_banner_2_url": t.rendered_banner_2_url or fs2,
-                "canvas_state": t.canvas_state,
-                "video_url_1": t.video_url_1,
-                "video_url_2": t.video_url_2,
-                "rendered_banner_1_vertical_url": t.rendered_banner_1_vertical_url,
-                "rendered_banner_2_vertical_url": t.rendered_banner_2_vertical_url,
-                "video_url_1_vertical": t.video_url_1_vertical,
-                "video_url_2_vertical": t.video_url_2_vertical,
-                "video_status": t.video_status,
-                "video_render_error": t.video_render_error,
+                "headline": c.headline if c else None,
+                "subhead": c.subhead if c else None,
+                "bullet_points": c.bullet_points if c else None,
+                "cta": c.cta if c else None,
+                "video_hook": c.video_hook if c else None,
+                "brand_color": c.brand_color if c else None,
+                "background_url": c.background_url if c else None,
+                "logo_url": c.logo_url if c else None,
+                "rendered_banner_1_url": (c.rendered_banner_1_url if c else None) or fs1,
+                "rendered_banner_2_url": (c.rendered_banner_2_url if c else None) or fs2,
+                "canvas_state": c.canvas_state if c else None,
+                "video_url_1": c.video_url_1 if c else None,
+                "video_url_2": c.video_url_2 if c else None,
+                "rendered_banner_1_vertical_url": c.rendered_banner_1_vertical_url if c else None,
+                "rendered_banner_2_vertical_url": c.rendered_banner_2_vertical_url if c else None,
+                "video_url_1_vertical": c.video_url_1_vertical if c else None,
+                "video_url_2_vertical": c.video_url_2_vertical if c else None,
+                "video_status": c.video_status if c else None,
+                "video_render_error": c.video_render_error if c else None,
             }
         )
     return out

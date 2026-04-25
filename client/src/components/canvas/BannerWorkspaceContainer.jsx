@@ -129,7 +129,28 @@ export default function BannerWorkspaceContainer({
     dispatchAndPersist,
     schedulePersist,
     setBulletAt,
+    flushBoxGestureHistory,
+    undo,
+    redo,
   } = canvasState
+
+  useEffect(() => {
+    const onKeyDown = (e) => {
+      const isMac = typeof navigator !== 'undefined' && /Mac|iPhone|iPod|iPad/i.test(navigator.platform)
+      const mod = isMac ? e.metaKey : e.ctrlKey
+      if (!mod || (e.key !== 'z' && e.key !== 'Z')) return
+      const t = e.target
+      if (t instanceof HTMLElement) {
+        const tag = t.tagName
+        if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || t.isContentEditable) return
+      }
+      e.preventDefault()
+      if (e.shiftKey) redo()
+      else undo()
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [undo, redo])
 
   const bgSrc = backgroundUrl ? `${apiBase}${backgroundUrl}` : ''
   const logoSrc = logoUrl ? `${apiBase}${logoUrl}` : ''
@@ -248,7 +269,10 @@ export default function BannerWorkspaceContainer({
               minWidth={80}
               minHeight={48}
               lockAspectRatio
-              onUserCommit={schedulePersist}
+              onUserCommit={() => {
+                flushBoxGestureHistory()
+                schedulePersist()
+              }}
               designSize={designSize}
               {...handleProps}
             >
@@ -281,7 +305,10 @@ export default function BannerWorkspaceContainer({
               viewportScale={scale}
               minWidth={200}
               autoHeight
-              onUserCommit={schedulePersist}
+              onUserCommit={() => {
+                flushBoxGestureHistory()
+                schedulePersist()
+              }}
               designSize={designSize}
               {...handleProps}
             >

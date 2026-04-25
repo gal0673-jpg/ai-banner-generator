@@ -2,6 +2,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import api, { API_BASE_URL, API_BASE_URL_DISPLAY, toAbsoluteApiUrl } from './api.js'
 import { useAuth } from './AuthContext.jsx'
+import { useTaskWebSocket } from './useTaskWebSocket.js'
 
 function axiosErrorMessage(err) {
   const d = err.response?.data?.detail
@@ -194,6 +195,13 @@ const _ALLOWED_FONT = new Set(['heebo', 'rubik', 'assistant'])
 
 const PRIMARY_ADMIN_EMAIL = 'gal0673@gmail.com'
 
+const TONE_TAGS = ['[אנרגטי]', '[דרמטי]', '[אמפתי]', '[דחוף]', '[מקצועי]']
+
+const VIDEO_LAYOUTS = [
+  { id: 'classic', label: 'קלאסי (בולטים)' },
+  { id: 'split_gallery', label: 'גלריית תמונות (חצוי)' },
+]
+
 export default function AvatarStudio() {
   const { user, logout } = useAuth()
   const navigate = useNavigate()
@@ -206,7 +214,8 @@ export default function AvatarStudio() {
   const [selectedVoiceDbId, setSelectedVoiceDbId] = useState('')
   const [catalogLoading, setCatalogLoading] = useState(true)
 
-  const [scriptSource, setScriptSource] = useState('spoken_only')
+  /** Default matches the first <option> in the select (AI from brief — most common). */
+  const [scriptSource, setScriptSource] = useState('from_brief_ai')
   const [creativeBrief, setCreativeBrief] = useState('')
   const [directorNotes, setDirectorNotes] = useState('')
   const [spokenScript, setSpokenScript] = useState('')
@@ -215,6 +224,7 @@ export default function AvatarStudio() {
   const [websiteUrl, setWebsiteUrl] = useState('')
   const [logoUrl, setLogoUrl] = useState('')
   const [productImageUrl, setProductImageUrl] = useState('')
+  const [selectedLayout, setSelectedLayout] = useState(VIDEO_LAYOUTS[0].id)
   const logoFileRef = useRef(null)
   const productFileRef = useRef(null)
   const [logoUploading, setLogoUploading] = useState(false)
@@ -237,7 +247,6 @@ export default function AvatarStudio() {
   const [statusPayload, setStatusPayload] = useState(null)
   const [submitError, setSubmitError] = useState(null)
   const [isPosting, setIsPosting] = useState(false)
-  const [sseBump, setSseBump] = useState(0)
 
   const bannerTerminal =
     statusPayload?.status === 'completed' || statusPayload?.status === 'failed'
@@ -357,39 +366,11 @@ export default function AvatarStudio() {
   ])
 
   useEffect(() => {
-    if (!taskId) return undefined
-    const tick = async () => {
-      try {
-        const { data } = await api.get(`/status/${taskId}`)
-        setStatusPayload(data)
-      } catch {
-        /* ignore */
-      }
-    }
-    void tick()
-    const id = setInterval(tick, 4000)
-    return () => clearInterval(id)
+    if (!taskId) setStatusPayload(null)
   }, [taskId])
 
-  useEffect(() => {
-    if (!taskId) {
-      setStatusPayload(null)
-      return undefined
-    }
-    const ssePath = `${API_BASE_URL}/status/${taskId}/stream`
-    const sse = new EventSource(ssePath)
-    sse.onmessage = (event) => {
-      try {
-        const data = JSON.parse(event.data)
-        setStatusPayload(data)
-      } catch {
-        /* ignore */
-      }
-    }
-    return () => {
-      sse.close()
-    }
-  }, [taskId, sseBump])
+  // Real-time status updates via WebSocket (falls back to polling automatically).
+  useTaskWebSocket(taskId, setStatusPayload)
 
   const handleUgcRerender = async (ar) => {
     const targetAspect = ar ?? activePreviewAspect ?? aspectRatio ?? '9:16'
@@ -481,6 +462,14 @@ export default function AvatarStudio() {
       setSubmitError('נא לבחור אווטאר לפני שליחה.')
       return
     }
+    if (scriptSource === 'from_brief_ai' && !creativeBrief.trim()) {
+      setSubmitError('נא למלא בריף קריאייטיבי (או לעבור ל״רק טקסט דיבור״ ולמלא את תיבת הדיבור).')
+      return
+    }
+    if (scriptSource === 'spoken_only' && !spokenScript.trim()) {
+      setSubmitError('נא למלא את ״טקסט לדיבור בלבד״ — רק מה שהאווטאר יאמר בעברית.')
+      return
+    }
     setSubmitError(null)
     setIsPosting(true)
     try {
@@ -498,12 +487,14 @@ export default function AvatarStudio() {
       ) {
         body.heygen_character_type = selectedAvatar.heygen_character_type
       }
+      const layoutInstruction = `LAYOUT_MODE: ${selectedLayout}`
       if (scriptSource === 'from_brief_ai') {
         body.creative_brief = creativeBrief.trim()
         const dn = directorNotes.trim()
-        if (dn) body.director_notes = dn
+        body.director_notes = dn ? `${dn}\n${layoutInstruction}` : layoutInstruction
       } else {
         body.spoken_script = spokenScript.trim()
+        body.director_notes = layoutInstruction
       }
       const wu = websiteUrl.trim()
       if (wu) body.website_url = wu
@@ -514,7 +505,6 @@ export default function AvatarStudio() {
       const id = data?.task_id
       if (!id) throw new Error('לא התקבל מזהה משימה')
       setTaskId(id)
-      setSseBump((n) => n + 1)
     } catch (err) {
       setSubmitError(axiosErrorMessage(err))
     } finally {
@@ -646,6 +636,11 @@ export default function AvatarStudio() {
                 <option value="from_brief_ai">AI מבריף + הערות בימוי</option>
                 <option value="spoken_only">רק טקסט דיבור (בלי AI)</option>
               </select>
+              {scriptSource === 'spoken_only' && (
+                <p className="mt-1.5 text-[11px] text-slate-500 dark:text-slate-400 leading-snug">
+                  חובה למלא את תיבת &quot;טקסט לדיבור בלבד&quot; למטה לפני שליחה.
+                </p>
+              )}
             </div>
 
             {scriptSource === 'from_brief_ai' && (
@@ -659,6 +654,7 @@ export default function AvatarStudio() {
                     value={creativeBrief}
                     onChange={(ev) => setCreativeBrief(ev.target.value)}
                     disabled={formLocked}
+                    required
                     placeholder="מוצר, קהל, הצעה, טון — מה המסר?"
                     className="w-full resize-y rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 px-3 py-2.5 text-sm text-right outline-none focus:border-violet-500 min-h-[120px] disabled:opacity-60"
                     dir="rtl"
@@ -678,6 +674,26 @@ export default function AvatarStudio() {
                     className="w-full resize-y rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 px-3 py-2.5 text-sm text-right outline-none focus:border-violet-500 min-h-[88px] disabled:opacity-60"
                     dir="rtl"
                   />
+                  <div className="mt-2 space-y-1.5" dir="rtl">
+                    <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                      טון מומלץ (לחץ להוספה):
+                    </p>
+                    <div className="flex flex-wrap gap-1.5 justify-start" dir="rtl">
+                      {TONE_TAGS.map((tag) => (
+                        <button
+                          key={tag}
+                          type="button"
+                          onClick={() => {
+                            setDirectorNotes((d) => `${d}${tag} `)
+                          }}
+                          disabled={formLocked}
+                          className="inline-flex items-center rounded-full bg-violet-50/90 dark:bg-violet-950/50 px-2.5 py-1 text-[11px] font-medium text-violet-800 dark:text-violet-200 ring-1 ring-violet-200/80 dark:ring-violet-800/60 hover:bg-violet-100 dark:hover:bg-violet-900/40 disabled:opacity-50 disabled:cursor-not-allowed transition"
+                        >
+                          {tag}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
                 </div>
               </>
             )}
@@ -692,6 +708,7 @@ export default function AvatarStudio() {
                   value={spokenScript}
                   onChange={(ev) => setSpokenScript(ev.target.value)}
                   disabled={formLocked}
+                  required
                   placeholder="רק מה שהאווטאר יאמר — בלי כותרות סצנה ואנגלית."
                   maxLength={12000}
                   className="w-full resize-y rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 px-3 py-2.5 text-sm text-right outline-none focus:border-violet-500 min-h-[160px] disabled:opacity-60"
@@ -915,6 +932,32 @@ export default function AvatarStudio() {
                   {productUploading ? <Spinner className="!size-4" /> : null}
                   <span>{productUploading ? 'מעלה…' : 'העלאה'}</span>
                 </button>
+              </div>
+            </div>
+
+            <div role="radiogroup" aria-label="סגנון וידאו" className="space-y-2">
+              <span className="block text-xs font-medium text-slate-600 dark:text-slate-300">סגנון וידאו</span>
+              <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                {VIDEO_LAYOUTS.map((layout) => {
+                  const isOn = selectedLayout === layout.id
+                  return (
+                    <button
+                      key={layout.id}
+                      type="button"
+                      role="radio"
+                      aria-checked={isOn}
+                      onClick={() => setSelectedLayout(layout.id)}
+                      disabled={formLocked}
+                      className={`rounded-xl border-2 px-3 py-2.5 text-sm text-right font-medium transition focus:outline-none focus:ring-2 focus:ring-violet-500/30 disabled:opacity-60 ${
+                        isOn
+                          ? 'border-violet-500 bg-violet-50 dark:bg-violet-950/50 text-violet-900 dark:text-violet-100'
+                          : 'border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 text-slate-800 dark:text-slate-200 hover:border-violet-300 dark:hover:border-violet-600'
+                      }`}
+                    >
+                      {layout.label}
+                    </button>
+                  )
+                })}
               </div>
             </div>
 

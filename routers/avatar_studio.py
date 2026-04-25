@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 
 from auth import get_current_user
 from database import get_db
-from models import BannerTask, User
+from models import BannerCreativeData, BannerTask, UgcVideoData, User
 from schemas import GenerateAvatarStudioRequest
 from services.banner_service import persist_task
 from services.url_display import normalize_website_display
@@ -53,28 +53,18 @@ def generate_avatar_studio(
         task_kind="avatar_studio",
         url=AVATAR_STUDIO_URL_PLACEHOLDER,
         brief=summary_brief,
+        error=None,
+    )
+    row.creative = BannerCreativeData(
+        banner_task_id=task_id,
+        logo_url=body.logo_url,
+        product_image_url=body.product_image_url,
+    )
+    row.ugc_video = UgcVideoData(
+        banner_task_id=task_id,
         ugc_avatar_id=avatar_id,
         ugc_website_display=website_disp,
         ugc_status="pending",
-        error=None,
-        headline=None,
-        subhead=None,
-        bullet_points=None,
-        cta=None,
-        video_hook=None,
-        brand_color=None,
-        background_url=None,
-        logo_url=body.logo_url,
-        product_image_url=body.product_image_url,
-        rendered_banner_1_url=None,
-        rendered_banner_2_url=None,
-        canvas_state=None,
-        video_url_1=None,
-        video_url_2=None,
-        rendered_banner_1_vertical_url=None,
-        rendered_banner_2_vertical_url=None,
-        video_url_1_vertical=None,
-        video_url_2_vertical=None,
     )
     db.add(row)
     db.commit()

@@ -33,7 +33,9 @@ load_dotenv(BASE / ".env")
 # Allowed values — kept as module-level constants so callers can validate too
 # ---------------------------------------------------------------------------
 
-VISUAL_LAYOUTS = frozenset({"full_avatar", "avatar_with_bullets", "avatar_with_cta"})
+VISUAL_LAYOUTS = frozenset(
+    {"full_avatar", "avatar_with_bullets", "avatar_with_cta", "split_gallery"}
+)
 
 _DURATION_MAP: dict[str, int] = {"15s": 15, "30s": 30, "50s": 50}
 
@@ -46,15 +48,141 @@ _SCENE_GUIDANCE: dict[str, str] = {
 }
 
 # ---------------------------------------------------------------------------
+# LAYOUT_MODE — parsed from director notes / brief (no separate API field yet)
+# ---------------------------------------------------------------------------
+
+_LAYOUT_MODE_RE = re.compile(
+    r"^\s*LAYOUT_MODE:\s*(\S+)\s*$",
+    re.IGNORECASE | re.MULTILINE,
+)
+
+
+def parse_layout_mode(text: str) -> str:
+    """Return 'split_gallery' or 'classic' (default) if LAYOUT_MODE is present in *text*."""
+    if not text or not str(text).strip():
+        return "classic"
+    m = _LAYOUT_MODE_RE.search(str(text))
+    if not m:
+        return "classic"
+    mode = m.group(1).strip().lower()
+    if mode == "split_gallery":
+        return "split_gallery"
+    return "classic"
+
+
+def strip_layout_mode_lines(text: str) -> str:
+    """Remove LAYOUT_MODE: … lines (machine metadata; not for TTS or spoken copy)."""
+    if not text:
+        return ""
+    cleaned = _LAYOUT_MODE_RE.sub("", str(text))
+    return "\n".join(line for line in cleaned.splitlines() if line.strip()).strip()
+
+# ---------------------------------------------------------------------------
 # System prompt
 # ---------------------------------------------------------------------------
 
-UGC_DIRECTOR_SYSTEM = """\
+
+def build_ugc_director_system(layout_mode: str = "classic") -> str:
+    """Full system prompt; *layout_mode* is 'classic' or 'split_gallery'."""
+    mode = (layout_mode or "classic").lower()
+    if mode not in ("classic", "split_gallery"):
+        mode = "classic"
+    is_split = mode == "split_gallery"
+
+    middle_layout_rule = (
+        """\
+• MIDDLE-SCENE LAYOUT (this run — split gallery): every middle scene (not first, not last) must \
+set \"visual_layout\" to exactly \"split_gallery\" — a 2×2 grid where the live avatar occupies the \
+bottom-right quadrant; the other three quadrants show stills. For EACH such scene you MUST include \
+exactly **three** image descriptions (not four):
+    \"layout_data\": { \"images\": [\"<Hebrew image idea 1>\", \"<Hebrew image idea 2>\", \
+\"<Hebrew image idea 3>\"] }
+  Order maps to the compositor as: top-left, top-right, bottom-left (bottom-right is always the \
+avatar — do not supply a fourth image). The three strings are short, concrete visual briefs (what \
+to show) in Hebrew — not spoken aloud. They should match the benefit described in that scene's \
+spoken_text.
+• Do not use \"avatar_with_bullets\" in this run — middle scenes are always \"split_gallery\" with \
+layout_data as above.
+"""
+        if is_split
+        else """\
+• visual_layout values for the BODY (middle scenes only): use \"avatar_with_bullets\" — one key \
+  benefit per scene. Do not use \"split_gallery\" unless the LAYOUT_MODE instructions in the user \
+  message say otherwise.
+"""
+    )
+
+    body_arc = (
+        """\
+    2. Body (middle)      → \"split_gallery\" with layout_data.images (exactly **three** entries) — \
+one key benefit per scene, with three image briefs (TL, TR, BL) for the compositor. Use pause \
+markers in spoken_text.
+"""
+        if is_split
+        else """\
+    2. Body (middle)      → \"avatar_with_bullets\" — one key benefit per scene. \
+Each scene is self-contained, punchy, and uses pause markers.
+"""
+    )
+
+    layout_bullet_list = (
+        """\
+    – \"split_gallery\"     → For middle (body) scenes only: 2×2 grid — the avatar sits in the \
+bottom-right; you supply stills for the other three cells. You MUST include \
+\"layout_data\": { \"images\": [\"...\", \"...\", \"...\"] } with **exactly three** Hebrew \
+image-brief strings (not spoken), in order: top-left, top-right, bottom-left. Never output a \
+fourth string — the fourth quadrant is the avatar.
+"""
+        if is_split
+        else """\
+    – \"avatar_with_bullets\" → Avatar on one side, animated bullet points on the other. \
+Use for benefit / feature explanation scenes (middle only).
+"""
+    )
+
+    if is_split:
+        output_scene_shape = """    {
+      "scene_number": <integer, 1-indexed>,
+      "spoken_text": "<natural Hebrew TTS transcript — no emojis, no markdown>",
+      "on_screen_text": "<3-4 Hebrew words OR empty string>",
+      "visual_layout": "split_gallery",
+      "layout_data": {
+        "images": ["<תיאור לתמונה 1 (שמאל-על) — לא מדברים בקול>", "<תיאור לתמונה 2 (ימין-על)>", "<תיאור לתמונה 3 (שמאל-תחתון)>"]
+      }
+    }"""
+    else:
+        output_scene_shape = """    {
+      "scene_number": <integer, 1-indexed>,
+      "spoken_text": "<natural Hebrew TTS transcript — no emojis, no markdown>",
+      "on_screen_text": "<3-4 Hebrew words OR empty string>",
+      "visual_layout": "<full_avatar | avatar_with_bullets | avatar_with_cta — see position rules>"
+    }"""
+
+    extra_constraints = (
+        """\
+• Every middle scene must use \"split_gallery\" and MUST include \
+\"layout_data\": { \"images\": [string, string, string] } with exactly three non-empty Hebrew \
+strings (three image slots only; the fourth grid cell is the avatar in the compositor).
+• Scenes with \"split_gallery\" must not omit layout_data. First and last scenes must never use \
+\"split_gallery\" or layout_data.
+"""
+        if is_split
+        else """\
+• Every middle scene must use \"avatar_with_bullets\".
+• Do not include layout_data — omit it from all scenes.
+"""
+    )
+
+    return f"""\
 You are an elite UGC (User-Generated Content) commercial director specialising in TikTok and \
 Instagram Reels ads for the Israeli market. You have an instinctive feel for the scroll-stopping \
 hook, the emotionally resonant benefit reveal, and the urgency-driven CTA — all in native, \
 street-level Hebrew that sounds like it came from a real Israeli creator filming on their phone, \
 never from an AI or a corporate marketing department.
+
+The user message may include a line: LAYOUT_MODE: classic | split_gallery. The effective mode for \
+this run is: **{mode}** — follow the layout rules below for this mode. Do not speak the \
+LAYOUT_MODE line aloud.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
  INPUTS
@@ -106,6 +234,13 @@ You MUST follow these rules or the video will sound robotic:
    ✓ Casual: "באמת, אין דבר כזה בשוק"
    ✗ Formal: "מוצר זה הינו ייחודי בשוקהישראלי"
 
+⑥ DIRECTOR TONE TAGS: The user may include tone tags in brackets (e.g., [דרמטי], [אנרגטי], \
+[דחוף], [אמפתי]) within the DIRECTOR NOTES. You must translate these tags into the TTS \
+pacing and phrasing of the spoken_text using ONLY punctuation and word choice. For [אנרגטי] use \
+very short bursts and exclamation marks. For [דרמטי] use ellipses (...) for long pauses and slower \
+buildup. For [אמפתי] use softer, inclusive words and gentle commas. NEVER speak the tags aloud. \
+Apply the requested tone to the structural arc.
+
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
  SCRIPT CRAFT RULES
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -113,54 +248,50 @@ You MUST follow these rules or the video will sound robotic:
   No English words unless they are a universally known brand name or tech term that Israelis \
   themselves use (e.g., "אפליקציה", "קאשבק"). Never Anglicise unnecessarily.
 • spoken_text is the exact transcript sent to a TTS voice engine. Rules:
-    – Apply ALL five voice & tone rules above without exception.
+    – Apply ALL six voice & tone rules above without exception.
     – No emojis, no asterisks, no markdown, no hashtags, no parenthetical stage directions.
     – Pure spoken Hebrew text only — punctuation (, . ...) is the only allowed formatting.
 • on_screen_text is the graphic overlay. Rules:
     – Maximum 3-4 Hebrew words, OR an empty string "" if no overlay fits that scene.
     – Never repeat the spoken_text verbatim — it should amplify or contrast it.
-• visual_layout controls the video compositor. Use ONLY one of these three values:
-    – "full_avatar"         → Avatar fills the frame. Use for the opening hook scene only.
-    – "avatar_with_bullets" → Avatar on one side, animated bullet points on the other. \
-                              Use for benefit / feature explanation scenes.
-    – "avatar_with_cta"    → Avatar with a prominent CTA button overlay. \
-                              Use for the final scene only.
+• visual_layout controls the video compositor. Use these values according to **scene position** and \
+LAYOUT_MODE (**{mode}**):
+    – "full_avatar"         → Avatar fills the frame. **Scene 1 (hook) only.**
+{layout_bullet_list}    – "avatar_with_cta"     → CTA / button overlay. **Last scene only.**
+{middle_layout_rule}
 • Structure every script with this arc:
     1. Hook (scene 1)     → "full_avatar" — one explosive opener that stops the scroll. \
                             Must begin with a casual Israeli opener (rule ①). \
                             Lead with a bold question, surprising stat, or relatable pain point.
-    2. Body (middle)      → "avatar_with_bullets" — one key benefit per scene. \
-                            Each scene is self-contained, punchy, and uses pause markers.
-    3. CTA (last scene)   → "avatar_with_cta" — clear imperative + urgency, with a dramatic \
+{body_arc}    3. CTA (last scene)   → "avatar_with_cta" — clear imperative + urgency, with a dramatic \
                             ellipsis before the action word (e.g., "אז מה אתם מחכים... כנסו עכשיו!").
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
  OUTPUT FORMAT — STRICT JSON
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Output ONLY valid JSON. No markdown fences, no commentary, no extra keys.
+Output ONLY valid JSON. No markdown fences, no commentary, no extra keys. \
+Include layout_data only on middle scenes when LAYOUT_MODE is split_gallery (see example shape).
 
-{
+{{
   "estimated_duration_seconds": <integer matching the requested target duration>,
   "scenes": [
-    {
-      "scene_number": <integer, 1-indexed>,
-      "spoken_text": "<natural Hebrew TTS transcript — no emojis, no markdown>",
-      "on_screen_text": "<3-4 Hebrew words OR empty string>",
-      "visual_layout": "<full_avatar | avatar_with_bullets | avatar_with_cta>"
-    }
+{output_scene_shape}
   ]
-}
+}}
 
 Constraints:
 • scenes must be a non-empty array.
 • scene_number must be sequential starting at 1.
-• The first scene must use "full_avatar".
-• The last scene must use "avatar_with_cta".
-• Every middle scene must use "avatar_with_bullets".
-• visual_layout is an ENUM — any value outside the three above is invalid.
+• The first scene must use "full_avatar" and must never use "split_gallery" or layout_data.
+• The last scene must use "avatar_with_cta" and must never use "split_gallery" or layout_data.
+{extra_constraints}• visual_layout is an ENUM — use only the values that apply to this LAYOUT_MODE.
 • estimated_duration_seconds must equal exactly the integer target passed in the user message \
   (15, 30, or 50). Do not approximate or choose a different value.\
 """
+
+
+UGC_DIRECTOR_SYSTEM = build_ugc_director_system("classic")
+
 
 # ---------------------------------------------------------------------------
 # Tenacity retry helpers (identical pattern to creative_agent.py)
@@ -190,11 +321,16 @@ _OPENAI_CHAT_RETRY = retry(
 
 
 @_OPENAI_CHAT_RETRY
-def _call_gpt(client: OpenAI, user_content: str) -> str:
+def _call_gpt(
+    client: OpenAI,
+    user_content: str,
+    system_prompt: str | None = None,
+) -> str:
+    system = system_prompt if system_prompt is not None else UGC_DIRECTOR_SYSTEM
     response = client.chat.completions.create(
         model="gpt-4o",
         messages=[
-            {"role": "system", "content": UGC_DIRECTOR_SYSTEM},
+            {"role": "system", "content": system},
             {"role": "user", "content": user_content[:16_000]},
         ],
         response_format={"type": "json_object"},
@@ -209,8 +345,16 @@ def _call_gpt(client: OpenAI, user_content: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-def _validate_script(data: dict, expected_duration: int) -> None:
+def _validate_script(
+    data: dict,
+    expected_duration: int,
+    layout_mode: str = "classic",
+) -> None:
     """Raise ValueError with an actionable message if the script is malformed."""
+
+    mode = (layout_mode or "classic").lower()
+    if mode not in ("classic", "split_gallery"):
+        mode = "classic"
 
     if not isinstance(data.get("estimated_duration_seconds"), int):
         raise ValueError(
@@ -227,8 +371,13 @@ def _validate_script(data: dict, expected_duration: int) -> None:
     if not isinstance(scenes, list) or len(scenes) == 0:
         raise ValueError("[ugc_director] 'scenes' must be a non-empty array.")
 
+    n = len(scenes)
     for i, scene in enumerate(scenes):
         idx = i + 1
+        is_first = i == 0
+        is_last = i == n - 1
+        is_middle = not is_first and not is_last
+
         for field in ("scene_number", "spoken_text", "on_screen_text", "visual_layout"):
             if field not in scene:
                 raise ValueError(
@@ -258,7 +407,48 @@ def _validate_script(data: dict, expected_duration: int) -> None:
                 f"[ugc_director] Scene {idx} 'on_screen_text' must be a string (or empty string)."
             )
 
-    # Structural arc enforcement
+        has_ld = scene.get("layout_data") is not None
+        if has_ld and (is_first or is_last):
+            raise ValueError(
+                f"[ugc_director] Scene {idx} must not include layout_data (hook/CTA scenes only)."
+            )
+
+        if mode == "classic" and is_middle:
+            if layout != "avatar_with_bullets":
+                raise ValueError(
+                    f"[ugc_director] Scene {idx} (middle) must use visual_layout "
+                    f"'avatar_with_bullets' in classic mode; got {layout!r}."
+                )
+            if has_ld:
+                raise ValueError(
+                    f"[ugc_director] Scene {idx} must not include layout_data in classic mode."
+                )
+
+        if mode == "split_gallery" and is_middle:
+            if layout != "split_gallery":
+                raise ValueError(
+                    f"[ugc_director] Scene {idx} (middle) must use visual_layout "
+                    f"'split_gallery' in split_gallery mode; got {layout!r}."
+                )
+            ld = scene.get("layout_data")
+            if not isinstance(ld, dict):
+                raise ValueError(
+                    f"[ugc_director] Scene {idx} 'layout_data' must be an object for split_gallery."
+                )
+            imgs = ld.get("images")
+            if not isinstance(imgs, list) or len(imgs) != 3:
+                raise ValueError(
+                    f"[ugc_director] Scene {idx} layout_data.images must be a list of exactly "
+                    f"three non-empty strings; got {imgs!r}."
+                )
+            for j, s in enumerate(imgs, start=1):
+                if not isinstance(s, str) or not str(s).strip():
+                    raise ValueError(
+                        f"[ugc_director] Scene {idx} layout_data.images[{j - 1}] must be a "
+                        "non-empty string."
+                    )
+
+    # Structural arc enforcement (first = full avatar, last = CTA)
     if scenes[0]["visual_layout"] != "full_avatar":
         raise ValueError(
             "[ugc_director] The first scene must use visual_layout 'full_avatar'."
@@ -404,6 +594,7 @@ def generate_ugc_script(
 
     target_seconds = _DURATION_MAP[video_length]
     scene_guidance = _SCENE_GUIDANCE[video_length]
+    layout_mode = parse_layout_mode(f"{brief or ''}\n{scraped_text or ''}")
 
     brief_section = (
         f"\n\nUSER CAMPAIGN BRIEF (goals / target audience — provided by the user):\n{brief.strip()}"
@@ -426,11 +617,15 @@ def generate_ugc_script(
 
     print(
         f"[ugc_director] Requesting {video_length} UGC script from GPT-4o "
-        f"({target_seconds}s, {scene_guidance})"
+        f"({target_seconds}s, {scene_guidance}, LAYOUT_MODE={layout_mode})"
     )
 
     client = OpenAI(api_key=api_key)
-    raw = _call_gpt(client, user_content)
+    raw = _call_gpt(
+        client,
+        user_content,
+        build_ugc_director_system(layout_mode),
+    )
 
     print("[ugc_director] Parsing and validating JSON response…")
     try:
@@ -440,7 +635,7 @@ def generate_ugc_script(
             f"[ugc_director] ERROR: GPT-4o returned invalid JSON — {exc}"
         ) from exc
 
-    _validate_script(data, target_seconds)
+    _validate_script(data, target_seconds, layout_mode)
 
     print(
         f"[ugc_director] OK — {len(data['scenes'])} scene(s) validated for "
@@ -468,9 +663,12 @@ def generate_avatar_studio_script(
     target_seconds = _DURATION_MAP[video_length]
     scene_guidance = _SCENE_GUIDANCE[video_length]
 
+    raw_notes = director_notes or ""
+    layout_mode = parse_layout_mode(raw_notes)
+    stripped = strip_layout_mode_lines(raw_notes)
     notes_block = (
-        director_notes.strip()
-        if director_notes and director_notes.strip()
+        stripped
+        if stripped
         else "(None — infer hook, body, and CTA structure from the creative brief alone.)"
     )
 
@@ -493,11 +691,15 @@ def generate_avatar_studio_script(
 
     print(
         f"[ugc_director] Avatar studio: requesting {video_length} script from GPT-4o "
-        f"({target_seconds}s, {scene_guidance})"
+        f"({target_seconds}s, {scene_guidance}, LAYOUT_MODE={layout_mode})"
     )
 
     client = OpenAI(api_key=api_key)
-    raw = _call_gpt(client, user_content)
+    raw = _call_gpt(
+        client,
+        user_content,
+        build_ugc_director_system(layout_mode),
+    )
 
     print("[ugc_director] Avatar studio: parsing and validating JSON response…")
     try:
@@ -507,7 +709,7 @@ def generate_avatar_studio_script(
             f"[ugc_director] ERROR: GPT-4o returned invalid JSON — {exc}"
         ) from exc
 
-    _validate_script(data, target_seconds)
+    _validate_script(data, target_seconds, layout_mode)
 
     print(
         f"[ugc_director] Avatar studio OK — {len(data['scenes'])} scene(s) validated."

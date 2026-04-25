@@ -1,4 +1,4 @@
-"""ORM models: User, BannerTask, VoiceCatalog, AvatarCatalog."""
+"""ORM models: User, BannerTask (+ 1:1 creative / UGC rows), VoiceCatalog, AvatarCatalog."""
 
 from __future__ import annotations
 
@@ -34,6 +34,12 @@ class User(Base):
 
 
 class BannerTask(Base):
+    """Core task identity and shared workflow fields.
+
+    Static-banner assets, canvas, and banner MP4 URLs live in ``BannerCreativeData``.
+    HeyGen / UGC / avatar-studio video pipeline fields live in ``UgcVideoData``.
+    """
+
     __tablename__ = "banner_tasks"
 
     id: Mapped[uuid.UUID] = mapped_column(
@@ -51,6 +57,30 @@ class BannerTask(Base):
     url: Mapped[str] = mapped_column(Text, nullable=False)
     brief: Mapped[str | None] = mapped_column(Text, nullable=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    user: Mapped["User"] = relationship("User", back_populates="tasks")
+    creative: Mapped["BannerCreativeData | None"] = relationship(
+        "BannerCreativeData",
+        back_populates="task",
+        uselist=False,
+        cascade="all, delete-orphan",
+    )
+    ugc_video: Mapped["UgcVideoData | None"] = relationship(
+        "UgcVideoData",
+        back_populates="task",
+        uselist=False,
+        cascade="all, delete-orphan",
+    )
+
+
+class BannerCreativeData(Base):
+    """One-to-one: static banner copy, assets, canvas editor state, rendered PNGs, banner MP4s."""
+
+    __tablename__ = "banner_creative_data"
+
+    banner_task_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("banner_tasks.id", ondelete="CASCADE"), primary_key=True
+    )
     headline: Mapped[str | None] = mapped_column(String(512), nullable=True)
     subhead: Mapped[str | None] = mapped_column(String(1024), nullable=True)
     bullet_points: Mapped[list | None] = mapped_column(JSON, nullable=True)
@@ -66,17 +96,25 @@ class BannerTask(Base):
     video_url_1: Mapped[str | None] = mapped_column(String(1024), nullable=True)
     video_url_2: Mapped[str | None] = mapped_column(String(1024), nullable=True)
 
-    # 9:16 vertical / Shorts format columns
     rendered_banner_1_vertical_url: Mapped[str | None] = mapped_column(String(1024), nullable=True)
     rendered_banner_2_vertical_url: Mapped[str | None] = mapped_column(String(1024), nullable=True)
     video_url_1_vertical: Mapped[str | None] = mapped_column(String(1024), nullable=True)
     video_url_2_vertical: Mapped[str | None] = mapped_column(String(1024), nullable=True)
 
-    # Async video render: null | "processing" | "failed" (cleared on success)
     video_status: Mapped[str | None] = mapped_column(String(64), nullable=True)
     video_render_error: Mapped[str | None] = mapped_column(Text, nullable=True)
 
-    # UGC AI video columns (HeyGen / talking-avatar pipeline)
+    task: Mapped["BannerTask"] = relationship("BannerTask", back_populates="creative")
+
+
+class UgcVideoData(Base):
+    """One-to-one: UGC / avatar-studio HeyGen pipeline (script, provider URLs, composite, captions)."""
+
+    __tablename__ = "ugc_video_data"
+
+    banner_task_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("banner_tasks.id", ondelete="CASCADE"), primary_key=True
+    )
     ugc_script: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     ugc_avatar_id: Mapped[str | None] = mapped_column(String(256), nullable=True)
     ugc_raw_video_url: Mapped[str | None] = mapped_column(String(1024), nullable=True)
@@ -99,7 +137,7 @@ class BannerTask(Base):
     #: Legacy column (unused); FFmpeg always uses crop-to-fill.
     ugc_video_fit_mode: Mapped[str | None] = mapped_column(String(32), default="crop", nullable=True)
 
-    user: Mapped["User"] = relationship("User", back_populates="tasks")
+    task: Mapped["BannerTask"] = relationship("BannerTask", back_populates="ugc_video")
 
 
 class VoiceCatalog(Base):

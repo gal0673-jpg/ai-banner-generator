@@ -33,6 +33,18 @@ export function toAbsoluteApiUrl(pathOrUrl) {
   return u.startsWith('/') ? `${base}${u}` : `${base}/${u}`
 }
 
+/**
+ * WebSocket base URL — derived from the HTTP base by swapping the scheme.
+ * ``http://127.0.0.1:8888`` → ``ws://127.0.0.1:8888``
+ * ``https://api.example.com`` → ``wss://api.example.com``
+ * Same-origin proxy (API_BASE_URL === '') → '' (relative WS paths are not
+ * valid so we fall back to the explicit local address in that case).
+ */
+export const WS_BASE_URL =
+  API_BASE_URL
+    ? API_BASE_URL.replace(/^http/, 'ws')
+    : 'ws://127.0.0.1:8888'
+
 export const api = axios.create({
   baseURL: API_BASE_URL,
   headers: {

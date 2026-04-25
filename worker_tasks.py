@@ -13,15 +13,22 @@ import uuid
 from typing import Any
 
 import requests
-from celery import Task
+from celery import Task, chain
 from celery.exceptions import SoftTimeLimitExceeded
 
 from celery_app import celery_app
 from database import SessionLocal
-from main import crawl_from_url, quit_all_active_drivers, run_agency_banner_pipeline
+from main import run_agency_banner_pipeline
+from services.crawler_service import crawl_from_url, quit_all_active_drivers
 from models import BannerTask
 from services import ugc_composite_service
-from services.banner_service import TASKS_DIR, persist_task, rendered_banner_urls_for_task
+from services.banner_service import (
+    TASKS_DIR,
+    get_creative_for_write,
+    persist_task,
+    persist_video_task_state,
+    rendered_banner_urls_for_task,
+)
 from services.video_service import video_engine_render_url, video_payload_for_engine
 
 logger = logging.getLogger(__name__)
@@ -181,13 +188,15 @@ def _finalize_ugc_with_composite(
     with SessionLocal() as db:
         db_row = db.get(BannerTask, task_uuid)
         if db_row is not None:
-            w = getattr(db_row, "ugc_website_display", None) or ""
+            ugc_row = db_row.ugc_video
+            w = (ugc_row.ugc_website_display if ugc_row else None) or ""
             website_display = w.strip() or None
-            lu = getattr(db_row, "logo_url", None)
+            cr = db_row.creative
+            lu = cr.logo_url if cr else None
             logo_url = (str(lu).strip() or None) if lu else None
-            pi = getattr(db_row, "product_image_url", None) or ""
+            pi = (cr.product_image_url if cr else None) or ""
             product_image_url = pi.strip() or None
-            bc = (getattr(db_row, "brand_color", None) or "").strip()
+            bc = ((cr.brand_color if cr else None) or "").strip()
             brand_color = bc or None
 
     logger.info(
@@ -433,17 +442,6 @@ def run_banner_task(
     )
 
 
-def persist_video_task_state(task_uuid: uuid.UUID, **kwargs: Any) -> None:
-    """Update banner_tasks row fields (video_status, URLs, errors, etc.)."""
-    with SessionLocal() as db:
-        row = db.get(BannerTask, task_uuid)
-        if row is None:
-            return
-        for key, value in kwargs.items():
-            setattr(row, key, value)
-        db.commit()
-
-
 def execute_video_render_worker(
     task_id: str,
     design_type: int,
@@ -458,21 +456,22 @@ def execute_video_render_worker(
         row = db.get(BannerTask, tid)
         if row is None:
             return
+        creative = get_creative_for_write(db, row)
         if row.status != "completed":
-            row.video_status = "failed"
-            row.video_render_error = "Task is not completed; cannot render video."
+            creative.video_status = "failed"
+            creative.video_render_error = "Task is not completed; cannot render video."
             db.commit()
             return
         payload = video_payload_for_engine(row, design_type, public_base, aspect_ratio)
         payload["task_id"] = task_id
         if not payload["headline"]:
-            row.video_status = "failed"
-            row.video_render_error = "headline is required for video render."
+            creative.video_status = "failed"
+            creative.video_render_error = "headline is required for video render."
             db.commit()
             return
         if not payload["background_url"]:
-            row.video_status = "failed"
-            row.video_render_error = "background_url is missing for this task."
+            creative.video_status = "failed"
+            creative.video_render_error = "background_url is missing for this task."
             db.commit()
             return
 
@@ -537,18 +536,19 @@ def execute_video_render_worker(
         row = db.get(BannerTask, tid)
         if row is None:
             return
+        creative = get_creative_for_write(db, row)
         if design_type == 2:
             if is_vertical:
-                row.video_url_2_vertical = cleaned
+                creative.video_url_2_vertical = cleaned
             else:
-                row.video_url_2 = cleaned
+                creative.video_url_2 = cleaned
         else:
             if is_vertical:
-                row.video_url_1_vertical = cleaned
+                creative.video_url_1_vertical = cleaned
             else:
-                row.video_url_1 = cleaned
-        row.video_status = None
-        row.video_render_error = None
+                creative.video_url_1 = cleaned
+        creative.video_status = None
+        creative.video_render_error = None
         db.commit()
 
 
@@ -563,56 +563,47 @@ def render_video_task(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# UGC video pipeline task
+# UGC legacy pipeline — Celery chain (crawl+script → HeyGen/D-ID → FFmpeg/Remotion)
 # ─────────────────────────────────────────────────────────────────────────────
 
 
 @celery_app.task(
     bind=True,
     base=BannerGenerationTask,
-    name="run_ugc_task",
+    name="task_crawl_and_script",
     queue="video_queue",
 )
-def run_ugc_task(
+def task_crawl_and_script(
     self: BannerGenerationTask,
     task_id: str,
     url: str,
     brief: str | None,
     avatar_id: str,
     video_length: str,
-    provider: str = "heygen_elevenlabs",
-    custom_script: str | None = None,
-    voice_id: str | None = None,
-    heygen_character_type: str | None = None,
-    aspect_ratio: str = "9:16",
+    provider: str,
+    custom_script: str | None,
+    voice_id: str | None,
+    heygen_character_type: str | None,
+    aspect_ratio: str,
 ) -> None:
-    """End-to-end UGC video pipeline.
+    """Crawl site, build UGC script (or custom_script), persist ``ugc_script`` to the DB.
 
-    1. Crawl *url* → scraped_content.txt
-    2. Generate Hebrew script via GPT-4o (ugc_director), or use *custom_script*
-       when provided (skips AI).
-    3 & 4. Dispatch video generation to the chosen provider:
-           - "heygen_elevenlabs": ElevenLabs TTS → HeyGen avatar video
-           - "d-id":             D-ID all-in-one (TTS + video in a single call)
-    5. Persist final URL and mark ugc_status='completed'
-
-    All errors set ugc_status='failed' and ugc_error before re-raising as
-    BannerPipelineFatalError so the base class does not trigger banner-status
-    retries and the on_failure handler skips its status='failed' write.
+    ``provider`` / ``voice_id`` / ``heygen_character_type`` are accepted for a stable
+    chain signature from ``run_ugc_task``; they are not used here (next link reads DB).
     """
-    from services.ugc_service import (
-        UGCServiceError,
-        dispatch_ugc_generation,
-    )
     import ugc_director
+    from services.ugc_service import (
+        combined_spoken_text_from_script,
+        generate_split_gallery_images,
+    )
 
     task_uuid = uuid.UUID(task_id)
     work_dir = TASKS_DIR / task_id
     work_dir.mkdir(parents=True, exist_ok=True)
-
     _ar = ugc_composite_service.normalize_ugc_aspect_ratio(aspect_ratio)
+
     logger.info(
-        "[run_ugc_task] task_id=%s  url=%s  avatar=%s  length=%s  provider=%s  voice_id=%s  aspect=%s",
+        "[task_crawl_and_script] task_id=%s  url=%s  avatar=%s  length=%s  provider=%s  voice_id=%s  aspect=%s",
         task_id,
         url,
         avatar_id,
@@ -623,7 +614,6 @@ def run_ugc_task(
     )
 
     try:
-        # ── Step 1: crawl ────────────────────────────────────────────────────
         try:
             crawl_from_url(url, work_dir=work_dir, campaign_brief=brief)
         except SoftTimeLimitExceeded:
@@ -638,23 +628,26 @@ def run_ugc_task(
         if not scraped_path.is_file():
             msg = "scraped_content.txt not found after crawl."
             persist_task(task_uuid, ugc_status="failed", ugc_error=msg)
-            raise BannerPipelineFatalError(f"[run_ugc_task] {msg}")
+            raise BannerPipelineFatalError(f"[task_crawl_and_script] {msg}")
 
         scraped_text = scraped_path.read_text(encoding="utf-8").strip()
         if not scraped_text:
             msg = "scraped_content.txt is empty after crawl."
             persist_task(task_uuid, ugc_status="failed", ugc_error=msg)
-            raise BannerPipelineFatalError(f"[run_ugc_task] {msg}")
+            raise BannerPipelineFatalError(f"[task_crawl_and_script] {msg}")
 
         persist_task(task_uuid, ugc_status="scraped")
-        logger.info("[run_ugc_task] task_id=%s  crawl complete (%d chars).", task_id, len(scraped_text))
+        logger.info(
+            "[task_crawl_and_script] task_id=%s  crawl complete (%d chars).",
+            task_id,
+            len(scraped_text),
+        )
 
-        # ── Step 2: generate UGC script (or use caller-provided text) ────────
         persist_task(task_uuid, ugc_status="generating_script")
         script_override = (custom_script or "").strip()
         if script_override:
             logger.info(
-                "[run_ugc_task] task_id=%s  using custom_script (%d chars); skipping AI script.",
+                "[task_crawl_and_script] task_id=%s  using custom_script (%d chars); skipping AI script.",
                 task_id,
                 len(script_override),
             )
@@ -671,7 +664,7 @@ def run_ugc_task(
                 ],
             }
         else:
-            logger.info("[run_ugc_task] task_id=%s  generating UGC script…", task_id)
+            logger.info("[task_crawl_and_script] task_id=%s  generating UGC script…", task_id)
             try:
                 ugc_script = ugc_director.generate_ugc_script(
                     scraped_text=scraped_text,
@@ -680,66 +673,211 @@ def run_ugc_task(
                 )
             except Exception as exc:
                 msg = f"UGC script generation failed: {exc}"
-                logger.error("[run_ugc_task] task_id=%s  %s", task_id, msg)
+                logger.error("[task_crawl_and_script] task_id=%s  %s", task_id, msg)
                 persist_task(task_uuid, ugc_status="failed", ugc_error=msg)
-                raise BannerPipelineFatalError(f"[run_ugc_task] {msg}") from exc
+                raise BannerPipelineFatalError(f"[task_crawl_and_script] {msg}") from exc
+
+        try:
+            for scene in ugc_script.get("scenes") or []:
+                if scene.get("visual_layout") != "split_gallery":
+                    continue
+                layout_data = scene.get("layout_data")
+                if not isinstance(layout_data, dict):
+                    continue
+                hebrew_imgs = layout_data.get("images")
+                if not isinstance(hebrew_imgs, list):
+                    continue
+                sn = scene.get("scene_number")
+                stem = f"split_gallery_s{sn}" if isinstance(sn, int) else "split_gallery"
+                try:
+                    layout_data["image_urls"] = generate_split_gallery_images(
+                        hebrew_imgs,
+                        task_id,
+                        work_dir,
+                        name_prefix=stem,
+                    )
+                except Exception as one_scene_exc:
+                    logger.warning(
+                        "[task_crawl_and_script] task_id=%s  split_gallery scene=%s  "
+                        "image generation failed (keeping Hebrew labels only): %s",
+                        task_id,
+                        sn,
+                        one_scene_exc,
+                    )
+        except Exception as exc:
+            logger.warning(
+                "[task_crawl_and_script] task_id=%s  split_gallery image pass failed: %s",
+                task_id,
+                exc,
+            )
 
         persist_task(task_uuid, ugc_script=ugc_script)
         logger.info(
-            "[run_ugc_task] task_id=%s  script saved (%d scenes).",
+            "[task_crawl_and_script] task_id=%s  script saved (%d scenes).",
             task_id,
             len(ugc_script.get("scenes", [])),
         )
 
-        # ── Steps 3 & 4: build script text, then dispatch to provider ────────
-        scenes = ugc_script.get("scenes") or []
-        combined_spoken_text = " ".join(
-            scene.get("spoken_text", "").strip() for scene in scenes
-        ).strip()
-
-        if not combined_spoken_text:
+        combined = combined_spoken_text_from_script(ugc_script)
+        if not combined:
             msg = "UGC script has no spoken text in any scene."
             persist_task(task_uuid, ugc_status="failed", ugc_error=msg)
-            raise BannerPipelineFatalError(f"[run_ugc_task] {msg}")
-
-        persist_task(task_uuid, ugc_status="generating_video")
-        logger.info(
-            "[run_ugc_task] task_id=%s  dispatching %d chars to provider=%r…",
-            task_id,
-            len(combined_spoken_text),
-            provider,
-        )
-
-        try:
-            video_url = dispatch_ugc_generation(
-                provider=provider,
-                script_text=combined_spoken_text,
-                visual_reference=avatar_id,
-                voice_id=voice_id,
-                heygen_character_type=heygen_character_type,
-                aspect_ratio=_ar,
-            )
-        except (UGCServiceError, ValueError) as exc:
-            msg = f"Video generation failed ({provider}): {exc}"
-            logger.error("[run_ugc_task] task_id=%s  %s", task_id, msg)
-            persist_task(task_uuid, ugc_status="failed", ugc_error=msg)
-            raise BannerPipelineFatalError(f"[run_ugc_task] {msg}") from exc
-
-        # ── Step 5: FFmpeg polish + Remotion caption render + persist ────────
-        _finalize_ugc_with_composite(
-            task_uuid,
-            task_id,
-            video_url,
-            ugc_script=ugc_script,
-            aspect_ratio=_ar,
-        )
-        logger.info(
-            "[run_ugc_task] task_id=%s  COMPLETED. video_url=%s",
-            task_id,
-            video_url,
-        )
+            raise BannerPipelineFatalError(f"[task_crawl_and_script] {msg}")
     finally:
         _emergency_chrome_cleanup()
+
+
+@celery_app.task(
+    bind=True,
+    base=BannerGenerationTask,
+    name="task_generate_avatar_video",
+    queue="video_queue",
+)
+def task_generate_avatar_video(
+    self: BannerGenerationTask,
+    task_id: str,
+    avatar_id: str,
+    provider: str,
+    voice_id: str | None,
+    heygen_character_type: str | None,
+    aspect_ratio: str,
+) -> None:
+    """Call HeyGen / D-ID using ``ugc_script`` from the DB; persist ``ugc_raw_video_url``."""
+    from services.ugc_service import (
+        UGCServiceError,
+        combined_spoken_text_from_script,
+        dispatch_ugc_generation,
+    )
+
+    task_uuid = uuid.UUID(task_id)
+    _ar = ugc_composite_service.normalize_ugc_aspect_ratio(aspect_ratio)
+
+    with SessionLocal() as db:
+        row = db.get(BannerTask, task_uuid)
+        if row is None or row.ugc_video is None:
+            msg = "BannerTask or UgcVideoData row missing before provider dispatch."
+            persist_task(task_uuid, ugc_status="failed", ugc_error=msg)
+            raise BannerPipelineFatalError(f"[task_generate_avatar_video] {msg}")
+        ugc_script = row.ugc_video.ugc_script
+
+    combined_spoken_text = combined_spoken_text_from_script(ugc_script)
+    if not combined_spoken_text:
+        msg = "UGC script has no spoken text (DB); cannot dispatch provider."
+        persist_task(task_uuid, ugc_status="failed", ugc_error=msg)
+        raise BannerPipelineFatalError(f"[task_generate_avatar_video] {msg}")
+
+    persist_task(task_uuid, ugc_status="generating_video")
+    logger.info(
+        "[task_generate_avatar_video] task_id=%s  dispatching %d chars to provider=%r…",
+        task_id,
+        len(combined_spoken_text),
+        provider,
+    )
+
+    try:
+        video_url = dispatch_ugc_generation(
+            provider=provider,
+            script_text=combined_spoken_text,
+            visual_reference=avatar_id,
+            voice_id=voice_id,
+            heygen_character_type=heygen_character_type,
+            aspect_ratio=_ar,
+        )
+    except (UGCServiceError, ValueError) as exc:
+        msg = f"Video generation failed ({provider}): {exc}"
+        logger.error("[task_generate_avatar_video] task_id=%s  %s", task_id, msg)
+        persist_task(task_uuid, ugc_status="failed", ugc_error=msg)
+        raise BannerPipelineFatalError(f"[task_generate_avatar_video] {msg}") from exc
+
+    persist_task(task_uuid, ugc_raw_video_url=video_url)
+    logger.info(
+        "[task_generate_avatar_video] task_id=%s  provider URL persisted (len=%d).",
+        task_id,
+        len(video_url or ""),
+    )
+
+
+@celery_app.task(
+    bind=True,
+    base=BannerGenerationTask,
+    name="task_finalize_ugc_video",
+    queue="video_queue",
+)
+def task_finalize_ugc_video(
+    self: BannerGenerationTask,
+    task_id: str,
+    aspect_ratio: str,
+) -> None:
+    """FFmpeg composite + Remotion captions from ``ugc_raw_video_url`` + ``ugc_script`` in DB."""
+    task_uuid = uuid.UUID(task_id)
+    _ar = ugc_composite_service.normalize_ugc_aspect_ratio(aspect_ratio)
+
+    with SessionLocal() as db:
+        row = db.get(BannerTask, task_uuid)
+        if row is None or row.ugc_video is None:
+            msg = "BannerTask or UgcVideoData row missing before finalize."
+            persist_task(task_uuid, ugc_status="failed", ugc_error=msg)
+            raise BannerPipelineFatalError(f"[task_finalize_ugc_video] {msg}")
+        ugc = row.ugc_video
+        raw = ((ugc.ugc_raw_video_url or "") or "").strip()
+        script = ugc.ugc_script
+
+    if not raw:
+        msg = "ugc_raw_video_url is missing before finalize (provider step did not persist?)."
+        persist_task(task_uuid, ugc_status="failed", ugc_error=msg)
+        raise BannerPipelineFatalError(f"[task_finalize_ugc_video] {msg}")
+
+    _finalize_ugc_with_composite(
+        task_uuid,
+        task_id,
+        raw,
+        ugc_script=script,
+        aspect_ratio=_ar,
+    )
+    logger.info("[task_finalize_ugc_video] task_id=%s  pipeline finalize finished.", task_id)
+
+
+@celery_app.task(name="run_ugc_task", queue="video_queue")
+def run_ugc_task(
+    task_id: str,
+    url: str,
+    brief: str | None,
+    avatar_id: str,
+    video_length: str,
+    provider: str = "heygen_elevenlabs",
+    custom_script: str | None = None,
+    voice_id: str | None = None,
+    heygen_character_type: str | None = None,
+    aspect_ratio: str = "9:16",
+) -> Any:
+    """Enqueue the UGC legacy pipeline as a Celery chain.
+
+    Splitting crawl/script, provider video, and FFmpeg/Remotion means Celery retries
+    on the final step do not re-bill HeyGen/D-ID — state is read from the DB between links.
+    """
+    return chain(
+        task_crawl_and_script.s(
+            task_id,
+            url,
+            brief,
+            avatar_id,
+            video_length,
+            provider,
+            custom_script,
+            voice_id,
+            heygen_character_type,
+            aspect_ratio,
+        ),
+        task_generate_avatar_video.si(
+            task_id,
+            avatar_id,
+            provider,
+            voice_id,
+            heygen_character_type,
+            aspect_ratio,
+        ),
+        task_finalize_ugc_video.si(task_id, aspect_ratio),
+    ).apply_async()
 
 
 @celery_app.task(
@@ -753,12 +891,18 @@ def re_render_ugc_task(
 ) -> None:
     """Re-run FFmpeg composite + Remotion from ``ugc_raw_video_url`` (no HeyGen/D-ID)."""
     task_uuid = uuid.UUID(task_id)
+    # Read UGC fields while the ORM session is open — ``ugc_video`` is lazy-loaded
+    # and will raise DetachedInstanceError if accessed after ``with`` exits.
     with SessionLocal() as db:
         row = db.get(BannerTask, task_uuid)
-    if row is None:
-        logger.warning("[re_render_ugc_task] unknown task_id=%s", task_id)
-        return
-    raw = (row.ugc_raw_video_url or "").strip()
+        if row is None:
+            logger.warning("[re_render_ugc_task] unknown task_id=%s", task_id)
+            return
+        ugc = row.ugc_video
+        raw = ((ugc.ugc_raw_video_url if ugc else None) or "").strip()
+        sf = float(ugc.ugc_speed_factor) if ugc and ugc.ugc_speed_factor is not None else 1.15
+        _script = ugc.ugc_script if ugc else None
+
     if not raw:
         persist_task(
             task_uuid,
@@ -766,20 +910,19 @@ def re_render_ugc_task(
             ugc_error="re_render_ugc_task: ugc_raw_video_url is missing.",
         )
         return
-    sf = float(row.ugc_speed_factor) if row.ugc_speed_factor is not None else 1.15
     ar = ugc_composite_service.normalize_ugc_aspect_ratio(aspect_ratio)
     logger.info(
         "[re_render_ugc_task] task_id=%s  aspect_ratio=%s  speed_factor=%s  scenes=%d",
         task_id,
         ar,
         sf,
-        len((row.ugc_script or {}).get("scenes") or []),
+        len((_script or {}).get("scenes") or []),
     )
     _finalize_ugc_with_composite(
         task_uuid,
         task_id,
         raw,
-        ugc_script=row.ugc_script,
+        ugc_script=_script,
         speed_factor=sf,
         aspect_ratio=ar,
     )

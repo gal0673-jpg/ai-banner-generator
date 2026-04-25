@@ -1,4 +1,12 @@
-"""Pydantic request/response models for the API."""
+"""Pydantic request/response models for the API.
+
+Task status payloads (``GET /status/{task_id}``, SSE, etc.) expose a single flat JSON
+object. In the database those fields are split for clarity: ``BannerTask`` holds
+identity and workflow (``status``, ``task_kind``, ``url``, ``brief``, ``error``),
+``BannerCreativeData`` holds static-banner and video-render columns (including
+``headline``, ``canvas_state``, ``video_status``), and ``UgcVideoData`` holds the
+HeyGen / UGC pipeline. Request and response *keys* are unchanged for API clients.
+"""
 
 from __future__ import annotations
 
@@ -207,7 +215,7 @@ class UgcReRenderRequest(BaseModel):
         default=None,
         ge=0.5,
         le=2.0,
-        description="FFmpeg playback rate for composite (1.0 = normal). Stored on the task row.",
+        description="FFmpeg playback rate for composite (1.0 = normal). Stored on ``UgcVideoData``.",
     )
     caption_animation: Literal["pop", "fade", "typewriter"] | None = Field(
         default=None,
@@ -298,7 +306,7 @@ class AvatarUpdate(BaseModel):
 
 
 class TaskPatchRequest(BaseModel):
-    """Partial update for an editable completed banner task."""
+    """Partial update for an editable completed banner task (persisted on ``BannerCreativeData``)."""
 
     headline: str | None = Field(default=None, max_length=512)
     subhead: str | None = Field(default=None, max_length=1024)

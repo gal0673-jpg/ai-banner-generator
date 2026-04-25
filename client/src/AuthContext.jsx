@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react'
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
 import api from './api.js'
 
 const AuthContext = createContext(null)
@@ -6,33 +6,44 @@ const AuthContext = createContext(null)
 export function AuthProvider({ children }) {
   const [user, setUser] = useState(null)
   const [ready, setReady] = useState(false)
+  const sessionFetchIdRef = useRef(0)
 
   // Restore session from the HttpOnly cookie via the server (no localStorage).
   useEffect(() => {
-    let cancelled = false
+    const fetchId = ++sessionFetchIdRef.current
+    const ac = new AbortController()
+    let failsafe = 0
+    let settled = false
+
+    const finish = () => {
+      if (settled) return
+      settled = true
+      window.clearTimeout(failsafe)
+      // Always unblock the shell (idempotent). Strict Mode double-mount + abort can
+      // otherwise leave "טוען…" if a stale request's `finally` skipped `setReady`.
+      setReady(true)
+    }
+
     // Without a timeout, a hung proxy/API/DB connection can leave the SPA on "טוען…" forever.
     const failsafeMs = 12_000
-    const failsafe = window.setTimeout(() => {
-      if (!cancelled) setReady(true)
-    }, failsafeMs)
+    failsafe = window.setTimeout(finish, failsafeMs)
 
     api
-      .get('/auth/me', { timeout: 10_000 })
+      .get('/auth/me', { timeout: 10_000, signal: ac.signal })
       .then((res) => {
         const email = res.data?.email
-        if (!cancelled && email) {
+        if (sessionFetchIdRef.current !== fetchId) return
+        if (email) {
           setUser({ email: String(email).trim().toLowerCase() })
         }
       })
       .catch(() => {
-        /* not logged in, expired cookie, network error, or timeout */
+        /* not logged in, expired cookie, network error, timeout, or abort */
       })
-      .finally(() => {
-        window.clearTimeout(failsafe)
-        if (!cancelled) setReady(true)
-      })
+      .finally(finish)
+
     return () => {
-      cancelled = true
+      ac.abort()
       window.clearTimeout(failsafe)
     }
   }, [])

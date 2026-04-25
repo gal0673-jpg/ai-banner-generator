@@ -125,19 +125,55 @@ function getBundleServeUrl() {
 
 // ── UGC helpers ─────────────────────────────────────────────────────────────
 
+/**
+ * Resolves /task-files/... paths under `layout_data.image_urls` for Remotion server render.
+ * @param {Record<string, unknown> | null} ugcScript
+ */
+function resolveUgcScriptImageUrls(ugcScript) {
+  if (!ugcScript || typeof ugcScript !== "object" || Array.isArray(ugcScript)) {
+    return ugcScript;
+  }
+  const scenes = Array.isArray(ugcScript.scenes) ? ugcScript.scenes : [];
+  const newScenes = scenes.map((scene) => {
+    if (!scene || typeof scene !== "object" || Array.isArray(scene)) {
+      return scene;
+    }
+    const layoutData = scene.layout_data;
+    if (
+      !layoutData ||
+      typeof layoutData !== "object" ||
+      Array.isArray(layoutData) ||
+      !Array.isArray(layoutData.image_urls)
+    ) {
+      return scene;
+    }
+    return {
+      ...scene,
+      layout_data: {
+        ...layoutData,
+        image_urls: layoutData.image_urls.map((u) =>
+          typeof u === "string" && u.trim() ? resolveAssetUrl(u.trim()) : u,
+        ),
+      },
+    };
+  });
+  return { ...ugcScript, scenes: newScenes };
+}
+
 export function buildUgcInputProps(body) {
   if (body === null || typeof body !== "object" || Array.isArray(body)) {
     return {};
   }
+  const script =
+    body.ugc_script && typeof body.ugc_script === "object" && !Array.isArray(body.ugc_script)
+      ? resolveUgcScriptImageUrls(body.ugc_script)
+      : null;
   return {
     raw_video_url:
       typeof body.raw_video_url === "string" && body.raw_video_url.trim()
         ? resolveAssetUrl(body.raw_video_url.trim())
         : "",
-    ugc_script:
-      body.ugc_script && typeof body.ugc_script === "object" && !Array.isArray(body.ugc_script)
-        ? body.ugc_script
-        : null,
+    ugc_script: script,
     bgm_url:
       typeof body.bgm_url === "string" && body.bgm_url.trim()
         ? resolveAssetUrl(body.bgm_url.trim())

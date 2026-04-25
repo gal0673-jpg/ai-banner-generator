@@ -184,7 +184,7 @@ function ProductOverlay({ src, startTime, duration, brandHex }) {
         });
 
   return (
-    <AbsoluteFill style={{ pointerEvents: "none", zIndex: 36 }}>
+    <AbsoluteFill style={{ pointerEvents: "none", zIndex: 100 }}>
       {/*
        * display: "inline-flex" makes the wrapper shrink to the actual rendered image
        * dimensions (respecting maxWidth/maxHeight + auto sizing), so boxShadow on the
@@ -226,6 +226,7 @@ function WebsiteUrlOverlay({
   product_image_url = "",
   brandHex = "#6366f1",
   durationInFrames,
+  aspect_ratio = "9:16",
 }) {
   const frame = useCurrentFrame();
   const { fps, width, height } = useVideoConfig();
@@ -271,21 +272,35 @@ function WebsiteUrlOverlay({
   // Overlay darkens to rgba(0,0,0,0.75) during end card
   const overlayAlpha = interpolate(t, [0, 1], [0, 0.75]);
 
+  const ar =
+    typeof aspect_ratio === "string" ? aspect_ratio.trim() : "9:16";
+  const is169 = ar === "16:9";
+
   // Pill anchor (LTR): during speech, center horizontally so long hostnames are not clipped
   // by the left edge; keep CY below the safe top margin. End card still eases to (CX, CY).
+  // 16:9 landscape: vertical room is limited — use true vertical center; 9:16 / 1:1 unchanged.
   const TL_CX = width / 2;
   const TL_CY = height * (102 / 1920);
   const CX = width / 2;
-  const CY = height * 0.44;
+  const CY = is169 ? height * 0.5 : height * 0.44;
   const cx = interpolate(t, [0, 1], [TL_CX, CX]);
   const cy = interpolate(t, [0, 1], [TL_CY, CY]);
 
-  // Scale: pill+logo only — 2.4× zoom on end card. When a product image is present,
-  // keep scale at 1 so the large product + logo + pill stack is not blown past the frame.
+  // Scale: pill+logo only — end-card zoom (2.4× portrait/square; smaller on 16:9). When a
+  // product image is present, keep scale at 1 so the large product + logo + pill stack is
+  // not blown past the frame.
   const hasProduct = Boolean(product_image_url && String(product_image_url).trim());
+  // 16:9 landscape: must stay inside ~1080px height; 2.4× or a 1020px-tall product blows the frame.
+  const endCardNoProductScale = is169 ? 1.2 : 2.4;
   const scale = hasProduct
     ? interpolate(t, [0, 1], [1.0, 1.0])
-    : interpolate(t, [0, 1], [1.0, 2.4]);
+    : interpolate(t, [0, 1], [1.0, endCardNoProductScale]);
+
+  // End-card product column: 9:16 / 1:1 keep existing caps; 16:9 uses a strict vertical budget.
+  const productEndMaxH = is169 ? Math.min(480, Math.floor(height * 0.44)) : 1020;
+  const productEndMaxW = is169 ? Math.min(960, width - 40) : 1064;
+  const logoEndMaxH = is169 ? 100 : 280;
+  const logoEndMaxW = is169 ? 420 : 640;
 
   // Subtle fade-in at very start so pill doesn't pop in on frame 0
   const initialOpacity = Math.min(1, frame / 5);
@@ -295,11 +310,17 @@ function WebsiteUrlOverlay({
 
   // Larger pill while the URL sits in the corner during speech; slightly smaller on end card stack.
   const pillFontSize =
-    !inEndCard ? 52 : hasProduct ? 58 : 34;
+    !inEndCard ? 52 : hasProduct ? (is169 ? 46 : 58) : 34;
   const pillPadding =
-    !inEndCard ? "20px 40px" : hasProduct ? "20px 48px" : "12px 24px";
+    !inEndCard
+      ? "20px 40px"
+      : hasProduct
+        ? is169
+          ? "14px 28px"
+          : "20px 48px"
+        : "12px 24px";
   const pillRadius = !inEndCard ? 22 : hasProduct ? 20 : 14;
-  const pillMaxWidth = !inEndCard ? 1040 : hasProduct ? 1000 : 960;
+  const pillMaxWidth = !inEndCard ? 1040 : hasProduct ? (is169 ? 880 : 1000) : 960;
 
   const pillBlock = hasPill ? (
     <div
@@ -330,7 +351,7 @@ function WebsiteUrlOverlay({
   ) : null;
 
   return (
-    <AbsoluteFill style={{ pointerEvents: "none" }}>
+    <AbsoluteFill style={{ pointerEvents: "none", zIndex: 30 }}>
       {/* End-card dark overlay — transparent during speech, fades in at end */}
       <AbsoluteFill
         style={{ backgroundColor: `rgba(0,0,0,${overlayAlpha})` }}
@@ -355,8 +376,8 @@ function WebsiteUrlOverlay({
                 flexDirection: "column",
                 alignItems: "center",
                 justifyContent: "center",
-                gap: 28,
-                paddingTop: 28,
+                gap: is169 ? 8 : 28,
+                paddingTop: is169 ? 0 : 28,
                 boxSizing: "border-box",
               }}
             >
@@ -364,7 +385,7 @@ function WebsiteUrlOverlay({
                 <div
                   style={{
                     marginTop: 0,
-                    marginBottom: 8,
+                    marginBottom: is169 ? 4 : 8,
                     transform: `scale(${logoScale})`,
                     transformOrigin: "center center",
                   }}
@@ -372,8 +393,8 @@ function WebsiteUrlOverlay({
                   <Img
                     src={logo_url}
                     style={{
-                      maxHeight: 280,
-                      maxWidth: 640,
+                      maxHeight: logoEndMaxH,
+                      maxWidth: logoEndMaxW,
                       objectFit: "contain",
                       display: "block",
                     }}
@@ -383,7 +404,10 @@ function WebsiteUrlOverlay({
               <div
                 style={{
                   display: "inline-flex",
-                  maxHeight: Math.max(0, Math.ceil(productSpring * 1020)),
+                  maxHeight: Math.max(
+                    0,
+                    Math.ceil(productSpring * productEndMaxH),
+                  ),
                   overflow: "hidden",
                   transform: `scale(${productSpring})`,
                   transformOrigin: "center center",
@@ -393,8 +417,8 @@ function WebsiteUrlOverlay({
                 <Img
                   src={product_image_url}
                   style={{
-                    maxWidth: 1064,
-                    maxHeight: 1020,
+                    maxWidth: productEndMaxW,
+                    maxHeight: productEndMaxH,
                     width: "auto",
                     height: "auto",
                     objectFit: "contain",
@@ -406,7 +430,7 @@ function WebsiteUrlOverlay({
                 />
               </div>
               {pillBlock ? (
-                <div style={{ marginTop: 40 }}>{pillBlock}</div>
+                <div style={{ marginTop: is169 ? 10 : 40 }}>{pillBlock}</div>
               ) : null}
             </div>
           ) : (
@@ -577,6 +601,653 @@ function CaptionLayer({ text, brandHex = "#6366f1", stylePrefs = {} }) {
   );
 }
 
+/** Ken Burns + float when a URL exists; else studio-style gradient. */
+function StudioNoVideoBackground() {
+  return (
+    <AbsoluteFill
+      style={{
+        background:
+          "linear-gradient(180deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%)",
+      }}
+    />
+  );
+}
+
+/**
+ * @param {object} p
+ * @param {string} p.rawVideoUrl
+ * @param {number} p.videoPanX
+ * @param {number} p.videoPanY
+ * @param {number} p.videoScale
+ * @param {React.ReactNode} [p.children] — e.g. vignette / masks, painted above the video, below tracks above this layer
+ */
+function KenBurnsAvatarVideo({ rawVideoUrl, videoPanX, videoPanY, videoScale, children }) {
+  const src = typeof rawVideoUrl === "string" ? rawVideoUrl.trim() : "";
+  if (!src) {
+    return <StudioNoVideoBackground />;
+  }
+  return (
+    <AbsoluteFill>
+      <AbsoluteFill
+        style={{
+          transform: `translate(${videoPanX}px, ${videoPanY}px) scale(${videoScale})`,
+          transformOrigin: "center center",
+          overflow: "hidden",
+        }}
+      >
+        <OffthreadVideo
+          src={src}
+          style={{ width: "100%", height: "100%", objectFit: "cover" }}
+        />
+      </AbsoluteFill>
+      {children}
+    </AbsoluteFill>
+  );
+}
+
+function CinematicVignetteGradient() {
+  return (
+    <AbsoluteFill
+      style={{
+        background: [
+          "linear-gradient(180deg,",
+          "rgba(0,0,0,0.15) 0%,",
+          "transparent 20%,",
+          "transparent 65%,",
+          "rgba(0,0,0,0.75) 100%)",
+        ].join(" "),
+        pointerEvents: "none",
+      }}
+    />
+  );
+}
+
+/**
+ * Subtle darkening on the right half (LTR) where the bullet caption column sits, for legibility.
+ */
+function BulletColumnReadabilityMask() {
+  return (
+    <AbsoluteFill
+      style={{
+        left: "50%",
+        width: "50%",
+        background:
+          "linear-gradient(90deg, rgba(0,0,0,0) 0%, rgba(0,0,0,0.22) 18%, rgba(0,0,0,0.5) 100%)",
+        pointerEvents: "none",
+      }}
+    />
+  );
+}
+
+// --- Pippable full-duration avatar (Layer 1; grid sits below, zIndex 1) ------------
+
+const PIP_SPRING = { damping: 17, stiffness: 128 };
+
+/** Shared metrics: 2×2 grid (gap + padding) so image cells and BR video align. */
+function getSplitGalleryCellMetrics(width, height) {
+  const gap = 10;
+  const pad = 12;
+  const innerW = width - 2 * pad;
+  const innerH = height - 2 * pad;
+  const cellW = (innerW - gap) / 2;
+  const cellH = (innerH - gap) / 2;
+  const brLeft = pad + cellW + gap;
+  const brTop = pad + cellH + gap;
+  return { pad, gap, cellW, cellH, brLeft, brTop };
+}
+
+/**
+ * 0 = full-bleed Ken Burns; 1 = avatar clipped to the split_gallery bottom-right cell
+ * (same box as the 2×2 grid’s BR slot — `getSplitGalleryCellMetrics`).
+ */
+function PippableAvatarVideo({
+  rawVideoUrl,
+  videoPanX,
+  videoPanY,
+  videoScale,
+  pipWeight,
+  speechFrames,
+}) {
+  const { width, height } = useVideoConfig();
+  const frame = useCurrentFrame();
+  const src = typeof rawVideoUrl === "string" ? rawVideoUrl.trim() : "";
+  const mix = frame >= speechFrames ? 0 : Math.min(1, Math.max(0, pipWeight));
+  const kinK = 1 - mix;
+  const panX = videoPanX * kinK;
+  const panY = videoPanY * kinK;
+
+  if (!src) {
+    return <StudioNoVideoBackground />;
+  }
+
+  if (mix < 0.001) {
+    return (
+      <AbsoluteFill style={{ zIndex: 2, pointerEvents: "none" }}>
+        <KenBurnsAvatarVideo
+          rawVideoUrl={rawVideoUrl}
+          videoPanX={videoPanX}
+          videoPanY={videoPanY}
+          videoScale={videoScale}
+        >
+          <CinematicVignetteGradient />
+        </KenBurnsAvatarVideo>
+      </AbsoluteFill>
+    );
+  }
+
+  const { brLeft, brTop, cellW, cellH } = getSplitGalleryCellMetrics(width, height);
+  const left = interpolate(mix, [0, 1], [0, brLeft]);
+  const top = interpolate(mix, [0, 1], [0, brTop]);
+  const w = interpolate(mix, [0, 1], [width, cellW]);
+  const h = interpolate(mix, [0, 1], [height, cellH]);
+  const brR = interpolate(mix, [0, 1], [0, 10]);
+  const bW = interpolate(mix, [0, 1], [0, 2]);
+  const bA = interpolate(mix, [0, 1], [0, 0.85]);
+  const sh = interpolate(mix, [0, 1], [0, 0.5]);
+  const vigOpacity = interpolate(mix, [0, 0.45], [1, 0], {
+    extrapolateLeft: "clamp",
+    extrapolateRight: "clamp",
+  });
+
+  return (
+    <AbsoluteFill style={{ zIndex: 2, pointerEvents: "none" }}>
+      <div
+        style={{
+          position: "absolute",
+          left,
+          top,
+          width: w,
+          height: h,
+          borderRadius: brR,
+          border: `${bW}px solid rgba(255,255,255,${bA})`,
+          boxShadow:
+            sh > 0.01
+              ? `0 10px 32px rgba(0,0,0,${sh}), 0 0 0 1px rgba(0,0,0,0.25)`
+              : "none",
+          overflow: "hidden",
+          backgroundColor: "#0a0a0a",
+        }}
+      >
+        <div
+          style={{
+            width: "100%",
+            height: "100%",
+            transform: `translate(${panX}px, ${panY}px) scale(${videoScale})`,
+            transformOrigin: "center center",
+          }}
+        >
+          <OffthreadVideo
+            src={src}
+            style={{ width: "100%", height: "100%", objectFit: "cover" }}
+          />
+        </div>
+      </div>
+      {vigOpacity > 0.01 ? (
+        <AbsoluteFill
+          style={{
+            opacity: vigOpacity,
+            pointerEvents: "none",
+          }}
+        >
+          <CinematicVignetteGradient />
+        </AbsoluteFill>
+      ) : null}
+    </AbsoluteFill>
+  );
+}
+
+const GRID_STAGGER_FRAMES = 4;
+
+function normalizeToFourImageSlots(images) {
+  const arr = Array.isArray(images) ? images : [];
+  const out = ["", "", "", ""];
+  for (let k = 0; k < 4; k += 1) {
+    const v = arr[k];
+    out[k] = typeof v === "string" && v.trim() ? v.trim() : `תמונה ${k + 1}`;
+  }
+  return out;
+}
+
+/** Up to 3 labels for TL, TR, BL (BR is the live avatar). */
+function normalizeToThreeGalleryImageSlots(images) {
+  const arr = Array.isArray(images) ? images : [];
+  const out = ["", "", ""];
+  for (let k = 0; k < 3; k += 1) {
+    const v = arr[k];
+    out[k] = typeof v === "string" && v.trim() ? v.trim() : `תמונה ${k + 1}`;
+  }
+  return out;
+}
+
+/** Up to 3 optional HTTP URLs for DALL·E (same slot order as `images`). */
+function normalizeToThreeGalleryImageUrls(urls) {
+  const arr = Array.isArray(urls) ? urls : [];
+  const out = ["", "", ""];
+  for (let k = 0; k < 3; k += 1) {
+    const v = arr[k];
+    out[k] = typeof v === "string" && v.trim() ? v.trim() : "";
+  }
+  return out;
+}
+
+function galleryCellPlaceholderStyle(description, index, brandHex) {
+  const s = String(description ?? "");
+  let h = (index + 1) * 199;
+  for (let j = 0; j < s.length; j += 1) {
+    h = (h * 33 + s.charCodeAt(j) * (j + 3) + (index + 1) * 17) % 2000000;
+  }
+  const hue = h % 360;
+  const hue2 = (hue + 48 + ((index * 17) % 40)) % 360;
+  return {
+    background: `linear-gradient(150deg, 
+      hsla(${hue}, 38%, 18%, 0.94) 0%,
+      hsla(${hue2}, 32%, 12%, 0.97) 100%)`,
+    boxShadow: [
+      "inset 0 1px 0 rgba(255,255,255,0.1)",
+      "0 8px 28px rgba(0,0,0,0.55)",
+      `0 0 20px -4px ${brandHex}33`,
+    ].join(", "),
+    border: "1px solid rgba(255,255,255,0.14)",
+    backdropFilter: "blur(8px)",
+    color: "rgba(255,255,255,0.92)",
+    textShadow: "0 2px 12px rgba(0,0,0,0.9)",
+  };
+}
+
+/**
+ * Full-frame 2×2 grid: `layout_data.images` → top-left, top-right, bottom-left only;
+ * bottom-right is reserved for the `OffthreadVideo` layer.
+ * Optional `layout_data.image_urls` (3 URLs) — DALL·E stills with Ken Burns + Hebrew caption band.
+ */
+function PipGalleryGrid({
+  layoutData,
+  brandHex,
+  continueGalleryRun = false,
+  sceneDurationInFrames = 90,
+}) {
+  const localT = useCurrentFrame();
+  const { fps, width, height } = useVideoConfig();
+  const { pad, gap } = getSplitGalleryCellMetrics(width, height);
+  const imageDescriptions = normalizeToThreeGalleryImageSlots(layoutData?.images);
+  const imageUrls = normalizeToThreeGalleryImageUrls(layoutData?.image_urls);
+  const fontFamilyStr = resolveCaptionFontFamily("heebo");
+  const sceneLen = Math.max(1, sceneDurationInFrames);
+  const slots = [
+    { desc: imageDescriptions[0], imageUrl: imageUrls[0], gridColumn: 1, gridRow: 1, index: 0 },
+    { desc: imageDescriptions[1], imageUrl: imageUrls[1], gridColumn: 2, gridRow: 1, index: 1 },
+    { desc: imageDescriptions[2], imageUrl: imageUrls[2], gridColumn: 1, gridRow: 2, index: 2 },
+  ];
+  return (
+    <AbsoluteFill
+      style={{
+        pointerEvents: "none",
+        backgroundColor: "#0a0a0a",
+        boxSizing: "border-box",
+        padding: pad,
+        display: "grid",
+        gridTemplateColumns: "1fr 1fr",
+        gridTemplateRows: "1fr 1fr",
+        gap,
+      }}
+    >
+      {slots.map(({ desc, imageUrl, gridColumn, gridRow, index: i }) => {
+        const t = localT - i * GRID_STAGGER_FRAMES;
+        const entry = continueGalleryRun
+          ? 1
+          : t < 0
+            ? 0
+            : spring({
+                frame: t,
+                fps,
+                from: 0,
+                to: 1,
+                config: { damping: 15, stiffness: 160 },
+              });
+        const scale = interpolate(entry, [0, 1], [0.88, 1], {
+          extrapolateLeft: "clamp",
+          extrapolateRight: "clamp",
+        });
+        const op = interpolate(entry, [0, 1], [0, 1], {
+          extrapolateLeft: "clamp",
+          extrapolateRight: "clamp",
+        });
+        const y = continueGalleryRun
+          ? 0
+          : interpolate(
+              t,
+              [0, 12 + i * 2],
+              [20, 0],
+              { extrapolateLeft: "clamp", extrapolateRight: "clamp" },
+            );
+        const ph = galleryCellPlaceholderStyle(desc, i, brandHex);
+        const hasRaster = Boolean(imageUrl);
+        const kenBurnsScale = interpolate(
+          localT,
+          [0, Math.max(1, sceneLen - 1)],
+          [1, 1.08],
+          { extrapolateLeft: "clamp", extrapolateRight: "clamp" },
+        );
+        return (
+          <div
+            key={`g-${gridColumn}-${gridRow}`}
+            style={{
+              ...(hasRaster
+                ? {
+                    backgroundColor: "#141414",
+                    boxShadow: ph.boxShadow,
+                    border: ph.border,
+                  }
+                : ph),
+              gridColumn,
+              gridRow,
+              minHeight: 0,
+              minWidth: 0,
+              borderRadius: 12,
+              display: "flex",
+              flexDirection: "column",
+              alignItems: "center",
+              justifyContent: hasRaster ? "flex-end" : "center",
+              textAlign: "center",
+              padding: hasRaster ? 0 : 10,
+              transform: `translateY(${y}px) scale(${scale})`,
+              opacity: op,
+              overflow: "hidden",
+              position: "relative",
+            }}
+          >
+            {hasRaster ? (
+              <>
+                <div
+                  style={{
+                    position: "absolute",
+                    inset: 0,
+                    overflow: "hidden",
+                    borderRadius: 12,
+                  }}
+                >
+                  <Img
+                    src={imageUrl}
+                    style={{
+                      width: "100%",
+                      height: "100%",
+                      objectFit: "cover",
+                      display: "block",
+                      transform: `scale(${kenBurnsScale})`,
+                      transformOrigin: "50% 50%",
+                    }}
+                  />
+                </div>
+                <div
+                  style={{
+                    position: "absolute",
+                    left: 0,
+                    right: 0,
+                    bottom: 0,
+                    height: "52%",
+                    background:
+                      "linear-gradient(to top, rgba(0,0,0,0.88) 0%, rgba(0,0,0,0.35) 45%, transparent 100%)",
+                    borderRadius: "0 0 12px 12px",
+                    pointerEvents: "none",
+                  }}
+                />
+                <span
+                  dir="rtl"
+                  lang="he"
+                  style={{
+                    position: "relative",
+                    zIndex: 2,
+                    fontFamily: `${fontFamilyStr}, "Segoe UI", sans-serif`,
+                    fontSize: Math.min(22, height * 0.018),
+                    fontWeight: 700,
+                    lineHeight: 1.25,
+                    wordBreak: "break-word",
+                    paddingLeft: 10,
+                    paddingRight: 10,
+                    paddingBottom: 15,
+                    color: "rgba(255,255,255,0.95)",
+                    textShadow: "0 2px 14px rgba(0,0,0,0.9)",
+                  }}
+                >
+                  {desc}
+                </span>
+              </>
+            ) : (
+              <span
+                style={{
+                  fontFamily: `${fontFamilyStr}, "Segoe UI", sans-serif`,
+                  fontSize: Math.min(22, height * 0.018),
+                  fontWeight: 700,
+                  lineHeight: 1.25,
+                  wordBreak: "break-word",
+                  padding: 10,
+                }}
+              >
+                {desc}
+              </span>
+            )}
+          </div>
+        );
+      })}
+      <div
+        style={{
+          gridColumn: 2,
+          gridRow: 2,
+          minHeight: 0,
+          minWidth: 0,
+          borderRadius: 10,
+          backgroundColor: "rgba(0,0,0,0.35)",
+        }}
+        aria-hidden
+      />
+    </AbsoluteFill>
+  );
+}
+
+/**
+ * `split_gallery` captions: lower-third / TikTok-style (never top — keeps URL pill clear).
+ * Sits over the bottom row of the 2×2 (BL cell + BR avatar) with slight overlap.
+ * When `continueGalleryRun`, skip entrance (caption swaps without re-animating the band).
+ */
+function PipGalleryLayout({ text, brandHex, stylePrefs = {}, continueGalleryRun = false }) {
+  const localT = useCurrentFrame();
+  const { fps, width: compWidth, height } = useVideoConfig();
+  const fontFamilyStr = resolveCaptionFontFamily(
+    typeof stylePrefs.font === "string" ? stylePrefs.font : "heebo",
+  );
+  const hasText = Boolean(text && String(text).trim());
+  if (!hasText) {
+    return null;
+  }
+  const textEnter = continueGalleryRun
+    ? 1
+    : Math.min(1, spring({
+        frame: localT,
+        fps,
+        from: 0,
+        to: 1,
+        config: { damping: 16, stiffness: 140 },
+      }));
+  const slideY = continueGalleryRun
+    ? 0
+    : interpolate(localT, [0, 12], [18, 0], {
+        extrapolateLeft: "clamp",
+        extrapolateRight: "clamp",
+      });
+  return (
+    <AbsoluteFill
+      style={{
+        pointerEvents: "none",
+        zIndex: 1,
+        justifyContent: "flex-end",
+        alignItems: "center",
+        display: "flex",
+        paddingLeft: "4%",
+        paddingRight: "4%",
+        /* Above progress bar, overlapping lower half of bottom row of grid */
+        paddingBottom: Math.max(88, height * 0.1),
+        boxSizing: "border-box",
+      }}
+    >
+      <div
+        dir="rtl"
+        lang="he"
+        style={{
+          maxWidth: "96%",
+          width: "100%",
+          display: "flex",
+          justifyContent: "center",
+          paddingBottom: "2%",
+        }}
+      >
+        <div
+          style={{
+            maxWidth: 920,
+            width: "100%",
+            opacity: textEnter,
+            transform: `translateY(${slideY}px)`,
+          }}
+        >
+          <div
+            style={{
+              fontFamily: `${fontFamilyStr}, "Segoe UI", sans-serif`,
+              fontWeight: 800,
+              fontSize: Math.min(64, compWidth * 0.05),
+              lineHeight: 1.2,
+              color: "#fff",
+              textAlign: "center",
+              padding: "14px 20px",
+              background: "rgba(0,0,0,0.55)",
+              borderRadius: 18,
+              border: "1px solid rgba(255,255,255,0.2)",
+              boxShadow: [
+                "0 10px 36px rgba(0,0,0,0.6)",
+                `0 0 0 1px ${brandHex}22`,
+                `0 0 28px ${brandHex}40`,
+              ].join(", "),
+              textShadow: [
+                "0 2px 16px rgba(0,0,0,0.95)",
+                `0 0 20px ${brandHex}55`,
+              ].join(", "),
+            }}
+          >
+            {String(text).trim()}
+          </div>
+        </div>
+      </div>
+    </AbsoluteFill>
+  );
+}
+
+function BulletPointsLayout({ text, brandHex, stylePrefs = {} }) {
+  const showCap = Boolean(text && String(text).trim());
+  return (
+    <>
+      <BulletColumnReadabilityMask />
+      {showCap ? (
+        <AbsoluteFill
+          style={{
+            left: "50%",
+            width: "50%",
+          }}
+        >
+          <CaptionLayer text={text} brandHex={brandHex} stylePrefs={stylePrefs} />
+        </AbsoluteFill>
+      ) : null}
+    </>
+  );
+}
+
+function resolveSceneLayoutName(scene) {
+  const raw = scene?.visual_layout;
+  if (typeof raw !== "string" || !raw.trim()) return "full_avatar";
+  return raw.trim().toLowerCase();
+}
+
+/** True when this scene continues a run of consecutive `split_gallery` scenes. */
+function isConsecutiveSplitGalleryScene(scenes, index) {
+  if (index <= 0) return false;
+  return (
+    resolveSceneLayoutName(scenes[index - 1]) === "split_gallery"
+    && resolveSceneLayoutName(scenes[index]) === "split_gallery"
+  );
+}
+
+function getSceneIndexForFrame(f, sceneStarts, sceneDurations) {
+  const n = sceneStarts.length;
+  if (n === 0) return 0;
+  for (let i = 0; i < n; i += 1) {
+    const end = sceneStarts[i] + sceneDurations[i];
+    if (f >= sceneStarts[i] && f < end) {
+      return i;
+    }
+  }
+  return n - 1;
+}
+
+/**
+ * 0 = full-bleed avatar; 1 = PiP in the BR cell.
+ * Springs in only when **entering** a gallery after a non-gallery scene; holds at 1 across
+ * consecutive `split_gallery` scenes; springs out when leaving to a non-gallery layout.
+ */
+function getPipWeight(frame, fps, speechFrames, sceneStarts, sceneDurations, scenes) {
+  if (frame < 0) return 0;
+  if (frame >= speechFrames) return 0;
+  const i = getSceneIndexForFrame(frame, sceneStarts, sceneDurations);
+  const start = sceneStarts[i] ?? 0;
+  const t = frame - start;
+  const isGallery = resolveSceneLayoutName(scenes[i]) === "split_gallery";
+  const prevIsGallery = i > 0 && resolveSceneLayoutName(scenes[i - 1]) === "split_gallery";
+  const s = Math.min(1, spring({ frame: t, fps, from: 0, to: 1, config: PIP_SPRING }));
+  if (isGallery) {
+    if (prevIsGallery) {
+      return 1;
+    }
+    return s;
+  }
+  if (i > 0 && prevIsGallery) {
+    return 1 - s;
+  }
+  return 0;
+}
+
+/** One scene’s caption / layout UI (per <Sequence/>), matching `visual_layout`. */
+function SceneLayoutContent({
+  scene,
+  brandHex,
+  stylePrefs = {},
+  continuesConsecutiveSplitGallery = false,
+}) {
+  const text = scene?.on_screen_text ?? "";
+  const layout = resolveSceneLayoutName(scene);
+  switch (layout) {
+    case "split_gallery":
+      return (
+        <PipGalleryLayout
+          text={text}
+          brandHex={brandHex}
+          stylePrefs={stylePrefs}
+          continueGalleryRun={continuesConsecutiveSplitGallery}
+        />
+      );
+    case "avatar_with_bullets":
+      return (
+        <BulletPointsLayout
+          text={text}
+          brandHex={brandHex}
+          stylePrefs={stylePrefs}
+        />
+      );
+    case "full_avatar":
+    case "avatar_with_cta":
+    default: {
+      const showCap = Boolean(String(text).trim());
+      return showCap ? (
+        <CaptionLayer text={text} brandHex={brandHex} stylePrefs={stylePrefs} />
+      ) : null;
+    }
+  }
+}
+
 /**
  * Main UGC composition — portrait 9:16 (1080×1920), square 1:1 (1080×1080), or 16:9 (1920×1080).
  *
@@ -596,17 +1267,17 @@ function CaptionLayer({ text, brandHex = "#6366f1", stylePrefs = {} }) {
  *                    plus end-card stack (below logo, above URL pill) when overlay is shown.
  *
  * Architecture note:
- *   FFmpeg runs BEFORE Remotion and already produces a target-aspect video (crop-to-fill,
- *   e.g. ugc_composited.mp4).  worker_tasks.py passes that file as raw_video_url so Remotion
- *   only needs ONE OffthreadVideo decode per frame instead of two.
+ *   `split_gallery`: 2×2 grid (TL,TR,BL + avatar BR). PiP and grid entrance run once per
+ *   **run** of consecutive gallery scenes; only captions (and still slots) change between them.
+ *   Product `ProductOverlay` is after scene layouts, zIndex 100.
  *
  * Visual layers (bottom → top):
- *   1. Foreground video  — FFmpeg-composited + Ken Burns + scene punch.
- *   2. Cinematic gradient — top+bottom dark bars for broadcast-TV depth.
- *   3. URL overlay        — hostname pill top-left → center end-card spring (+ logo/product).
- *   4. Product center pop — optional 2s window around speech midpoint.
- *   5. Caption layers     — per-scene, spring pop-in + pill background.
- *   6. BGM audio          — volume 0.15, looped.
+ *   1a. `PipGalleryGrid` (gallery scenes only)   zIndex 1
+ *   1b. `PippableAvatarVideo` (full or PiP)    zIndex 2
+ *   2.  Website URL + end card                 zIndex 30
+ *   3.  Per-scene layout + ding                 zIndex 45
+ *   4.  `ProductOverlay` “center pop”         zIndex 100
+ *   5.  Progress + BGM
  */
 export function UgcComposition({
   raw_video_url = "",
@@ -695,51 +1366,103 @@ export function UgcComposition({
     extrapolateRight: "clamp",
   });
 
+  const pipWeight = getPipWeight(
+    frame,
+    fps,
+    speechFrames,
+    sceneStarts,
+    sceneDurations,
+    scenes,
+  );
+
   return (
     <AbsoluteFill style={{ backgroundColor: "#000000" }}>
-      {raw_video_url ? (
-        <>
-          {/* ── Layer 1: Video — continuous float + entrance punch ────────────── */}
-          {/* Input is FFmpeg-composited (crop-to-fill) at the target aspect.  */}
-          {/* ONE OffthreadVideo only — halves render time vs double-decode.     */}
-          <AbsoluteFill
-            style={{
-              transform: `translate(${panX}px, ${panY}px) scale(${videoScale})`,
-              transformOrigin: "center center",
-              overflow: "hidden",
-            }}
-          >
-            <OffthreadVideo
-              src={raw_video_url}
-              style={{ width: "100%", height: "100%", objectFit: "cover" }}
-            />
-          </AbsoluteFill>
+      {/* Layer 1a — full-frame image grid during split_gallery (under PiP video) */}
+      <AbsoluteFill style={{ zIndex: 1, pointerEvents: "none" }}>
+        {scenes.map((scene, i) => {
+          if (resolveSceneLayoutName(scene) !== "split_gallery") {
+            return null;
+          }
+          const startFrame = sceneStarts[i] ?? 0;
+          const sceneDuration = Math.max(
+            1,
+            sceneDurations[i] ?? Math.floor(speechFrames / numScenes),
+          );
+          return (
+            <Sequence
+              key={`pip-gallery-grid-${i}`}
+              from={startFrame}
+              durationInFrames={sceneDuration}
+            >
+              <PipGalleryGrid
+                layoutData={scene?.layout_data}
+                brandHex={brandHex}
+                continueGalleryRun={isConsecutiveSplitGalleryScene(scenes, i)}
+                sceneDurationInFrames={sceneDuration}
+              />
+            </Sequence>
+          );
+        })}
+      </AbsoluteFill>
 
-          {/* ── Layer 2: Cinematic gradient ───────────────────────────────── */}
-          <AbsoluteFill
-            style={{
-              background: [
-                "linear-gradient(180deg,",
-                "rgba(0,0,0,0.15) 0%,",
-                "transparent 20%,",
-                "transparent 65%,",
-                "rgba(0,0,0,0.75) 100%)",
-              ].join(" "),
-              pointerEvents: "none",
-            }}
-          />
-        </>
-      ) : (
-        // Studio preview placeholder — no video URL supplied
-        <AbsoluteFill
-          style={{
-            background:
-              "linear-gradient(180deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%)",
-          }}
+      {/* Layer 1b — single OffthreadVideo; PiP spring when layout is split_gallery */}
+      <PippableAvatarVideo
+        rawVideoUrl={raw_video_url}
+        videoPanX={panX}
+        videoPanY={panY}
+        videoScale={videoScale}
+        pipWeight={pipWeight}
+        speechFrames={speechFrames}
+      />
+
+      {/* Website URL + end-card logo / product */}
+      {websiteText || logo_url || productImg ? (
+        <WebsiteUrlOverlay
+          text={websiteText}
+          logo_url={logo_url}
+          product_image_url={productImg}
+          brandHex={brandHex}
+          durationInFrames={durationInFrames}
+          aspect_ratio={aspect_ratio}
         />
-      )}
+      ) : null}
 
-      {/* ── Layer 4a: Product center pop (~2s around speech midpoint) ─────── */}
+      {/* Layer 5 — per-scene ding + layout (split gallery / bullets / full caption) */}
+      <AbsoluteFill style={{ zIndex: 45, pointerEvents: "none" }}>
+        {scenes.map((scene, i) => {
+          const startFrame = sceneStarts[i] ?? 0;
+          const sceneDuration = Math.max(
+            1,
+            sceneDurations[i] ?? Math.floor(speechFrames / numScenes),
+          );
+          const hasPunctuation = /[.!?]$/.test(
+            scene.on_screen_text?.trim() || "",
+          );
+          const shouldPlayDing = i === 0 || hasPunctuation;
+          return (
+            <Sequence
+              key={`ugc-layout-${i}`}
+              from={startFrame}
+              durationInFrames={sceneDuration}
+            >
+              {shouldPlayDing ? (
+                <Audio src={staticFile("ding.mp3")} volume={0.4} />
+              ) : null}
+              <SceneLayoutContent
+                scene={scene}
+                brandHex={brandHex}
+                stylePrefs={stylePrefs}
+                continuesConsecutiveSplitGallery={isConsecutiveSplitGalleryScene(
+                  scenes,
+                  i,
+                )}
+              />
+            </Sequence>
+          );
+        })}
+      </AbsoluteFill>
+
+      {/* Layer 4a / above captions — product pop (after layout so it stacks; zIndex 100) */}
       {productImg && productPopDuration > 0 ? (
         <ProductOverlay
           src={productImg}
@@ -749,47 +1472,7 @@ export function UgcComposition({
         />
       ) : null}
 
-      {/* ── Layer 4b: Website URL + end-card logo / product (above captions) ─ */}
-      {websiteText || logo_url || productImg ? (
-        <WebsiteUrlOverlay
-          text={websiteText}
-          logo_url={logo_url}
-          product_image_url={productImg}
-          brandHex={brandHex}
-          durationInFrames={durationInFrames}
-        />
-      ) : null}
-
-      {/* ── Layer 5: Per-scene captions (stop at speechFrames, not durationInFrames) */}
-      {scenes.map((scene, i) => {
-        if (!scene?.on_screen_text?.trim()) return null;
-
-        const startFrame = sceneStarts[i] ?? 0;
-        const sceneDuration = Math.max(
-          1,
-          sceneDurations[i] ?? Math.floor(speechFrames / numScenes),
-        );
-
-        const hasPunctuation = /[.!?]$/.test(
-          scene.on_screen_text?.trim() || "",
-        );
-        const shouldPlayDing = i === 0 || hasPunctuation;
-
-        return (
-          <Sequence key={i} from={startFrame} durationInFrames={sceneDuration}>
-            {shouldPlayDing && (
-              <Audio src={staticFile("ding.mp3")} volume={0.4} />
-            )}
-            <CaptionLayer
-              text={scene.on_screen_text}
-              brandHex={brandHex}
-              stylePrefs={stylePrefs}
-            />
-          </Sequence>
-        );
-      })}
-
-      {/* ── Layer 5b: Progress bar — thick track + inset fill so it reads on export & web preview */}
+      {/* Progress bar — thick track + inset fill so it reads on export & web preview */}
       <AbsoluteFill style={{ pointerEvents: "none", zIndex: 250 }}>
         <div
           style={{

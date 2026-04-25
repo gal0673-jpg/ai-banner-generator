@@ -25,6 +25,19 @@ const RENDER_TIMEOUT_MS = Number(process.env.RENDER_TIMEOUT_MS) || 3 * 60 * 1000
  * Defaults to 25 min; override via UGC_RENDER_TIMEOUT_MS in .env.
  */
 const UGC_RENDER_TIMEOUT_MS = Number(process.env.UGC_RENDER_TIMEOUT_MS) || 25 * 60 * 1000;
+/**
+ * If an active slot is still held longer than this (wall clock), the limiter rejects
+ * the outer job promise so the slot frees even when Remotion/Node never settles
+ * (orphaned render). Must exceed the longest per-render `withTimeout` (UGC).
+ */
+const ACTIVE_RENDER_HUNG_MS =
+  Number(process.env.ACTIVE_RENDER_HUNG_MS) ||
+  UGC_RENDER_TIMEOUT_MS + 10 * 60 * 1000;
+
+/** Max time to wait for active renders after SIGTERM/SIGINT before exit. */
+const SHUTDOWN_GRACE_MS =
+  Number(process.env.VIDEO_ENGINE_SHUTDOWN_GRACE_MS) ||
+  UGC_RENDER_TIMEOUT_MS + 2 * 60 * 1000;
 
 // ── Output-file cleanup config ─────────────────────────────────────────────
 const CLEANUP_INTERVAL_MS =
@@ -32,16 +45,35 @@ const CLEANUP_INTERVAL_MS =
 const MAX_OUTPUT_AGE_MS =
   Number(process.env.MAX_OUTPUT_AGE_MS) || 24 * 60 * 60 * 1000; // 24 h
 
+// ── Structured logging ───────────────────────────────────────────────────────
+function logJson(level, msg, fields = {}) {
+  const line = JSON.stringify({
+    ts: new Date().toISOString(),
+    level,
+    service: "video_engine",
+    msg,
+    ...fields,
+  });
+  if (level === "error") console.error(line);
+  else if (level === "warn") console.warn(line);
+  else console.log(line);
+}
+
 // ── ConcurrencyLimiter ──────────────────────────────────────────────────────
 /**
  * Promise-queue that caps the number of concurrently executing async tasks.
  * Callers beyond `maxConcurrent` wait in a FIFO queue until a slot opens.
+ *
+ * Each running job is also raced against `activeHangMs`: if the worker promise
+ * never settles (orphaned Remotion, etc.), the slot is released by rejecting the
+ * outer promise returned from `run()`.
  */
 class ConcurrencyLimiter {
-  constructor(maxConcurrent) {
+  constructor(maxConcurrent, options = {}) {
     this._max = maxConcurrent;
     this._active = 0;
     this._queue = [];
+    this._activeHangMs = options.activeHangMs ?? ACTIVE_RENDER_HUNG_MS;
   }
 
   get active() {
@@ -50,6 +82,40 @@ class ConcurrencyLimiter {
 
   get pending() {
     return this._queue.length;
+  }
+
+  /**
+   * Reject all jobs still waiting for a slot (not yet started).
+   * @param {Error} reason
+   */
+  rejectQueued(reason) {
+    while (this._queue.length > 0) {
+      const { resolve, reject, fn: _fn } = this._queue.shift();
+      void _fn;
+      reject(reason);
+    }
+  }
+
+  /**
+   * Resolves when `active === 0` or after `timeoutMs`.
+   * @returns {Promise<{ drained: boolean, active: number }>}
+   */
+  waitForActiveDrain(timeoutMs) {
+    if (this._active === 0) {
+      return Promise.resolve({ drained: true, active: 0 });
+    }
+    return new Promise((resolve) => {
+      const deadline = Date.now() + timeoutMs;
+      const id = setInterval(() => {
+        if (this._active === 0) {
+          clearInterval(id);
+          resolve({ drained: true, active: 0 });
+        } else if (Date.now() >= deadline) {
+          clearInterval(id);
+          resolve({ drained: false, active: this._active });
+        }
+      }, 300);
+    });
   }
 
   /**
@@ -63,21 +129,47 @@ class ConcurrencyLimiter {
     });
   }
 
+  /**
+   * Race `fn()` against a hung-job watchdog so `_active` always decrements.
+   */
+  _runWithHungGuard(fn, resolve, reject) {
+    this._active++;
+    let hungTimer = null;
+    const hungPromise = new Promise((_, rej) => {
+      hungTimer = setTimeout(() => {
+        logJson("error", "render_hung_slot_reclaimed", {
+          activeHangMs: this._activeHangMs,
+          activeSlots: this._active,
+        });
+        rej(
+          new Error(
+            `[ConcurrencyLimiter] Render hung — no settlement after ${this._activeHangMs}ms (orphaned worker?)`,
+          ),
+        );
+      }, this._activeHangMs);
+    });
+
+    const workPromise = Promise.resolve().then(() => fn());
+    Promise.race([workPromise, hungPromise])
+      .then(resolve, reject)
+      .finally(() => {
+        if (hungTimer) clearTimeout(hungTimer);
+        this._active--;
+        this._drain();
+      });
+  }
+
   _drain() {
     while (this._active < this._max && this._queue.length > 0) {
       const { fn, resolve, reject } = this._queue.shift();
-      this._active++;
-      fn()
-        .then(resolve, reject)
-        .finally(() => {
-          this._active--;
-          this._drain();
-        });
+      this._runWithHungGuard(fn, resolve, reject);
     }
   }
 }
 
-const renderLimiter = new ConcurrencyLimiter(MAX_CONCURRENT_RENDERS);
+const renderLimiter = new ConcurrencyLimiter(MAX_CONCURRENT_RENDERS, {
+  activeHangMs: ACTIVE_RENDER_HUNG_MS,
+});
 
 // ── withTimeout ─────────────────────────────────────────────────────────────
 /**
@@ -154,6 +246,18 @@ async function cleanupOldOutputs() {
 // ── Express app ────────────────────────────────────────────────────────────
 const app = express();
 
+/** When true, new render jobs receive 503; in-flight work is allowed to finish until grace timeout. */
+let shuttingDown = false;
+/** @type {import('http').Server | null} */
+let server = null;
+
+function serializeErr(err) {
+  if (!(err instanceof Error)) {
+    return { name: "Error", message: String(err) };
+  }
+  return { name: err.name, message: err.message, stack: err.stack };
+}
+
 app.use((req, res, next) => {
   console.log(`[${new Date().toISOString()}] ${req.method} ${req.url}`);
   next();
@@ -161,6 +265,20 @@ app.use((req, res, next) => {
 
 app.use(cors());
 app.use(express.json({ limit: "2mb" }));
+
+app.use((req, res, next) => {
+  if (
+    shuttingDown &&
+    req.method === "POST" &&
+    (req.path === "/render" || req.path === "/render-ugc")
+  ) {
+    return res.status(503).json({
+      error: "Server is shutting down; try again later.",
+      code: "SHUTTING_DOWN",
+    });
+  }
+  next();
+});
 
 if (!fs.existsSync(outputDir)) {
   fs.mkdirSync(outputDir, { recursive: true });
@@ -259,13 +377,15 @@ function validateRenderPayload(body) {
 
 app.get("/health", (_req, res) => {
   res.json({
-    status: "ok",
+    status: shuttingDown ? "draining" : "ok",
     service: "video_engine",
+    shuttingDown,
     renders: {
       active: renderLimiter.active,
       pending: renderLimiter.pending,
       maxConcurrent: MAX_CONCURRENT_RENDERS,
       maxQueueDepth: MAX_QUEUE_DEPTH,
+      activeRenderHungMs: ACTIVE_RENDER_HUNG_MS,
     },
   });
 });
@@ -279,6 +399,10 @@ app.post("/render", async (req, res) => {
       error: "Validation failed",
       details: errors,
     });
+  }
+
+  if (shuttingDown) {
+    return res.status(503).json({ error: "Server is shutting down; try again later.", code: "SHUTTING_DOWN" });
   }
 
   // Reject early when the waiting queue is already full to avoid unbounded memory growth.
@@ -331,18 +455,21 @@ app.post("/render", async (req, res) => {
       outputPath,
     });
   } catch (err) {
-    const isTimeout =
-      err instanceof Error && err.message.startsWith("Remotion renderMedia timed out");
-    console.error(
-      `[/render] ${isTimeout ? "TIMEOUT" : "render failed"}:`,
-      err instanceof Error ? err.message : String(err),
-    );
-    if (!isTimeout && err instanceof Error && err.stack) {
-      console.error(err.stack);
-    }
-    const status = isTimeout ? 504 : 500;
-    const description = err instanceof Error ? err.message : String(err);
-    return res.status(status).json({ error: description });
+    const errObj = err instanceof Error ? err : new Error(String(err));
+    const isTimeout = errObj.message.startsWith("Remotion renderMedia timed out");
+    const isHung =
+      errObj.message.includes("[ConcurrencyLimiter]") ||
+      errObj.message.includes("Render hung");
+    const kind = isTimeout ? "timeout" : isHung ? "hung_slot" : "render_error";
+    logJson("error", "render_route_failed", {
+      route: "/render",
+      kind,
+      error: serializeErr(errObj),
+      task_id: req.body?.task_id ?? null,
+      designType,
+    });
+    const status = isTimeout ? 504 : isHung ? 503 : 500;
+    return res.status(status).json({ error: errObj.message, code: kind });
   }
 });
 
@@ -439,6 +566,10 @@ app.post("/render-ugc", async (req, res) => {
     return res.status(400).json({ error: "Validation failed", details: errors });
   }
 
+  if (shuttingDown) {
+    return res.status(503).json({ error: "Server is shutting down; try again later.", code: "SHUTTING_DOWN" });
+  }
+
   if (renderLimiter.pending >= MAX_QUEUE_DEPTH) {
     console.warn(
       `[/render-ugc] queue full (active=${renderLimiter.active} pending=${renderLimiter.pending}) — rejecting request`,
@@ -477,27 +608,81 @@ app.post("/render-ugc", async (req, res) => {
     console.log("[/render-ugc] success", { videoUrl, fileName });
     return res.status(200).json({ success: true, videoUrl, fileName, outputPath });
   } catch (err) {
-    const isTimeout =
-      err instanceof Error && err.message.startsWith("Remotion renderMedia timed out");
-    console.error(
-      `[/render-ugc] ${isTimeout ? "TIMEOUT" : "render failed"}:`,
-      err instanceof Error ? err.message : String(err),
-    );
-    if (!isTimeout && err instanceof Error && err.stack) {
-      console.error(err.stack);
-    }
-    const status = isTimeout ? 504 : 500;
-    const description = err instanceof Error ? err.message : String(err);
-    return res.status(status).json({ error: description });
+    const errObj = err instanceof Error ? err : new Error(String(err));
+    const isTimeout = errObj.message.startsWith("Remotion renderMedia timed out");
+    const isHung =
+      errObj.message.includes("[ConcurrencyLimiter]") ||
+      errObj.message.includes("Render hung");
+    const kind = isTimeout ? "timeout" : isHung ? "hung_slot" : "render_error";
+    logJson("error", "render_ugc_route_failed", {
+      route: "/render-ugc",
+      kind,
+      error: serializeErr(errObj),
+      task_id: req.body?.task_id ?? null,
+      scenes: inputProps?.ugc_script?.scenes?.length ?? null,
+    });
+    const status = isTimeout ? 504 : isHung ? 503 : 500;
+    return res.status(status).json({ error: errObj.message, code: kind });
   }
 });
 
-app.listen(PORT, "0.0.0.0", () => {
+/**
+ * Stop accepting connections and queued renders; wait for active slots to drain.
+ * @param {NodeJS.Signals} signal
+ */
+async function gracefulShutdown(signal) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+
+  logJson("warn", "graceful_shutdown_started", {
+    signal,
+    active: renderLimiter.active,
+    pending: renderLimiter.pending,
+    graceMs: SHUTDOWN_GRACE_MS,
+  });
+
+  await new Promise((resolve) => {
+    if (!server) {
+      resolve();
+      return;
+    }
+    server.close((closeErr) => {
+      if (closeErr) {
+        logJson("error", "server_close_error", { error: serializeErr(closeErr) });
+      }
+      resolve();
+    });
+  });
+
+  const qErr = Object.assign(new Error("Server shutting down"), { code: "SHUTTING_DOWN" });
+  const queued = renderLimiter.pending;
+  renderLimiter.rejectQueued(qErr);
+  if (queued > 0) {
+    logJson("warn", "shutdown_queued_renders_rejected", { count: queued });
+  }
+
+  const { drained, active } = await renderLimiter.waitForActiveDrain(SHUTDOWN_GRACE_MS);
+  if (!drained) {
+    logJson("error", "shutdown_grace_exceeded", {
+      active,
+      graceMs: SHUTDOWN_GRACE_MS,
+      signal,
+    });
+    process.exit(1);
+    return;
+  }
+
+  logJson("info", "graceful_shutdown_complete", { signal });
+  process.exit(0);
+}
+
+server = app.listen(PORT, "0.0.0.0", () => {
   console.log(`video_engine listening on http://0.0.0.0:${PORT}`);
   console.log(`Public video base: ${PUBLIC_BASE_URL} (set VIDEO_ENGINE_PUBLIC_URL to override)`);
   console.log(
     `Render concurrency: max=${MAX_CONCURRENT_RENDERS} queueDepth=${MAX_QUEUE_DEPTH} ` +
-    `timeout_banner=${RENDER_TIMEOUT_MS / 1000}s timeout_ugc=${UGC_RENDER_TIMEOUT_MS / 1000}s`,
+    `timeout_banner=${RENDER_TIMEOUT_MS / 1000}s timeout_ugc=${UGC_RENDER_TIMEOUT_MS / 1000}s ` +
+    `hung_detect=${ACTIVE_RENDER_HUNG_MS / 1000}s shutdown_grace=${SHUTDOWN_GRACE_MS / 1000}s`,
   );
   console.log(
     `Output cleanup: every ${CLEANUP_INTERVAL_MS / 3600_000}h, files older than ${MAX_OUTPUT_AGE_MS / 3600_000}h`,
@@ -509,3 +694,12 @@ app.listen(PORT, "0.0.0.0", () => {
   cleanupOldOutputs();
   setInterval(cleanupOldOutputs, CLEANUP_INTERVAL_MS).unref();
 });
+
+for (const sig of ["SIGTERM", "SIGINT"]) {
+  process.once(sig, () => {
+    gracefulShutdown(sig).catch((e) => {
+      logJson("error", "graceful_shutdown_failed", { error: serializeErr(e) });
+      process.exit(1);
+    });
+  });
+}

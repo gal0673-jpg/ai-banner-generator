@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react'
 import {
   BANNER_VERTICAL_9_16,
+  bannerCanvasStatesEqual,
   buildPersistSliceFromState,
+  cloneBannerCanvasState,
   contrastingTextColor,
   mergePersistSliceIntoState,
   normalizeBrandHex,
@@ -58,24 +60,56 @@ export const DESIGN3_DEFAULT_BOXES_VERTICAL = {
 
 // ─── Action type constants ────────────────────────────────────────────────────
 
+/** Max snapshots kept in `past` (memory bound). */
+const MAX_UNDO_STACK = 80
+
 /**
- * Exported so `BannerWorkspaceContainer` (and tests) can reference action types
- * without string literals.
- *
- * @type {{ UPDATE_TEXT: string, SET_BULLET_AT: string, UPDATE_BOX: string, UPDATE_STYLE: string, RESET: string }}
+ * @type {{
+ *   UPDATE_TEXT: string,
+ *   SET_BULLET_AT: string,
+ *   UPDATE_BOX: string,
+ *   UPDATE_STYLE: string,
+ *   RESET: string,
+ *   UNDO: string,
+ *   REDO: string,
+ *   COMMIT_BOX_HISTORY_BURST: string,
+ * }}
  */
 export const ACTIONS = Object.freeze({
-  UPDATE_TEXT:   'UPDATE_TEXT',   // { field: 'headline'|'subhead'|'cta', value: string }
-  SET_BULLET_AT: 'SET_BULLET_AT', // { index: number, value: string }
-  UPDATE_BOX:    'UPDATE_BOX',    // { layer: 'logo'|'contentStack', box: BoxRect }
-  UPDATE_STYLE:  'UPDATE_STYLE',  // { field: styleKey, value: any }
-  RESET:         'RESET',         // { state: BannerCanvasState }
+  UPDATE_TEXT:   'UPDATE_TEXT',
+  SET_BULLET_AT: 'SET_BULLET_AT',
+  UPDATE_BOX:    'UPDATE_BOX',
+  UPDATE_STYLE:  'UPDATE_STYLE',
+  RESET:         'RESET',
+  UNDO:          'UNDO',
+  REDO:          'REDO',
+  /** @internal — hook only: commit a debounced box-move burst into `past` */
+  COMMIT_BOX_HISTORY_BURST: 'COMMIT_BOX_HISTORY_BURST',
 })
 
-// ─── Reducer ─────────────────────────────────────────────────────────────────
+/**
+ * @typedef {object} BannerCanvasState
+ * @property {string} headline
+ * @property {string} subhead
+ * @property {string[]} bullets
+ * @property {string} cta
+ * @property {{ logo: object, contentStack: object }} boxes
+ * @property {Record<string, unknown>} style
+ */
 
 /**
- * Pure reducer for banner canvas state.
+ * @typedef {{ past: BannerCanvasState[], present: BannerCanvasState, future: BannerCanvasState[] }} BannerCanvasHistory
+ */
+
+function capPast(past) {
+  if (past.length <= MAX_UNDO_STACK) return past
+  return past.slice(past.length - MAX_UNDO_STACK)
+}
+
+// ─── Reducer (present slice only) ─────────────────────────────────────────────
+
+/**
+ * Pure reducer for banner canvas **present** state (no undo stack).
  * Exported for unit testing — do NOT use directly in components.
  *
  * @param {BannerCanvasState} state
@@ -110,6 +144,83 @@ export function bannerReducer(state, action) {
 
     default:
       return state
+  }
+}
+
+// ─── History wrapper reducer ──────────────────────────────────────────────────
+
+/**
+ * Undo/redo history around {@link bannerReducer}.
+ *
+ * @param {BannerCanvasHistory} history
+ * @param {{ type: string, [k: string]: any }} action
+ * @returns {BannerCanvasHistory}
+ */
+export function bannerHistoryReducer(history, action) {
+  const { past, present, future } = history
+
+  switch (action.type) {
+    case ACTIONS.UNDO: {
+      if (!past.length) return history
+      const previous = past[past.length - 1]
+      return {
+        past: past.slice(0, -1),
+        present: previous,
+        future: [cloneBannerCanvasState(present), ...future],
+      }
+    }
+    case ACTIONS.REDO: {
+      if (!future.length) return history
+      const [next, ...restFuture] = future
+      return {
+        past: capPast([...past, cloneBannerCanvasState(present)]),
+        present: next,
+        future: restFuture,
+      }
+    }
+    case ACTIONS.RESET:
+      return {
+        past: [],
+        present: action.state,
+        future: [],
+      }
+
+    case ACTIONS.COMMIT_BOX_HISTORY_BURST: {
+      const snap = action.snapshot
+      if (!snap) return history
+      if (bannerCanvasStatesEqual(snap, present)) {
+        return { ...history, future: [] }
+      }
+      return {
+        past: capPast([...past, cloneBannerCanvasState(snap)]),
+        present,
+        future: [],
+      }
+    }
+
+    case ACTIONS.UPDATE_BOX:
+      if (action.skipPast) {
+        return {
+          past,
+          present: bannerReducer(present, action),
+          future: [],
+        }
+      }
+      return {
+        past: capPast([...past, cloneBannerCanvasState(present)]),
+        present: bannerReducer(present, action),
+        future: [],
+      }
+
+    default: {
+      const nextPresent = bannerReducer(present, action)
+      if (nextPresent === present) return history
+      return {
+        past: capPast([...past, cloneBannerCanvasState(present)]),
+        present: nextPresent,
+        future: [],
+      }
+    }
   }
 }
 
@@ -152,6 +263,9 @@ function buildInitialState({ headlineInitial, subheadInitial, bulletPoints, ctaI
     : base
 }
 
+/** Quiet period after the last `UPDATE_BOX` before a burst is committed to `past`. */
+const BOX_HISTORY_DEBOUNCE_MS = 400
+
 // ─── Hook ─────────────────────────────────────────────────────────────────────
 
 /**
@@ -190,21 +304,31 @@ export function useBannerCanvasState({
   persistDesignKey,
   defaults,
 }) {
-  // ── Reducer ───────────────────────────────────────────────────────────────
-  const [state, dispatch] = useReducer(
-    bannerReducer,
+  const [historyState, dispatch] = useReducer(
+    bannerHistoryReducer,
     undefined,
-    () => buildInitialState({ headlineInitial, subheadInitial, bulletPoints, ctaInitial, defaults, brandColor, savedCanvasSlice }),
+    () => ({
+      past: [],
+      present: buildInitialState({
+        headlineInitial,
+        subheadInitial,
+        bulletPoints,
+        ctaInitial,
+        defaults,
+        brandColor,
+        savedCanvasSlice,
+      }),
+      future: [],
+    }),
   )
 
-  // ── Transient UI state (not persisted) ────────────────────────────────────
   const [draggingKey, setDraggingKey] = useState(null)
 
-  // ── Always-fresh refs (synchronised inline, no useEffect lag) ────────────
-  // Reading props via refs in the persist callback avoids closure staleness
-  // and eliminates the need to list them as useCallback dependencies.
-  const stateRef            = useRef(state)
-  stateRef.current          = state
+  const historyRef = useRef(historyState)
+  historyRef.current = historyState
+
+  const stateRef = useRef(historyState.present)
+  stateRef.current = historyState.present
 
   const onPersistRef        = useRef(onPersist)
   onPersistRef.current      = onPersist
@@ -218,15 +342,14 @@ export function useBannerCanvasState({
   const brandColorRef       = useRef(brandColor)
   brandColorRef.current     = brandColor
 
-  // AbortController for the in-flight PATCH request.
-  // Replaced on every flush so stale responses are automatically discarded.
   const abortControllerRef  = useRef(null)
 
-  // ── Persist callback (stable — reads everything via refs) ────────────────
+  /** Snapshot of `present` at the start of a rapid `UPDATE_BOX` burst (debounced into one undo step). */
+  const pendingBoxBurstSnapshotRef = useRef(null)
+
   const persistCallback = useCallback(() => {
     if (!onPersistRef.current || !taskIdRef.current) return
 
-    // Cancel the previous in-flight PATCH before issuing a new one.
     if (abortControllerRef.current) abortControllerRef.current.abort()
     const controller = new AbortController()
     abortControllerRef.current = controller
@@ -245,25 +368,42 @@ export function useBannerCanvasState({
       },
       controller.signal,
     )
-  }, []) // stable — all reads go through refs
+  }, [])
 
-  // ── Debounced persist (1 s quiet window) ─────────────────────────────────
   const { schedule: schedulePersist } = useDebouncedCallback(persistCallback, 1000)
 
-  // ── Combined dispatch + debounce schedule ─────────────────────────────────
-  // Preferred API in BannerWorkspaceContainer — replaces the (setter + schedulePersist) pairs.
+  const flushPendingBoxBurstToPast = useCallback(() => {
+    const snap = pendingBoxBurstSnapshotRef.current
+    if (snap === null) return
+    pendingBoxBurstSnapshotRef.current = null
+    dispatch({ type: ACTIONS.COMMIT_BOX_HISTORY_BURST, snapshot: snap })
+  }, [dispatch])
+
+  const {
+    schedule: scheduleBoxHistoryCommit,
+    flush: flushBoxHistoryDebounce,
+    cancel: cancelBoxHistoryCommit,
+  } = useDebouncedCallback(flushPendingBoxBurstToPast, BOX_HISTORY_DEBOUNCE_MS)
+
   const dispatchAndPersist = useCallback(
     (action) => {
+      flushBoxHistoryDebounce()
       dispatch(action)
       schedulePersist()
     },
-    [schedulePersist],
+    [dispatch, flushBoxHistoryDebounce, schedulePersist],
   )
 
-  // ── Reset state when the task or its server data changes ──────────────────
-  // Using derived string keys (`bulletsKey`, `savedSliceKey`) rather than the
-  // raw arrays/objects prevents spurious resets when the parent re-renders
-  // with a new array reference but identical content.
+  const undo = useCallback(() => {
+    flushBoxHistoryDebounce()
+    dispatch({ type: ACTIONS.UNDO })
+  }, [dispatch, flushBoxHistoryDebounce])
+
+  const redo = useCallback(() => {
+    flushBoxHistoryDebounce()
+    dispatch({ type: ACTIONS.REDO })
+  }, [dispatch, flushBoxHistoryDebounce])
+
   const bulletsKey    = bulletPoints    ? JSON.stringify(bulletPoints)    : ''
   const savedSliceKey = useMemo(
     () => (savedCanvasSlice && typeof savedCanvasSlice === 'object' ? JSON.stringify(savedCanvasSlice) : ''),
@@ -271,6 +411,8 @@ export function useBannerCanvasState({
   )
 
   useEffect(() => {
+    cancelBoxHistoryCommit()
+    pendingBoxBurstSnapshotRef.current = null
     dispatch({
       type: ACTIONS.RESET,
       state: buildInitialState({
@@ -292,55 +434,55 @@ export function useBannerCanvasState({
     subheadInitial,
     ctaInitial,
     brandColor,
-    persistDesignKey, // changes with aspect-ratio switch (e.g. 'design2' → 'design2_vertical')
-    defaults,         // new box defaults when aspect-ratio changes
-    // bulletPoints / savedCanvasSlice are intentionally excluded — their
-    // serialised keys above are the actual change detectors.
+    persistDesignKey,
+    defaults,
+    cancelBoxHistoryCommit,
+    dispatch,
     // eslint-disable-next-line react-hooks/exhaustive-deps
   ])
 
-  // ── Stable box setters ────────────────────────────────────────────────────
-  // BannerLayer / canvasUtils call setBox with a functional-updater:
-  //   setLogoBox((prev) => ({ ...prev, x: newX, y: newY }))
-  // These wrappers resolve the updater synchronously via stateRef so the
-  // dispatch can carry a plain value (reducers must not hold functions).
   const makeBoxSetter = useCallback(
-    (layer) => (updaterOrValue) =>
+    (layer) => (updaterOrValue) => {
+      const present = historyRef.current.present
+      if (pendingBoxBurstSnapshotRef.current === null) {
+        pendingBoxBurstSnapshotRef.current = cloneBannerCanvasState(present)
+      }
+      const box =
+        typeof updaterOrValue === 'function'
+          ? updaterOrValue(present.boxes[layer])
+          : updaterOrValue
       dispatch({
         type: ACTIONS.UPDATE_BOX,
         layer,
-        box: typeof updaterOrValue === 'function'
-          ? updaterOrValue(stateRef.current.boxes[layer])
-          : updaterOrValue,
-      }),
-    [],
+        box,
+        skipPast: true,
+      })
+      scheduleBoxHistoryCommit()
+    },
+    [dispatch, scheduleBoxHistoryCommit],
   )
 
-  // Memoised once — stable references for the lifetime of the hook instance.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const setLogoBox          = useMemo(() => makeBoxSetter('logo'),         [makeBoxSetter])
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const setContentStackBox  = useMemo(() => makeBoxSetter('contentStack'), [makeBoxSetter])
 
-  // ── setBulletAt convenience ───────────────────────────────────────────────
   const setBulletAt = useCallback(
     (index, value) => dispatchAndPersist({ type: ACTIONS.SET_BULLET_AT, index, value }),
     [dispatchAndPersist],
   )
 
-  // ── Return ────────────────────────────────────────────────────────────────
+  const state = historyState.present
+
   return {
-    // ── Text reads
     headline: state.headline,
     subhead:  state.subhead,
     bullets:  state.bullets,
     cta:      state.cta,
 
-    // ── Box reads
     logoBox:         state.boxes.logo,
     contentStackBox: state.boxes.contentStack,
 
-    // ── Style reads
     headlineFs:    state.style.headlineFs,
     headlineAlign: state.style.headlineAlign,
     headlineColor: state.style.headlineColor,
@@ -354,27 +496,29 @@ export function useBannerCanvasState({
     ctaAlign:      state.style.ctaAlign,
     ctaColor:      state.style.ctaColor,
 
-    // ── Transient
     draggingKey,
     setDraggingKey,
 
-    // ── Action dispatch
     dispatch,
 
-    /**
-     * Dispatch an action AND schedule a debounced persist in one call.
-     * Use this instead of the legacy `setter(v); schedulePersist()` pattern.
-     */
     dispatchAndPersist,
 
-    // ── Stable box setters (support functional-updater form)
     setLogoBox,
     setContentStackBox,
 
-    // ── Persist
     schedulePersist,
 
-    // ── Bullet convenience
+    /** Flush debounced box history immediately (call on drag/resize end before persist). */
+    flushBoxGestureHistory: flushBoxHistoryDebounce,
+
     setBulletAt,
+
+    undo,
+    redo,
+
+    /** Whether undo is available (for UI affordances). */
+    canUndo: historyState.past.length > 0,
+    /** Whether redo is available. */
+    canRedo: historyState.future.length > 0,
   }
 }

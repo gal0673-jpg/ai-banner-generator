@@ -2,9 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import api, { API_BASE_URL, API_BASE_URL_DISPLAY, toAbsoluteApiUrl } from './api.js'
 import { useAuth } from './AuthContext.jsx'
-import BannerCanvas from './BannerCanvas.jsx'
-import BannerCanvas2 from './BannerCanvas2.jsx'
-import BannerCanvas3 from './BannerCanvas3.jsx'
+import DynamicBannerCanvas from './DynamicBannerCanvas.jsx'
+import { useTaskWebSocket } from './useTaskWebSocket.js'
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
 
@@ -161,7 +160,6 @@ export default function BannerWorkspace() {
   const [aiContextErr,  setAiContextErr]  = useState(null)
   const [activeDesign,  setActiveDesign]  = useState(1)
   const [videoRenderError, setVideoRenderError] = useState(null)
-  const [sseBump, setSseBump] = useState(0)
   const [videoHook,        setVideoHook]        = useState('')
   const [latestRestoreNonce, setLatestRestoreNonce] = useState(0)
   const [skipLatestRestore, setSkipLatestRestore] = useState(readSkipLatestRestoreFlag)
@@ -185,7 +183,6 @@ export default function BannerWorkspace() {
   const hookSyncedForTask = useRef(null)
   const taskIdRef = useRef(null)
   const terminalRef = useRef(false)
-  const sseTerminalRef = useRef(false)
 
   useEffect(() => {
     taskIdRef.current = taskId
@@ -295,7 +292,6 @@ export default function BannerWorkspace() {
     setUgcError(null)
     setVideoRenderError(null)
     hookSyncedForTask.current = null
-    setSseBump((n) => n + 1)
   }, [])
 
   const reconnectLatestTask = useCallback(() => {
@@ -311,54 +307,12 @@ export default function BannerWorkspace() {
     setLatestRestoreNonce((n) => n + 1)
   }, [])
 
-  // Poll on an interval whenever a task is loaded (covers banner pipeline, async video render, and SSE gaps).
   useEffect(() => {
-    if (!taskId) return undefined
-    const tick = async () => {
-      try {
-        const { data } = await api.get(`/status/${taskId}`)
-        setStatusPayload(data)
-      } catch {
-        /* ignore */
-      }
-    }
-    void tick()
-    const id = setInterval(tick, 4000)
-    return () => clearInterval(id)
+    if (!taskId) setStatusPayload(null)
   }, [taskId])
 
-  useEffect(() => {
-    if (!taskId) {
-      setStatusPayload(null)
-      sseTerminalRef.current = false
-      return undefined
-    }
-
-    sseTerminalRef.current = false
-    // EventSource only accepts a URL; credentials follow same-origin rules (Vite proxy → cookies OK).
-    const ssePath = `${API_BASE_URL}/status/${taskId}/stream`
-    const sse = new EventSource(ssePath)
-
-    sse.onmessage = (event) => {
-      try {
-        const data = JSON.parse(event.data)
-        setStatusPayload(data)
-        if (data.status === 'failed') {
-          sseTerminalRef.current = true
-          sse.close()
-        }
-      } catch {
-        // ignore malformed frames
-      }
-    }
-
-    sse.onerror = () => {
-      if (sseTerminalRef.current) return
-      // Do not close() or mark failed: let the browser reconnect, and polling covers gaps.
-    }
-
-    return () => { sse.close() }
-  }, [taskId, sseBump])
+  // Real-time status updates via WebSocket (falls back to polling automatically).
+  useTaskWebSocket(taskId, setStatusPayload)
 
   // Initialise videoHook from the server value exactly once per task (when the
   // task first arrives in a completed state).  After that we leave local state
@@ -427,7 +381,6 @@ export default function BannerWorkspace() {
               }
             : p,
         )
-        setSseBump((n) => n + 1)
       }
     } catch (err) {
       setVideoRenderError(axiosErrorMessage(err))
@@ -613,7 +566,6 @@ export default function BannerWorkspace() {
     setUgcPendingAspectRatio(targetAspect)
     try {
       await api.post(`/tasks/${taskId}/ugc/re-render`, { aspect_ratio: targetAspect })
-      setSseBump((n) => n + 1)
     } catch (err) {
       setUgcRerenderError(axiosErrorMessage(err))
       setUgcPendingAspectRatio(null)
@@ -1396,179 +1348,86 @@ export default function BannerWorkspace() {
                       />
                     </div>
 
-                    {/* Design 1 */}
-                    {activeDesign === 1 && (
-                      <div className="grid grid-cols-1 xl:grid-cols-2 gap-8">
-                        <div>
-                          <h3 className="text-center text-sm font-medium text-slate-500 dark:text-slate-400 mb-3">
-                            Feed (1:1)
-                          </h3>
-                          <div className="rounded-2xl border border-slate-200 dark:border-slate-700 shadow-2xl">
-                            <BannerCanvas
-                              key={`${taskId}-d1-11`}
-                              apiBase={API_BASE_URL}
-                              taskId={taskId}
-                              backgroundUrl={statusPayload.background_url}
-                              logoUrl={statusPayload.logo_url}
-                              headline={statusPayload.headline}
-                              subhead={statusPayload.subhead}
-                              bulletPoints={statusPayload.bullet_points}
-                              cta={statusPayload.cta}
-                              brandColor={statusPayload.brand_color}
-                              siteUrl={url}
-                              savedCanvasSlice={statusPayload.canvas_state?.design1 ?? null}
-                              onPersist={handleTaskPersist}
-                              onRenderVideo={handleRenderVideo11}
-                              isRenderingVideo={videoRendering}
-                              videoRenderingHint={VIDEO_RENDERING_HINT}
-                              aspectRatio="1:1"
-                            />
-                          </div>
-                        </div>
-                        <div>
-                          <h3 className="text-center text-sm font-medium text-slate-500 dark:text-slate-400 mb-3">
-                            Story / Reels (9:16)
-                          </h3>
-                          <div className="rounded-2xl border border-slate-200 dark:border-slate-700 shadow-2xl">
-                            <BannerCanvas
-                              key={`${taskId}-d1-916`}
-                              apiBase={API_BASE_URL}
-                              taskId={taskId}
-                              backgroundUrl={statusPayload.background_url}
-                              logoUrl={statusPayload.logo_url}
-                              headline={statusPayload.headline}
-                              subhead={statusPayload.subhead}
-                              bulletPoints={statusPayload.bullet_points}
-                              cta={statusPayload.cta}
-                              brandColor={statusPayload.brand_color}
-                              siteUrl={url}
-                              savedCanvasSlice={statusPayload.canvas_state?.design1_vertical ?? null}
-                              onPersist={handleTaskPersist}
-                              onRenderVideo={handleRenderVideo916}
-                              isRenderingVideo={videoRendering}
-                              videoRenderingHint={VIDEO_RENDERING_HINT}
-                              aspectRatio="9:16"
-                            />
-                          </div>
+                    <div className="grid grid-cols-1 xl:grid-cols-2 gap-8">
+                      <div>
+                        <h3 className="text-center text-sm font-medium text-slate-500 dark:text-slate-400 mb-3">
+                          Feed (1:1)
+                        </h3>
+                        <div
+                          className={`rounded-2xl border shadow-2xl ${
+                            activeDesign === 2
+                              ? 'border-slate-800'
+                              : 'border-slate-200 dark:border-slate-700'
+                          }`}
+                        >
+                          <DynamicBannerCanvas
+                            key={`${taskId}-d${activeDesign}-11`}
+                            designType={activeDesign}
+                            apiBase={API_BASE_URL}
+                            taskId={taskId}
+                            backgroundUrl={statusPayload.background_url}
+                            logoUrl={statusPayload.logo_url}
+                            headline={statusPayload.headline}
+                            subhead={statusPayload.subhead}
+                            bulletPoints={statusPayload.bullet_points}
+                            cta={statusPayload.cta}
+                            brandColor={statusPayload.brand_color}
+                            siteUrl={url}
+                            savedCanvasSlice={
+                              activeDesign === 1
+                                ? statusPayload.canvas_state?.design1 ?? null
+                                : activeDesign === 2
+                                  ? statusPayload.canvas_state?.design2 ?? null
+                                  : statusPayload.canvas_state?.design3 ?? null
+                            }
+                            onPersist={handleTaskPersist}
+                            onRenderVideo={handleRenderVideo11}
+                            isRenderingVideo={videoRendering}
+                            videoRenderingHint={VIDEO_RENDERING_HINT}
+                            aspectRatio="1:1"
+                          />
                         </div>
                       </div>
-                    )}
-
-                    {/* Design 2 */}
-                    {activeDesign === 2 && (
-                      <div className="grid grid-cols-1 xl:grid-cols-2 gap-8">
-                        <div>
-                          <h3 className="text-center text-sm font-medium text-slate-500 dark:text-slate-400 mb-3">
-                            Feed (1:1)
-                          </h3>
-                          <div className="rounded-2xl border border-slate-800 shadow-2xl">
-                            <BannerCanvas2
-                              key={`${taskId}-d2-11`}
-                              apiBase={API_BASE_URL}
-                              taskId={taskId}
-                              backgroundUrl={statusPayload.background_url}
-                              logoUrl={statusPayload.logo_url}
-                              headline={statusPayload.headline}
-                              subhead={statusPayload.subhead}
-                              bulletPoints={statusPayload.bullet_points}
-                              cta={statusPayload.cta}
-                              brandColor={statusPayload.brand_color}
-                              siteUrl={url}
-                              savedCanvasSlice={statusPayload.canvas_state?.design2 ?? null}
-                              onPersist={handleTaskPersist}
-                              onRenderVideo={handleRenderVideo11}
-                              isRenderingVideo={videoRendering}
-                              videoRenderingHint={VIDEO_RENDERING_HINT}
-                              aspectRatio="1:1"
-                            />
-                          </div>
-                        </div>
-                        <div>
-                          <h3 className="text-center text-sm font-medium text-slate-500 dark:text-slate-400 mb-3">
-                            Story / Reels (9:16)
-                          </h3>
-                          <div className="rounded-2xl border border-slate-800 shadow-2xl">
-                            <BannerCanvas2
-                              key={`${taskId}-d2-916`}
-                              apiBase={API_BASE_URL}
-                              taskId={taskId}
-                              backgroundUrl={statusPayload.background_url}
-                              logoUrl={statusPayload.logo_url}
-                              headline={statusPayload.headline}
-                              subhead={statusPayload.subhead}
-                              bulletPoints={statusPayload.bullet_points}
-                              cta={statusPayload.cta}
-                              brandColor={statusPayload.brand_color}
-                              siteUrl={url}
-                              savedCanvasSlice={statusPayload.canvas_state?.design2_vertical ?? null}
-                              onPersist={handleTaskPersist}
-                              onRenderVideo={handleRenderVideo916}
-                              isRenderingVideo={videoRendering}
-                              videoRenderingHint={VIDEO_RENDERING_HINT}
-                              aspectRatio="9:16"
-                            />
-                          </div>
+                      <div>
+                        <h3 className="text-center text-sm font-medium text-slate-500 dark:text-slate-400 mb-3">
+                          Story / Reels (9:16)
+                        </h3>
+                        <div
+                          className={`rounded-2xl border shadow-2xl ${
+                            activeDesign === 2
+                              ? 'border-slate-800'
+                              : 'border-slate-200 dark:border-slate-700'
+                          }`}
+                        >
+                          <DynamicBannerCanvas
+                            key={`${taskId}-d${activeDesign}-916`}
+                            designType={activeDesign}
+                            apiBase={API_BASE_URL}
+                            taskId={taskId}
+                            backgroundUrl={statusPayload.background_url}
+                            logoUrl={statusPayload.logo_url}
+                            headline={statusPayload.headline}
+                            subhead={statusPayload.subhead}
+                            bulletPoints={statusPayload.bullet_points}
+                            cta={statusPayload.cta}
+                            brandColor={statusPayload.brand_color}
+                            siteUrl={url}
+                            savedCanvasSlice={
+                              activeDesign === 1
+                                ? statusPayload.canvas_state?.design1_vertical ?? null
+                                : activeDesign === 2
+                                  ? statusPayload.canvas_state?.design2_vertical ?? null
+                                  : statusPayload.canvas_state?.design3_vertical ?? null
+                            }
+                            onPersist={handleTaskPersist}
+                            onRenderVideo={handleRenderVideo916}
+                            isRenderingVideo={videoRendering}
+                            videoRenderingHint={VIDEO_RENDERING_HINT}
+                            aspectRatio="9:16"
+                          />
                         </div>
                       </div>
-                    )}
-
-                    {/* Design 3 */}
-                    {activeDesign === 3 && (
-                      <div className="grid grid-cols-1 xl:grid-cols-2 gap-8">
-                        <div>
-                          <h3 className="text-center text-sm font-medium text-slate-500 dark:text-slate-400 mb-3">
-                            Feed (1:1)
-                          </h3>
-                          <div className="rounded-2xl border border-slate-200 shadow-2xl">
-                            <BannerCanvas3
-                              key={`${taskId}-d3-11`}
-                              apiBase={API_BASE_URL}
-                              taskId={taskId}
-                              backgroundUrl={statusPayload.background_url}
-                              logoUrl={statusPayload.logo_url}
-                              headline={statusPayload.headline}
-                              subhead={statusPayload.subhead}
-                              bulletPoints={statusPayload.bullet_points}
-                              cta={statusPayload.cta}
-                              brandColor={statusPayload.brand_color}
-                              siteUrl={url}
-                              savedCanvasSlice={statusPayload.canvas_state?.design3 ?? null}
-                              onPersist={handleTaskPersist}
-                              onRenderVideo={handleRenderVideo11}
-                              isRenderingVideo={videoRendering}
-                              videoRenderingHint={VIDEO_RENDERING_HINT}
-                              aspectRatio="1:1"
-                            />
-                          </div>
-                        </div>
-                        <div>
-                          <h3 className="text-center text-sm font-medium text-slate-500 dark:text-slate-400 mb-3">
-                            Story / Reels (9:16)
-                          </h3>
-                          <div className="rounded-2xl border border-slate-200 shadow-2xl">
-                            <BannerCanvas3
-                              key={`${taskId}-d3-916`}
-                              apiBase={API_BASE_URL}
-                              taskId={taskId}
-                              backgroundUrl={statusPayload.background_url}
-                              logoUrl={statusPayload.logo_url}
-                              headline={statusPayload.headline}
-                              subhead={statusPayload.subhead}
-                              bulletPoints={statusPayload.bullet_points}
-                              cta={statusPayload.cta}
-                              brandColor={statusPayload.brand_color}
-                              siteUrl={url}
-                              savedCanvasSlice={statusPayload.canvas_state?.design3_vertical ?? null}
-                              onPersist={handleTaskPersist}
-                              onRenderVideo={handleRenderVideo916}
-                              isRenderingVideo={videoRendering}
-                              videoRenderingHint={VIDEO_RENDERING_HINT}
-                              aspectRatio="9:16"
-                            />
-                          </div>
-                        </div>
-                      </div>
-                    )}
+                    </div>
                   </div>
 
                   {videoRenderError && (

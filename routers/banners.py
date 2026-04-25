@@ -16,7 +16,7 @@ from starlette.responses import StreamingResponse
 
 from auth import get_current_user
 from database import SessionLocal, get_db
-from models import BannerTask, User
+from models import BannerTask, UgcVideoData, User
 from schemas import (
     GenerateRequest,
     GenerateUGCRequest,
@@ -28,19 +28,16 @@ from services.banner_service import (
     TASKS_DIR,
     banner_task_status_dict,
     ensure_tasks_dir,
+    get_creative_for_write,
+    get_ugc_for_write,
     merge_canvas_state,
     persist_task,
+    persist_video_task_state,
     rendered_banner_urls_for_task,
 )
 from services.url_display import normalize_website_display
 from services.video_service import public_api_base, video_payload_for_engine
-from worker_tasks import (
-    persist_video_task_state,
-    re_render_ugc_task,
-    render_video_task,
-    run_banner_task,
-    run_ugc_task,
-)
+from worker_tasks import re_render_ugc_task, render_video_task, run_banner_task, run_ugc_task
 
 router = APIRouter(tags=["banners"])
 
@@ -72,23 +69,6 @@ def generate(
         url=url,
         brief=brief,
         error=None,
-        headline=None,
-        subhead=None,
-        bullet_points=None,
-        cta=None,
-        video_hook=None,
-        brand_color=None,
-        background_url=None,
-        logo_url=None,
-        rendered_banner_1_url=None,
-        rendered_banner_2_url=None,
-        canvas_state=None,
-        video_url_1=None,
-        video_url_2=None,
-        rendered_banner_1_vertical_url=None,
-        rendered_banner_2_vertical_url=None,
-        video_url_1_vertical=None,
-        video_url_2_vertical=None,
     )
     db.add(row)
     db.commit()
@@ -142,29 +122,15 @@ def generate_ugc(
         task_kind="ugc_legacy",
         url=url,
         brief=brief,
+        error=None,
+    )
+    ugc_row = UgcVideoData(
+        banner_task_id=task_id,
         ugc_avatar_id=avatar_id,
         ugc_website_display=website_disp,
         ugc_status="pending",
-        # Banner-pipeline fields are not used for UGC tasks; left null.
-        error=None,
-        headline=None,
-        subhead=None,
-        bullet_points=None,
-        cta=None,
-        video_hook=None,
-        brand_color=None,
-        background_url=None,
-        logo_url=None,
-        rendered_banner_1_url=None,
-        rendered_banner_2_url=None,
-        canvas_state=None,
-        video_url_1=None,
-        video_url_2=None,
-        rendered_banner_1_vertical_url=None,
-        rendered_banner_2_vertical_url=None,
-        video_url_1_vertical=None,
-        video_url_2_vertical=None,
     )
+    row.ugc_video = ugc_row
     db.add(row)
     db.commit()
 
@@ -245,42 +211,46 @@ def ugc_re_render(
     if not current_user.is_superuser and row.user_id != current_user.id:
         raise HTTPException(status_code=404, detail="Unknown task_id")
 
-    raw = (row.ugc_raw_video_url or "").strip()
+    ugc = row.ugc_video
+    raw = ((ugc.ugc_raw_video_url if ugc else None) or "").strip()
     if not raw:
         raise HTTPException(
             status_code=400,
             detail="No ugc_raw_video_url on this task; nothing to re-render from.",
         )
-    if row.ugc_status == "rendering_captions":
+    if ugc and ugc.ugc_status == "rendering_captions":
         raise HTTPException(
             status_code=409,
             detail="A caption render is already in progress for this task.",
         )
 
+    ugc_w = get_ugc_for_write(db, row)
+    creative = get_creative_for_write(db, row)
+
     patch = body.model_dump(exclude_unset=True)
     if "ugc_script" in patch:
-        row.ugc_script = patch["ugc_script"]
+        ugc_w.ugc_script = patch["ugc_script"]
     if "brand_color" in patch:
         bc = patch["brand_color"]
         if bc is None or (isinstance(bc, str) and not str(bc).strip()):
-            row.brand_color = None
+            creative.brand_color = None
         else:
             s = str(bc).strip()
             if not _BRAND_HEX.match(s):
                 raise HTTPException(status_code=400, detail="brand_color must be #RRGGBB hex.")
-            row.brand_color = s.upper()
+            creative.brand_color = s.upper()
     if "logo_url" in patch:
         lu = patch["logo_url"]
-        row.logo_url = (str(lu).strip() or None) if lu is not None else None
+        creative.logo_url = (str(lu).strip() or None) if lu is not None else None
     if "product_image_url" in patch:
         pi = patch["product_image_url"]
-        row.product_image_url = (str(pi).strip() or None) if pi is not None else None
+        creative.product_image_url = (str(pi).strip() or None) if pi is not None else None
     if "speed_factor" in patch:
-        row.ugc_speed_factor = patch["speed_factor"]
+        ugc_w.ugc_speed_factor = patch["speed_factor"]
 
     _style_patch_keys = ("caption_animation", "caption_position", "caption_font")
     if any(k in patch for k in _style_patch_keys):
-        base = row.ugc_script if isinstance(row.ugc_script, dict) else {}
+        base = ugc_w.ugc_script if isinstance(ugc_w.ugc_script, dict) else {}
         style = dict(base.get("style") or {})
         if "caption_animation" in patch:
             v = patch["caption_animation"]
@@ -294,10 +264,10 @@ def ugc_re_render(
             v = patch["caption_font"]
             if v is not None:
                 style["font"] = v
-        row.ugc_script = {**base, "style": style}
+        ugc_w.ugc_script = {**base, "style": style}
 
-    row.ugc_status = "rendering_captions"
-    row.ugc_error = None
+    ugc_w.ugc_status = "rendering_captions"
+    ugc_w.ugc_error = None
     db.commit()
 
     try:
@@ -426,31 +396,32 @@ def patch_task(
             detail="Task can only be edited after it is completed.",
         )
 
+    creative = get_creative_for_write(db, row)
     if body.headline is not None:
-        row.headline = body.headline.strip() or None
+        creative.headline = body.headline.strip() or None
     if body.subhead is not None:
-        row.subhead = body.subhead.strip() or None
+        creative.subhead = body.subhead.strip() or None
     if body.cta is not None:
-        row.cta = body.cta.strip() or None
+        creative.cta = body.cta.strip() or None
     if body.bullet_points is not None:
-        row.bullet_points = body.bullet_points
+        creative.bullet_points = body.bullet_points
     if body.video_hook is not None:
-        row.video_hook = body.video_hook.strip() or None
+        creative.video_hook = body.video_hook.strip() or None
 
     if body.canvas_state is not None:
-        row.canvas_state = merge_canvas_state(row.canvas_state, body.canvas_state)
+        creative.canvas_state = merge_canvas_state(creative.canvas_state, body.canvas_state)
 
     db.commit()
     db.refresh(row)
 
     return {
         "task_id": task_id,
-        "headline": row.headline,
-        "subhead": row.subhead,
-        "bullet_points": row.bullet_points,
-        "cta": row.cta,
-        "video_hook": row.video_hook,
-        "canvas_state": row.canvas_state,
+        "headline": creative.headline,
+        "subhead": creative.subhead,
+        "bullet_points": creative.bullet_points,
+        "cta": creative.cta,
+        "video_hook": creative.video_hook,
+        "canvas_state": creative.canvas_state,
     }
 
 
@@ -477,7 +448,8 @@ def render_task_video(
             status_code=409,
             detail="Task must be completed before rendering video.",
         )
-    if row.video_status == "processing":
+    creative = get_creative_for_write(db, row)
+    if creative.video_status == "processing":
         raise HTTPException(
             status_code=409,
             detail="Video render is already in progress for this task.",
@@ -491,8 +463,8 @@ def render_task_video(
     if not payload["background_url"]:
         raise HTTPException(status_code=400, detail="background_url is missing for this task.")
 
-    row.video_status = "processing"
-    row.video_render_error = None
+    creative.video_status = "processing"
+    creative.video_render_error = None
     db.commit()
 
     try:
@@ -533,14 +505,15 @@ def reset_stuck_video_render(
         raise HTTPException(status_code=404, detail="Unknown task_id")
     if row.status != "completed":
         raise HTTPException(status_code=409, detail="Task must be completed.")
-    if row.video_status != "processing":
+    creative = get_creative_for_write(db, row)
+    if creative.video_status != "processing":
         raise HTTPException(
             status_code=409,
             detail="Video render is not marked as processing; nothing to reset.",
         )
 
-    row.video_status = None
-    row.video_render_error = None
+    creative.video_status = None
+    creative.video_render_error = None
     db.commit()
     db.refresh(row)
     return banner_task_status_dict(task_id, row)

@@ -69,22 +69,24 @@ def absolute_asset_url(public_base: str, path: str | None) -> str:
 
 def banner_video_payload(row: BannerTask, design: int, public_base: str, aspect_ratio: str = "1:1") -> dict[str, Any]:
     """Merge DB columns with canvas_state (design1/design2/vertical); slice wins when a key is present."""
-    sl = pick_canvas_slice(row.canvas_state, design, aspect_ratio)
-    headline = _prefer_slice_str(sl, "headline", row.headline)
-    subhead = _prefer_slice_str(sl, "subhead", row.subhead)
-    cta = _prefer_slice_str(sl, "cta", row.cta)
-    bullet_points = _prefer_slice_bullets(sl, row.bullet_points)
+    c = row.creative
+    canvas_state = c.canvas_state if c else None
+    sl = pick_canvas_slice(canvas_state, design, aspect_ratio)
+    headline = _prefer_slice_str(sl, "headline", c.headline if c else None)
+    subhead = _prefer_slice_str(sl, "subhead", c.subhead if c else None)
+    cta = _prefer_slice_str(sl, "cta", c.cta if c else None)
+    bullet_points = _prefer_slice_bullets(sl, c.bullet_points if c else None)
     bc_sl = sl.get("brand_color")
     if isinstance(bc_sl, str) and bc_sl.strip():
         brand_color = bc_sl.strip()
     else:
-        brand_color = (row.brand_color or "#2563eb").strip() or "#2563eb"
+        brand_color = ((c.brand_color if c else None) or "#2563eb").strip() or "#2563eb"
     if not brand_color.startswith("#"):
         brand_color = "#" + brand_color
 
-    background_url = absolute_asset_url(public_base, row.background_url)
-    logo_url = absolute_asset_url(public_base, row.logo_url)
-    video_hook = _prefer_slice_str(sl, "video_hook", row.video_hook)
+    background_url = absolute_asset_url(public_base, c.background_url if c else None)
+    logo_url = absolute_asset_url(public_base, c.logo_url if c else None)
+    video_hook = _prefer_slice_str(sl, "video_hook", c.video_hook if c else None)
 
     return {
         "headline": headline,
