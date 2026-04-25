@@ -34,6 +34,56 @@ from services.video_service import video_engine_render_url, video_payload_for_en
 logger = logging.getLogger(__name__)
 
 
+def _enrich_ugc_script_split_gallery_dalle(
+    ugc_script: dict,
+    task_id: str,
+    work_dir: str | os.PathLike[str],
+    log_name: str,
+) -> None:
+    """Fill ``layout_data.image_urls`` for ``split_gallery`` scenes; mutates *ugc_script* in place.
+
+    On API/disk errors, logs and leaves Hebrew ``images`` only (same behavior as
+    ``task_crawl_and_script``).
+    """
+    from services.ugc_service import generate_split_gallery_images
+
+    try:
+        for scene in ugc_script.get("scenes") or []:
+            if scene.get("visual_layout") != "split_gallery":
+                continue
+            layout_data = scene.get("layout_data")
+            if not isinstance(layout_data, dict):
+                continue
+            hebrew_imgs = layout_data.get("images")
+            if not isinstance(hebrew_imgs, list):
+                continue
+            sn = scene.get("scene_number")
+            stem = f"split_gallery_s{sn}" if isinstance(sn, int) else "split_gallery"
+            try:
+                layout_data["image_urls"] = generate_split_gallery_images(
+                    hebrew_imgs,
+                    task_id,
+                    work_dir,
+                    name_prefix=stem,
+                )
+            except Exception as one_scene_exc:
+                logger.warning(
+                    "[%s] task_id=%s  split_gallery scene=%s  "
+                    "image generation failed (keeping Hebrew labels only): %s",
+                    log_name,
+                    task_id,
+                    sn,
+                    one_scene_exc,
+                )
+    except Exception as exc:
+        logger.warning(
+            "[%s] task_id=%s  split_gallery image pass failed: %s",
+            log_name,
+            task_id,
+            exc,
+        )
+
+
 def _finalize_ugc_with_composite(
     task_uuid: uuid.UUID,
     task_id: str,
@@ -592,10 +642,7 @@ def task_crawl_and_script(
     chain signature from ``run_ugc_task``; they are not used here (next link reads DB).
     """
     import ugc_director
-    from services.ugc_service import (
-        combined_spoken_text_from_script,
-        generate_split_gallery_images,
-    )
+    from services.ugc_service import combined_spoken_text_from_script
 
     task_uuid = uuid.UUID(task_id)
     work_dir = TASKS_DIR / task_id
@@ -677,39 +724,12 @@ def task_crawl_and_script(
                 persist_task(task_uuid, ugc_status="failed", ugc_error=msg)
                 raise BannerPipelineFatalError(f"[task_crawl_and_script] {msg}") from exc
 
-        try:
-            for scene in ugc_script.get("scenes") or []:
-                if scene.get("visual_layout") != "split_gallery":
-                    continue
-                layout_data = scene.get("layout_data")
-                if not isinstance(layout_data, dict):
-                    continue
-                hebrew_imgs = layout_data.get("images")
-                if not isinstance(hebrew_imgs, list):
-                    continue
-                sn = scene.get("scene_number")
-                stem = f"split_gallery_s{sn}" if isinstance(sn, int) else "split_gallery"
-                try:
-                    layout_data["image_urls"] = generate_split_gallery_images(
-                        hebrew_imgs,
-                        task_id,
-                        work_dir,
-                        name_prefix=stem,
-                    )
-                except Exception as one_scene_exc:
-                    logger.warning(
-                        "[task_crawl_and_script] task_id=%s  split_gallery scene=%s  "
-                        "image generation failed (keeping Hebrew labels only): %s",
-                        task_id,
-                        sn,
-                        one_scene_exc,
-                    )
-        except Exception as exc:
-            logger.warning(
-                "[task_crawl_and_script] task_id=%s  split_gallery image pass failed: %s",
-                task_id,
-                exc,
-            )
+        _enrich_ugc_script_split_gallery_dalle(
+            ugc_script,
+            task_id,
+            work_dir,
+            "task_crawl_and_script",
+        )
 
         persist_task(task_uuid, ugc_script=ugc_script)
         logger.info(
@@ -1019,6 +1039,15 @@ def run_avatar_studio_task(
                 logger.error("[run_avatar_studio_task] task_id=%s  %s", task_id, msg)
                 persist_task(task_uuid, ugc_status="failed", ugc_error=msg)
                 raise BannerPipelineFatalError(f"[run_avatar_studio_task] {msg}") from exc
+
+        work_dir = TASKS_DIR / task_id
+        work_dir.mkdir(parents=True, exist_ok=True)
+        _enrich_ugc_script_split_gallery_dalle(
+            ugc_script,
+            task_id,
+            work_dir,
+            "run_avatar_studio_task",
+        )
 
         persist_task(task_uuid, ugc_script=ugc_script)
         logger.info(
