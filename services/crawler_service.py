@@ -2,13 +2,17 @@
 Website crawl: lightweight httpx/BeautifulSoup plus undetected-chromedriver fallback.
 
 ``build_headless_chrome`` registers drivers in ``_active_drivers`` so
-``quit_all_active_drivers`` (Celery soft-timeout / atexit) can tear down Chrome.
+``quit_all_active_drivers`` (Celery soft-timeout / atexit / process shutdown) can
+tear down Chrome. When ``psutil`` is installed, process trees are killed in
+child-to-parent order and a second-pass sweep removes stray Chrome/ChromeDriver
+descendants of the worker PID.
 """
 
 from __future__ import annotations
 
 import io
 import json
+import logging
 import os
 import random
 import re
@@ -16,10 +20,12 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from collections import deque
+from contextlib import contextmanager, nullcontext
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Iterator
 from urllib.parse import unquote, urljoin, urlparse, urlunparse
 
 import requests
@@ -40,6 +46,13 @@ from selenium.webdriver.support.ui import WebDriverWait
 if TYPE_CHECKING:
     from bs4 import BeautifulSoup
 
+try:
+    import psutil
+except ImportError:  # pragma: no cover - optional hardening dependency
+    psutil = None  # type: ignore[assignment]
+
+logger = logging.getLogger(__name__)
+
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 MAX_PAGES = 10
 OUTPUT_FILE = _PROJECT_ROOT / "scraped_content.txt"
@@ -55,15 +68,78 @@ HTTPX_TIMEOUT_SECONDS = 15.0
 SPA_MIN_TOTAL_CHARS = 300
 SPA_MIN_MEANINGFUL_PARAS = 3
 
+# Total wall-clock budget for a single headless crawl session (Chrome path only).
+# 0 = disabled (rely on Celery time limits only). Set lower in production to cap leaks.
+_UC_SESSION_TIMEOUT_RAW = os.environ.get("UC_WEBDRIVER_SESSION_TIMEOUT_SECONDS", "").strip()
+UC_WEBDRIVER_SESSION_TIMEOUT_SECONDS: float | None
+try:
+    _t = float(_UC_SESSION_TIMEOUT_RAW) if _UC_SESSION_TIMEOUT_RAW else 0.0
+    UC_WEBDRIVER_SESSION_TIMEOUT_SECONDS = _t if _t > 0 else None
+except ValueError:
+    UC_WEBDRIVER_SESSION_TIMEOUT_SECONDS = None
+
+# After normal quit, sweep remaining Chrome-family children of this PID (recommended on workers).
+_REAP_AFTER_QUIT = os.environ.get("UC_REAP_CHROME_DESCENDANTS_AFTER_QUIT", "1").strip().lower() not in (
+    "0",
+    "false",
+    "no",
+)
+
 # ── Active Chrome driver registry ──────────────────────────────────────────────
 # build_headless_chrome() registers every driver here so external callers
 # (Celery signal handlers, atexit hooks) can force-quit Chrome on hard exits.
 _active_drivers: set[WebDriver] = set()
+# Root PIDs we started (browser + chromedriver) for psutil tree kill / verification.
+_tracked_uc_root_pids: set[int] = set()
+_uc_cleanup_lock = threading.Lock()
+
+
+def reset_browser_crawl_process_state() -> None:
+    """Clear registries in a fresh Celery pool process (worker_process_init)."""
+    _active_drivers.clear()
+    _tracked_uc_root_pids.clear()
+
+
+def _register_uc_root_pid(pid: int | None) -> None:
+    if pid and pid > 0:
+        _tracked_uc_root_pids.add(int(pid))
+
+
+def _kill_process_tree_psutil(pid: int) -> bool:
+    """Kill *pid* and all descendants (children first). Returns True if psutil handled it."""
+    if pid <= 0 or psutil is None:
+        return False
+    try:
+        proc = psutil.Process(pid)
+    except psutil.NoSuchProcess:
+        return True
+    except Exception:
+        return False
+    try:
+        children = proc.children(recursive=True)
+        for c in reversed(children):
+            try:
+                c.kill()
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                pass
+            except Exception:
+                pass
+        try:
+            proc.kill()
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            pass
+        except Exception:
+            pass
+    except Exception:
+        return False
+    return True
 
 
 def _kill_uc_browser_process_tree(pid: int | None) -> None:
     """Kill only the browser process tree spawned for this driver (undetected-chromedriver sets ``browser_pid``)."""
     if not pid:
+        return
+    if _kill_process_tree_psutil(int(pid)):
         return
     try:
         if sys.platform == "win32":
@@ -79,28 +155,176 @@ def _kill_uc_browser_process_tree(pid: int | None) -> None:
         pass
 
 
+def _pids_still_alive(pids: set[int]) -> list[int]:
+    if not pids:
+        return []
+    alive: list[int] = []
+    if psutil is None:
+        # Without psutil we cannot reliably test PIDs on all platforms (Windows differs).
+        return []
+    for p in pids:
+        try:
+            psutil.Process(p)
+        except psutil.NoSuchProcess:
+            continue
+        except Exception:
+            continue
+        else:
+            alive.append(p)
+    return alive
+
+
+def reap_worker_chrome_descendants(reason: str = "") -> int:
+    """
+    Kill Chrome/Chromium/chromedriver processes that are descendants of the current PID.
+
+    Used after ``quit()`` and on Celery worker shutdown to eliminate zombies when the
+    interpreter or Selenium fails to reap children. Scoped to this process tree only.
+    """
+    if psutil is None:
+        if reason:
+            logger.debug("reap_worker_chrome_descendants skipped (psutil not installed): %s", reason)
+        return 0
+    me = os.getpid()
+    try:
+        root = psutil.Process(me)
+    except psutil.NoSuchProcess:
+        return 0
+    killed = 0
+    needles = ("chrome", "chromium", "chromedriver")
+    try:
+        for ch in root.children(recursive=True):
+            try:
+                name = (ch.name() or "").lower()
+                if not any(n in name for n in needles):
+                    continue
+                ch.kill()
+                killed += 1
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                pass
+            except Exception:
+                pass
+    except Exception as exc:
+        logger.warning("reap_worker_chrome_descendants: walk failed: %s", exc)
+        return killed
+    if killed and reason:
+        logger.warning("reap_worker_chrome_descendants(%s): sent SIGKILL to %d process(es)", reason, killed)
+    return killed
+
+
 def quit_all_active_drivers() -> None:
     """Force-quit every Chrome instance known to this process. Safe to call multiple times."""
-    for drv in list(_active_drivers):
-        _uc_profile = getattr(drv, "_banner_uc_profile_dir", None)
-        browser_pid: int | None = getattr(drv, "browser_pid", None)
-        chromedriver_pid: int | None = getattr(drv, "_banner_chromedriver_pid", None)
+    with _uc_cleanup_lock:
+        for drv in list(_active_drivers):
+            _uc_profile = getattr(drv, "_banner_uc_profile_dir", None)
+            browser_pid: int | None = getattr(drv, "browser_pid", None)
+            chromedriver_pid: int | None = getattr(drv, "_banner_chromedriver_pid", None)
 
-        _kill_uc_browser_process_tree(browser_pid)
-        _kill_uc_browser_process_tree(chromedriver_pid)
+            for p in (chromedriver_pid, browser_pid):
+                if p:
+                    _kill_process_tree_psutil(int(p))
+            _kill_uc_browser_process_tree(browser_pid)
+            _kill_uc_browser_process_tree(chromedriver_pid)
 
-        try:
-            drv.quit()
-        except Exception:
-            pass
-
-        if _uc_profile:
             try:
-                shutil.rmtree(_uc_profile, ignore_errors=True)
+                drv.quit()
             except Exception:
                 pass
 
-    _active_drivers.clear()
+            if _uc_profile:
+                try:
+                    shutil.rmtree(_uc_profile, ignore_errors=True)
+                except Exception:
+                    pass
+
+        _active_drivers.clear()
+        _tracked_uc_root_pids.clear()
+
+        if _REAP_AFTER_QUIT:
+            reap_worker_chrome_descendants("after_quit_all_active_drivers")
+
+
+def wait_until_pids_terminated(pids: set[int], max_wait_s: float = 2.5) -> list[int]:
+    """Poll until *max_wait_s* elapses; return the subset of *pids* that still appear alive."""
+    deadline = time.monotonic() + max(0.1, max_wait_s)
+    alive = set(_pids_still_alive(set(pids)))
+    while alive and time.monotonic() < deadline:
+        time.sleep(0.12)
+        alive = set(_pids_still_alive(alive))
+    return list(alive)
+
+
+@contextmanager
+def headless_chrome_crawl_session(
+    total_timeout_seconds: float | None = None,
+) -> Iterator[WebDriver]:
+    """
+    Build a headless UC driver, optionally arm a wall-clock watchdog, and guarantee teardown.
+
+    If *total_timeout_seconds* elapses, the watchdog thread calls ``quit_all_active_drivers``
+    and ``reap_worker_chrome_descendants`` from a background thread so a stuck
+    ``driver.get()`` cannot hold Chrome forever (best-effort; the main thread may still
+    block until the syscall returns).
+
+    Env:
+    - ``UC_WEBDRIVER_SESSION_TIMEOUT_SECONDS`` used when *total_timeout_seconds* is None.
+    """
+    limit = total_timeout_seconds
+    if limit is None:
+        limit = UC_WEBDRIVER_SESSION_TIMEOUT_SECONDS
+
+    cancelled = threading.Event()
+
+    def _watchdog() -> None:
+        if not limit or limit <= 0:
+            return
+        if cancelled.wait(timeout=float(limit)):
+            return
+        logger.error(
+            "Headless Chrome crawl exceeded %.0fs — forcing quit_all_active_drivers + descendant reap",
+            float(limit),
+        )
+        quit_all_active_drivers()
+        reap_worker_chrome_descendants("session_watchdog_timeout")
+
+    driver = build_headless_chrome()
+    watchdog_thread: threading.Thread | None = None
+    if limit and limit > 0:
+        watchdog_thread = threading.Thread(
+            target=_watchdog,
+            name="uc-chrome-session-watchdog",
+            daemon=True,
+        )
+        watchdog_thread.start()
+
+    try:
+        yield driver
+    finally:
+        cancelled.set()
+        with _uc_cleanup_lock:
+            _uc_profile = getattr(driver, "_banner_uc_profile_dir", None)
+            _browser_pid: int | None = getattr(driver, "browser_pid", None)
+            _cd_pid: int | None = getattr(driver, "_banner_chromedriver_pid", None)
+            _active_drivers.discard(driver)
+            for p in (_cd_pid, _browser_pid):
+                if p:
+                    _kill_process_tree_psutil(int(p))
+            _kill_uc_browser_process_tree(_browser_pid)
+            _kill_uc_browser_process_tree(_cd_pid)
+            try:
+                driver.quit()
+            except Exception:
+                pass
+            if _uc_profile:
+                shutil.rmtree(_uc_profile, ignore_errors=True)
+            if _browser_pid:
+                _tracked_uc_root_pids.discard(int(_browser_pid))
+            if _cd_pid:
+                _tracked_uc_root_pids.discard(int(_cd_pid))
+            if _REAP_AFTER_QUIT:
+                reap_worker_chrome_descendants("headless_chrome_crawl_session_finally")
+        if watchdog_thread is not None:
+            watchdog_thread.join(timeout=1.0)
 
 
 JUNK_KEYWORDS = (
@@ -527,6 +751,8 @@ def build_headless_chrome() -> WebDriver:
     driver.set_page_load_timeout(PAGE_LOAD_TIMEOUT_SECONDS)
     driver.set_script_timeout(SCRIPT_TIMEOUT_SECONDS)
     setattr(driver, "_banner_uc_profile_dir", profile_dir)
+    _register_uc_root_pid(getattr(driver, "browser_pid", None))
+    _register_uc_root_pid(getattr(driver, "_banner_chromedriver_pid", None))
     _active_drivers.add(driver)
     return driver
 
@@ -994,8 +1220,6 @@ def crawl_from_url(
     pages_fetched = 0
     file_chunks: list[str] = []
     logo_saved = False
-    driver: WebDriver | None = None
-    uc_profile: str | None = None
 
     use_chrome = False
     print("Probing homepage with lightweight fetch (httpx + BeautifulSoup)…")
@@ -1034,12 +1258,15 @@ def crawl_from_url(
         use_chrome = True
         queue.append(start_url)
 
+    chrome_cm: Any = nullcontext(None)
     if use_chrome:
-        print("Starting headless Chrome (undetected-chromedriver)…")
-        driver = build_headless_chrome()
-        uc_profile = getattr(driver, "_banner_uc_profile_dir", None)
+        print(
+            "Starting headless Chrome (undetected-chromedriver) "
+            f"(session timeout={UC_WEBDRIVER_SESSION_TIMEOUT_SECONDS or 'off'}s)…"
+        )
+        chrome_cm = headless_chrome_crawl_session(None)
 
-    try:
+    with chrome_cm as driver:
         while queue and pages_fetched < MAX_PAGES:
             url = queue.popleft()
             if url in visited:
@@ -1116,20 +1343,6 @@ def crawl_from_url(
             file_chunks.append(format_page_block(final_url, title_text, paragraph_texts))
             pages_fetched += 1
             print(f"Scraped ({pages_fetched}/{MAX_PAGES}): {final_url}")
-
-    finally:
-        if driver is not None:
-            _browser_pid: int | None = getattr(driver, "browser_pid", None)
-            _cd_pid: int | None = getattr(driver, "_banner_chromedriver_pid", None)
-            _active_drivers.discard(driver)
-            _kill_uc_browser_process_tree(_browser_pid)
-            _kill_uc_browser_process_tree(_cd_pid)
-            try:
-                driver.quit()
-            except Exception:
-                pass
-            if uc_profile:
-                shutil.rmtree(uc_profile, ignore_errors=True)
 
     with open(output_file, "w", encoding="utf-8") as f:
         f.write(f"Crawl summary: {pages_fetched} page(s), starting from {start_url}\n\n")

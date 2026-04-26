@@ -315,6 +315,11 @@ def _video_engine_render_ugc_url() -> str:
     return f"{base}/render-ugc"
 
 
+def _public_api_base_for_remotion_assets() -> str:
+    """Origin that serves ``/task-files/...`` (same as FastAPI / uvicorn). Used by the video engine to fetch PNGs during headless render."""
+    return os.environ.get("VITE_API_URL", "http://127.0.0.1:8888").rstrip("/")
+
+
 def call_video_engine_render_ugc(
     *,
     task_id: str,
@@ -354,6 +359,7 @@ def call_video_engine_render_ugc(
         "raw_video_url": raw_video_url,
         "ugc_script": script_out,
         "aspect_ratio": ar,
+        "asset_base_url": _public_api_base_for_remotion_assets(),
     }
     if bgm_url:
         payload["bgm_url"] = bgm_url

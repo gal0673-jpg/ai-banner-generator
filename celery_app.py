@@ -62,3 +62,27 @@ celery_app.conf.update(
 # e.g. ``render_video_task`` while ``run_banner_task`` might still appear registered
 # via other import paths.
 import worker_tasks  # noqa: E402, F401
+
+from celery.signals import worker_process_init, worker_process_shutdown  # noqa: E402
+
+
+@worker_process_init.connect
+def _crawler_reset_on_worker_child_init(**_kwargs: object) -> None:
+    """Each prefork pool child starts clean; registries must not inherit parent FD/PID state."""
+    try:
+        from services.crawler_service import reset_browser_crawl_process_state
+
+        reset_browser_crawl_process_state()
+    except Exception:
+        pass
+
+
+@worker_process_shutdown.connect
+def _crawler_teardown_on_worker_child_exit(**_kwargs: object) -> None:
+    """Guarantee Chrome/ChromeDriver teardown when a pool process exits (not SIGKILL)."""
+    try:
+        from services.crawler_service import quit_all_active_drivers
+
+        quit_all_active_drivers()
+    except Exception:
+        pass

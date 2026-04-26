@@ -315,9 +315,12 @@ def _finalize_ugc_with_composite(
 #
 # Celery's *soft* time limit raises SoftTimeLimitExceeded inside the running task
 # (catchable). The *hard* limit sends SIGKILL — uncatchable — but we register both
-# SIGTERM (graceful shutdown) and atexit so we cover as many scenarios as possible.
-# SIGKILL survivors (orphaned chrome/chromedriver processes) are the only remainder;
-# those must be dealt with at the OS / container level.
+# SIGTERM (graceful shutdown), ``worker_process_shutdown`` (see celery_app.py), and
+# atexit so we cover as many scenarios as possible.
+# ``quit_all_active_drivers`` uses psutil (when installed) to reap trees and optionally
+# sweep Chrome-family descendants of this worker PID.
+# SIGKILL survivors (true orphans whose parent is no longer the worker) may still
+# require a container restart or external supervisor.
 
 _chrome_cleanup_lock = threading.Lock()
 
@@ -326,6 +329,7 @@ def _emergency_chrome_cleanup() -> None:
     """Kill every Chrome instance this process spawned. Idempotent and thread-safe."""
     with _chrome_cleanup_lock:
         try:
+            # Includes psutil tree kill + optional descendant sweep (see crawler_service).
             quit_all_active_drivers()
         except Exception:
             pass

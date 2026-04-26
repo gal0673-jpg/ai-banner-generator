@@ -63,14 +63,23 @@ function normalizeVideoLayout(body) {
   return "split";
 }
 
-/** Resolve relative asset paths (e.g. /task-files/...) when VIDEO_ENGINE_ASSET_BASE_URL is set. */
-export function resolveAssetUrl(url) {
+/** Default origin for `/task-files/...` when Remotion fetches from Node (must match FastAPI, not the Vite dev port). */
+const DEFAULT_API_ASSET_BASE = "http://127.0.0.1:8888";
+
+/**
+ * Resolve relative asset paths (e.g. /task-files/...) for Remotion headless render.
+ * @param {string} url
+ * @param {string} [baseFromApi] - Sent by the Python worker (`asset_base_url`); wins over `VIDEO_ENGINE_ASSET_BASE_URL`
+ */
+export function resolveAssetUrl(url, baseFromApi) {
   if (!url || typeof url !== "string") return url;
   const trimmed = url.trim();
   if (!trimmed) return trimmed;
   if (/^https?:\/\//i.test(trimmed)) return trimmed;
-  const base = process.env.VIDEO_ENGINE_ASSET_BASE_URL?.trim();
-  if (!base) return trimmed;
+  const base =
+    (typeof baseFromApi === "string" && baseFromApi.trim()) ||
+    process.env.VIDEO_ENGINE_ASSET_BASE_URL?.trim() ||
+    DEFAULT_API_ASSET_BASE;
   try {
     return new URL(trimmed.startsWith("/") ? trimmed : `/${trimmed}`, base).href;
   } catch {
@@ -82,18 +91,22 @@ export function buildBannerInputProps(body) {
   if (body === null || typeof body !== "object" || Array.isArray(body)) {
     return {};
   }
+  const assetBase =
+    typeof body.asset_base_url === "string" && body.asset_base_url.trim()
+      ? body.asset_base_url.trim()
+      : undefined;
   const designTemplate = normalizeDesignTemplate(
     body.designTemplate ?? body.design_type ?? body.designType,
   );
   const videoLayout = normalizeVideoLayout(body);
   return {
     headline: String(body.headline ?? "").trim(),
-    background_url: resolveAssetUrl(body.background_url),
+    background_url: resolveAssetUrl(body.background_url, assetBase),
     subhead: typeof body.subhead === "string" ? body.subhead : "",
     cta: typeof body.cta === "string" ? body.cta : "",
     logo_url:
       typeof body.logo_url === "string" && body.logo_url.trim()
-        ? resolveAssetUrl(body.logo_url)
+        ? resolveAssetUrl(body.logo_url, assetBase)
         : "",
     brand_color:
       typeof body.brand_color === "string" && body.brand_color.trim()
@@ -128,8 +141,9 @@ function getBundleServeUrl() {
 /**
  * Resolves /task-files/... paths under `layout_data.image_urls` for Remotion server render.
  * @param {Record<string, unknown> | null} ugcScript
+ * @param {string} [baseFromApi]
  */
-function resolveUgcScriptImageUrls(ugcScript) {
+function resolveUgcScriptImageUrls(ugcScript, baseFromApi) {
   if (!ugcScript || typeof ugcScript !== "object" || Array.isArray(ugcScript)) {
     return ugcScript;
   }
@@ -152,7 +166,7 @@ function resolveUgcScriptImageUrls(ugcScript) {
       layout_data: {
         ...layoutData,
         image_urls: layoutData.image_urls.map((u) =>
-          typeof u === "string" && u.trim() ? resolveAssetUrl(u.trim()) : u,
+          typeof u === "string" && u.trim() ? resolveAssetUrl(u.trim(), baseFromApi) : u,
         ),
       },
     };
@@ -164,19 +178,23 @@ export function buildUgcInputProps(body) {
   if (body === null || typeof body !== "object" || Array.isArray(body)) {
     return {};
   }
+  const assetBase =
+    typeof body.asset_base_url === "string" && body.asset_base_url.trim()
+      ? body.asset_base_url.trim()
+      : undefined;
   const script =
     body.ugc_script && typeof body.ugc_script === "object" && !Array.isArray(body.ugc_script)
-      ? resolveUgcScriptImageUrls(body.ugc_script)
+      ? resolveUgcScriptImageUrls(body.ugc_script, assetBase)
       : null;
   return {
     raw_video_url:
       typeof body.raw_video_url === "string" && body.raw_video_url.trim()
-        ? resolveAssetUrl(body.raw_video_url.trim())
+        ? resolveAssetUrl(body.raw_video_url.trim(), assetBase)
         : "",
     ugc_script: script,
     bgm_url:
       typeof body.bgm_url === "string" && body.bgm_url.trim()
-        ? resolveAssetUrl(body.bgm_url.trim())
+        ? resolveAssetUrl(body.bgm_url.trim(), assetBase)
         : "",
     task_id:
       typeof body.task_id === "string" && body.task_id.trim()
@@ -188,11 +206,11 @@ export function buildUgcInputProps(body) {
         : "",
     logo_url:
       typeof body.logo_url === "string" && body.logo_url.trim()
-        ? resolveAssetUrl(body.logo_url.trim())
+        ? resolveAssetUrl(body.logo_url.trim(), assetBase)
         : "",
     product_image_url:
       typeof body.product_image_url === "string" && body.product_image_url.trim()
-        ? resolveAssetUrl(body.product_image_url)
+        ? resolveAssetUrl(body.product_image_url, assetBase)
         : "",
     aspect_ratio: normalizeUgcAspectRatio(body?.aspect_ratio),
   };

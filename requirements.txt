@@ -16,6 +16,7 @@ pillow
 celery
 gevent
 redis
+psutil>=5.9
 tenacity
 
 # API: SQLAlchemy + auth (install one DB driver: pymysql for MySQL, psycopg[binary] for PostgreSQL)
