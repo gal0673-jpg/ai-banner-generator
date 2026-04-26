@@ -93,14 +93,25 @@ def build_ugc_director_system(layout_mode: str = "classic") -> str:
         """\
 • MIDDLE-SCENE LAYOUT (this run — split gallery): every middle scene (not first, not last) must \
 set \"visual_layout\" to exactly \"split_gallery\" — a 2×2 grid where the live avatar occupies the \
-bottom-right quadrant; the other three quadrants show stills. For EACH such scene you MUST include \
-exactly **three** image descriptions (not four):
-    \"layout_data\": { \"images\": [\"<Hebrew image idea 1>\", \"<Hebrew image idea 2>\", \
-\"<Hebrew image idea 3>\"] }
-  Order maps to the compositor as: top-left, top-right, bottom-left (bottom-right is always the \
-avatar — do not supply a fourth image). The three strings are short, concrete visual briefs (what \
-to show) in Hebrew — not spoken aloud. They should match the benefit described in that scene's \
-spoken_text.
+one quadrant; the other three quadrants show stills. For EACH such scene you MUST include \
+1) \"avatar_quadrant\" inside layout_data with an allowed value: TL | TR | BL | BR \
+(default is BR if you are unsure), and you SHOULD vary it between consecutive split_gallery scenes \
+to keep the video engaging.\n\
+\n\
+2) exactly **three** objects (not four cells — one cell is always the avatar), each with two keys:
+    \"layout_data\": { \"images\": [
+      {\"image_prompt\": \"...\", \"on_screen_caption\": \"...\"},
+      {\"image_prompt\": \"...\", \"on_screen_caption\": \"...\"},
+      {\"image_prompt\": \"...\", \"on_screen_caption\": \"...\"}
+    ]}
+  Order maps to the compositor as: the **three quadrants NOT occupied by the avatar**, in this \
+fixed quadrant order (skipping the avatar quadrant): TL, TR, BL, BR.\n\
+  Example: if avatar_quadrant is TL, then images[0]→TR, images[1]→BL, images[2]→BR.\n\
+  Example: if avatar_quadrant is BR, then images[0]→TL, images[1]→TR, images[2]→BL.
+  – image_prompt: a rich **English** visual description for OpenAI DALL·E 3 (subject, lighting, \
+style, composition). Not spoken by TTS. No text or logos in the image. Match that scene's benefit.
+  – on_screen_caption: a **very short** punchy **Hebrew** marketing phrase (roughly 2–5 words) \
+shown on the video over each still — not the DALL·E prompt; keep it snappy like a TikTok caption.
 • Do not use \"avatar_with_bullets\" in this run — middle scenes are always \"split_gallery\" with \
 layout_data as above.
 """
@@ -114,8 +125,8 @@ layout_data as above.
 
     body_arc = (
         """\
-    2. Body (middle)      → \"split_gallery\" with layout_data.images (exactly **three** entries) — \
-one key benefit per scene, with three image briefs (TL, TR, BL) for the compositor. Use pause \
+    2. Body (middle)      → \"split_gallery\" with layout_data.images (exactly **three** objects: \
+image_prompt + on_screen_caption per slot, TL/TR/BL) — one key benefit per scene. Use pause \
 markers in spoken_text.
 """
         if is_split
@@ -128,10 +139,11 @@ Each scene is self-contained, punchy, and uses pause markers.
     layout_bullet_list = (
         """\
     – \"split_gallery\"     → For middle (body) scenes only: 2×2 grid — the avatar sits in the \
-bottom-right; you supply stills for the other three cells. You MUST include \
-\"layout_data\": { \"images\": [\"...\", \"...\", \"...\"] } with **exactly three** Hebrew \
-image-brief strings (not spoken), in order: top-left, top-right, bottom-left. Never output a \
-fourth string — the fourth quadrant is the avatar.
+quadrant given by layout_data.avatar_quadrant (TL|TR|BL|BR); you supply stills for the other three \
+cells. You MUST include \"layout_data\": { \"avatar_quadrant\": \"TL|TR|BL|BR\", \"images\": [<obj>, <obj>, <obj>] } — **exactly three** objects, each \
+{\"image_prompt\": \"...\", \"on_screen_caption\": \"...\"}, order: top-left, top-right, \
+bottom-left, bottom-right **skipping the avatar quadrant**. image_prompt = English DALL·E visual; \
+on_screen_caption = short Hebrew on-video text. Never a fourth object — one grid cell is the avatar.
 """
         if is_split
         else """\
@@ -147,7 +159,12 @@ Use for benefit / feature explanation scenes (middle only).
       "on_screen_text": "<3-4 Hebrew words OR empty string>",
       "visual_layout": "split_gallery",
       "layout_data": {
-        "images": ["<תיאור לתמונה 1 (שמאל-על) — לא מדברים בקול>", "<תיאור לתמונה 2 (ימין-על)>", "<תיאור לתמונה 3 (שמאל-תחתון)>"]
+        "avatar_quadrant": "<TL|TR|BL|BR>",
+        "images": [
+          {"image_prompt": "<English DALL·E 3 visual — slot 1 (see mapping rules)>", "on_screen_caption": "<2-5 Hebrew words>"},
+          {"image_prompt": "<English DALL·E 3 visual — slot 2>", "on_screen_caption": "<2-5 Hebrew words>"},
+          {"image_prompt": "<English DALL·E 3 visual — slot 3>", "on_screen_caption": "<2-5 Hebrew words>"}
+        ]
       }
     }"""
     else:
@@ -161,8 +178,11 @@ Use for benefit / feature explanation scenes (middle only).
     extra_constraints = (
         """\
 • Every middle scene must use \"split_gallery\" and MUST include \
-\"layout_data\": { \"images\": [string, string, string] } with exactly three non-empty Hebrew \
-strings (three image slots only; the fourth grid cell is the avatar in the compositor).
+\"layout_data\": { \"avatar_quadrant\": \"TL|TR|BL|BR\", \"images\": [object, object, object] } — exactly three objects, each with \
+non-empty string fields \"image_prompt\" (English, for DALL·E) and \"on_screen_caption\" (Hebrew, \
+for on-video labels). The avatar_quadrant chooses which grid cell is reserved for the avatar; the \
+three image objects fill the remaining three cells in the fixed quadrant order TL,TR,BL,BR skipping \
+the avatar cell.
 • Scenes with \"split_gallery\" must not omit layout_data. First and last scenes must never use \
 \"split_gallery\" or layout_data.
 """
@@ -435,17 +455,41 @@ def _validate_script(
                 raise ValueError(
                     f"[ugc_director] Scene {idx} 'layout_data' must be an object for split_gallery."
                 )
+            q = ld.get("avatar_quadrant", "BR")
+            if not isinstance(q, str) or not q.strip():
+                raise ValueError(
+                    f"[ugc_director] Scene {idx} layout_data.avatar_quadrant must be a string "
+                    "(TL|TR|BL|BR)."
+                )
+            qn = q.strip().upper()
+            if qn not in ("TL", "TR", "BL", "BR"):
+                raise ValueError(
+                    f"[ugc_director] Scene {idx} layout_data.avatar_quadrant must be one of "
+                    "TL, TR, BL, BR."
+                )
             imgs = ld.get("images")
             if not isinstance(imgs, list) or len(imgs) != 3:
                 raise ValueError(
                     f"[ugc_director] Scene {idx} layout_data.images must be a list of exactly "
-                    f"three non-empty strings; got {imgs!r}."
+                    f"three objects {{image_prompt, on_screen_caption}}; got {imgs!r}."
                 )
-            for j, s in enumerate(imgs, start=1):
-                if not isinstance(s, str) or not str(s).strip():
+            for j, slot in enumerate(imgs):
+                if not isinstance(slot, dict):
                     raise ValueError(
-                        f"[ugc_director] Scene {idx} layout_data.images[{j - 1}] must be a "
-                        "non-empty string."
+                        f"[ugc_director] Scene {idx} layout_data.images[{j}] must be an object "
+                        f"with 'image_prompt' and 'on_screen_caption'; got {slot!r}."
+                    )
+                ip = slot.get("image_prompt")
+                cap = slot.get("on_screen_caption")
+                if not isinstance(ip, str) or not str(ip).strip():
+                    raise ValueError(
+                        f"[ugc_director] Scene {idx} layout_data.images[{j}].image_prompt must be "
+                        "a non-empty string."
+                    )
+                if not isinstance(cap, str) or not str(cap).strip():
+                    raise ValueError(
+                        f"[ugc_director] Scene {idx} layout_data.images[{j}].on_screen_caption must "
+                        "be a non-empty string."
                     )
 
     # Structural arc enforcement (first = full avatar, last = CTA)

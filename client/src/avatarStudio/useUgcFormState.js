@@ -5,9 +5,9 @@ import {
   ALLOWED_RERENDER_FONT,
   ALLOWED_RERENDER_POS,
   UGC_RERENDER_SPEEDS,
-  VIDEO_LAYOUTS,
   VIDEO_LAYOUT_FALLBACK_ID,
   VIDEO_LAYOUT_IDS_EXCLUDED_WHEN_SPOKEN_ONLY,
+  requiredImagesForLayout,
 } from './ugcConstants.js'
 import { axiosErrorMessage, extractCatalogArray } from './ugcHelpers.js'
 
@@ -27,11 +27,13 @@ export function useUgcFormState({ taskId, statusPayload, isPolling }) {
   const [websiteUrl, setWebsiteUrl] = useState('')
   const [logoUrl, setLogoUrl] = useState('')
   const [productImageUrl, setProductImageUrl] = useState('')
-  const [selectedLayout, setSelectedLayout] = useState(VIDEO_LAYOUTS[0].id)
+  const [selectedLayout, setSelectedLayout] = useState(VIDEO_LAYOUT_FALLBACK_ID)
   const logoFileRef = useRef(null)
   const productFileRef = useRef(null)
   const [logoUploading, setLogoUploading] = useState(false)
   const [productUploading, setProductUploading] = useState(false)
+  const [customGalleryImages, setCustomGalleryImages] = useState([])
+  const [gallerySlotUploading, setGallerySlotUploading] = useState(null)
 
   const hydratedScriptKeyRef = useRef('')
   const [rerenderSpeed, setRerenderSpeed] = useState(1.15)
@@ -106,6 +108,16 @@ export function useUgcFormState({ taskId, statusPayload, isPolling }) {
     if (!VIDEO_LAYOUT_IDS_EXCLUDED_WHEN_SPOKEN_ONLY.has(selectedLayout)) return
     setSelectedLayout(VIDEO_LAYOUT_FALLBACK_ID)
   }, [scriptSource, selectedLayout])
+
+  const requiredGalleryImages = useMemo(() => requiredImagesForLayout(selectedLayout), [selectedLayout])
+
+  useEffect(() => {
+    const n = requiredGalleryImages
+    setCustomGalleryImages((prev) => {
+      if (n === 0) return []
+      return Array.from({ length: n }, (_, i) => (typeof prev[i] === 'string' ? prev[i] : '') || '')
+    })
+  }, [requiredGalleryImages])
 
   useEffect(() => {
     hydratedScriptKeyRef.current = ''
@@ -202,34 +214,66 @@ export function useUgcFormState({ taskId, statusPayload, isPolling }) {
     }
   }
 
-  const uploadTempAsset = async (file, kind) => {
+  const postTempUpload = async (file) => {
+    const fd = new FormData()
+    fd.append('file', file)
+    const base = (API_BASE_URL || '').replace(/\/$/, '')
+    const res = await fetch(`${base}/upload-temp-asset`, {
+      method: 'POST',
+      body: fd,
+      credentials: 'include',
+    })
+    let data = {}
+    try {
+      data = await res.json()
+    } catch {
+      /* ignore */
+    }
+    if (!res.ok) {
+      const d = data?.detail
+      if (typeof d === 'string') throw new Error(d)
+      if (Array.isArray(d)) throw new Error(d.map((x) => x.msg || JSON.stringify(x)).join(' '))
+      throw new Error(res.statusText || 'ההעלאה נכשלה')
+    }
+    const u = typeof data?.url === 'string' ? data.url.trim() : ''
+    if (!u) throw new Error('לא התקבלה כתובת קובץ מהשרת')
+    return toAbsoluteApiUrl(u)
+  }
+
+  /**
+   * POST `file` to `/upload-temp-asset` and store the returned URL.
+   * - kind `'logo'` | `'product'` — updates logo / product URL fields.
+   * - kind `'gallery'` — requires `gallerySlotIndex` (0-based); updates `customGalleryImages`.
+   */
+  const uploadTempAsset = async (file, kind, gallerySlotIndex) => {
+    if (kind === 'gallery') {
+      const slotIndex = gallerySlotIndex
+      if (typeof slotIndex !== 'number' || slotIndex < 0 || slotIndex >= requiredGalleryImages) return
+      setSubmitError(null)
+      setGallerySlotUploading(slotIndex)
+      try {
+        const url = await postTempUpload(file)
+        setCustomGalleryImages((prev) => {
+          const next = Array.from({ length: requiredGalleryImages }, (_, i) =>
+            typeof prev[i] === 'string' ? prev[i] : '',
+          )
+          next[slotIndex] = url
+          return next
+        })
+      } catch (err) {
+        setSubmitError(axiosErrorMessage(err))
+      } finally {
+        setGallerySlotUploading(null)
+      }
+      return
+    }
     const setBusy = kind === 'logo' ? setLogoUploading : setProductUploading
     const setUrl = kind === 'logo' ? setLogoUrl : setProductImageUrl
     setSubmitError(null)
     setBusy(true)
     try {
-      const fd = new FormData()
-      fd.append('file', file)
-      const base = (API_BASE_URL || '').replace(/\/$/, '')
-      const res = await fetch(`${base}/upload-temp-asset`, {
-        method: 'POST',
-        body: fd,
-        credentials: 'include',
-      })
-      let data = {}
-      try {
-        data = await res.json()
-      } catch {
-        /* ignore */
-      }
-      if (!res.ok) {
-        const d = data?.detail
-        if (typeof d === 'string') throw new Error(d)
-        if (Array.isArray(d)) throw new Error(d.map((x) => x.msg || JSON.stringify(x)).join(' '))
-        throw new Error(res.statusText || 'ההעלאה נכשלה')
-      }
-      const u = typeof data?.url === 'string' ? data.url.trim() : ''
-      if (u) setUrl(toAbsoluteApiUrl(u))
+      const url = await postTempUpload(file)
+      setUrl(url)
     } catch (err) {
       setSubmitError(axiosErrorMessage(err))
     } finally {
@@ -279,6 +323,14 @@ export function useUgcFormState({ taskId, statusPayload, isPolling }) {
       const lu = logoUrl.trim()
       if (lu) body.logo_url = lu
       body.product_image_url = productImageUrl.trim() || undefined
+      if (requiredGalleryImages > 0) {
+        const slots = Array.from({ length: requiredGalleryImages }, (_, i) => {
+          const s = typeof customGalleryImages[i] === 'string' ? customGalleryImages[i].trim() : ''
+          return s
+        })
+        const anyFilled = slots.some(Boolean)
+        if (anyFilled) body.custom_gallery_images = slots
+      }
       const { data } = await api.post('/avatar-studio/generate', body)
       const id = data?.task_id
       if (!id) throw new Error('לא התקבל מזהה משימה')
@@ -359,6 +411,10 @@ export function useUgcFormState({ taskId, statusPayload, isPolling }) {
     productFileRef,
     logoUploading,
     productUploading,
+    customGalleryImages,
+    setCustomGalleryImages,
+    requiredGalleryImages,
+    gallerySlotUploading,
     uploadTempAsset,
     selectedAvatar,
     filteredVoices,

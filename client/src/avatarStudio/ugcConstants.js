@@ -49,9 +49,20 @@ export const PRIMARY_ADMIN_EMAIL = 'gal0673@gmail.com'
 export const TONE_TAGS = ['[אנרגטי]', '[דרמטי]', '[אמפתי]', '[דחוף]', '[מקצועי]']
 
 export const VIDEO_LAYOUTS = [
-  { id: 'classic', label: 'קלאסי (בולטים)' },
-  { id: 'split_gallery', label: 'גלריית תמונות (חצוי)' },
+  { id: 'classic', label: 'קלאסי (בולטים)', requiredImages: 0 },
+  { id: 'split_gallery', label: 'גלריית תמונות (חצוי)', requiredImages: 3 },
 ]
+
+/** Max `requiredImages` across layouts — bounds dynamic upload UI and state arrays. */
+export const MAX_LAYOUT_REQUIRED_IMAGES = VIDEO_LAYOUTS.reduce(
+  (m, layout) => Math.max(m, typeof layout.requiredImages === 'number' ? layout.requiredImages : 0),
+  0,
+)
+
+export function requiredImagesForLayout(layoutId) {
+  const layout = VIDEO_LAYOUTS.find((l) => l.id === layoutId)
+  return typeof layout?.requiredImages === 'number' ? layout.requiredImages : 0
+}
 
 /**
  * Layout ids that depend on AI / structured scenes — not offered when the user

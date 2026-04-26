@@ -184,6 +184,10 @@ class GenerateAvatarStudioRequest(BaseModel):
         default="9:16",
         description="HeyGen render dimensions + FFmpeg/Remotion composite target aspect.",
     )
+    custom_gallery_images: list[str] | None = Field(
+        default=None,
+        description="Optional user-supplied image URLs for split_gallery slots (reserved for a future upload flow).",
+    )
 
     @field_validator("creative_brief", "director_notes", "spoken_script", mode="before")
     @classmethod

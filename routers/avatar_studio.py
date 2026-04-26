@@ -71,6 +71,7 @@ def generate_avatar_studio(
 
     tid = str(task_id)
     try:
+        custom_gallery_images = body.custom_gallery_images
         run_avatar_studio_task.apply_async(
             args=[tid, avatar_id, body.video_length],
             kwargs={
@@ -82,6 +83,7 @@ def generate_avatar_studio(
                 "spoken_script": body.spoken_script,
                 "heygen_character_type": body.heygen_character_type,
                 "aspect_ratio": body.aspect_ratio,
+                "custom_gallery_images": custom_gallery_images,
             },
             queue="video_queue",
         )

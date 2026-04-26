@@ -691,9 +691,47 @@ function getSplitGalleryCellMetrics(width, height) {
   const innerH = height - 2 * pad;
   const cellW = (innerW - gap) / 2;
   const cellH = (innerH - gap) / 2;
+  const tlLeft = pad;
+  const tlTop = pad;
+  const trLeft = pad + cellW + gap;
+  const trTop = pad;
+  const blLeft = pad;
+  const blTop = pad + cellH + gap;
   const brLeft = pad + cellW + gap;
   const brTop = pad + cellH + gap;
-  return { pad, gap, cellW, cellH, brLeft, brTop };
+  const cells = {
+    TL: { left: tlLeft, top: tlTop, gridColumn: 1, gridRow: 1 },
+    TR: { left: trLeft, top: trTop, gridColumn: 2, gridRow: 1 },
+    BL: { left: blLeft, top: blTop, gridColumn: 1, gridRow: 2 },
+    BR: { left: brLeft, top: brTop, gridColumn: 2, gridRow: 2 },
+  };
+  return { pad, gap, cellW, cellH, cells };
+}
+
+function normalizeAvatarQuadrant(q) {
+  const raw = typeof q === "string" ? q.trim().toUpperCase() : "";
+  if (raw === "TL" || raw === "TR" || raw === "BL" || raw === "BR") return raw;
+  return "BR";
+}
+
+function hexLuma(hex) {
+  const h = typeof hex === "string" ? hex.trim().replace("#", "") : "";
+  const full =
+    h.length === 3
+      ? h.split("").map((c) => c + c).join("")
+      : h.length >= 6
+        ? h.slice(0, 6)
+        : "";
+  if (!/^[0-9A-Fa-f]{6}$/.test(full)) return 0.5;
+  const r = parseInt(full.slice(0, 2), 16) / 255;
+  const g = parseInt(full.slice(2, 4), 16) / 255;
+  const b = parseInt(full.slice(4, 6), 16) / 255;
+  // Perceived luminance (sRGB-ish)
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+}
+
+function bestTextColorOnBrand(brandHex) {
+  return hexLuma(brandHex) > 0.62 ? "rgba(8,8,10,0.92)" : "rgba(255,255,255,0.96)";
 }
 
 /**
@@ -707,8 +745,11 @@ function PippableAvatarVideo({
   videoScale,
   pipWeight,
   speechFrames,
+  scenes = [],
+  sceneStarts = [],
+  sceneDurations = [],
 }) {
-  const { width, height } = useVideoConfig();
+  const { width, height, fps } = useVideoConfig();
   const frame = useCurrentFrame();
   const src = typeof rawVideoUrl === "string" ? rawVideoUrl.trim() : "";
   const mix = frame >= speechFrames ? 0 : Math.min(1, Math.max(0, pipWeight));
@@ -735,9 +776,32 @@ function PippableAvatarVideo({
     );
   }
 
-  const { brLeft, brTop, cellW, cellH } = getSplitGalleryCellMetrics(width, height);
-  const left = interpolate(mix, [0, 1], [0, brLeft]);
-  const top = interpolate(mix, [0, 1], [0, brTop]);
+  const { cellW, cellH, cells } = getSplitGalleryCellMetrics(width, height);
+
+  // Determine current / previous gallery quadrants so we can animate position changes
+  // only when staying inside a consecutive `split_gallery` run.
+  const i = getSceneIndexForFrame(frame, sceneStarts, sceneDurations);
+  const scene = scenes?.[i] ?? null;
+  const prevScene = i > 0 ? scenes?.[i - 1] : null;
+  const isGallery = resolveSceneLayoutName(scene) === "split_gallery";
+  const prevIsGallery = resolveSceneLayoutName(prevScene) === "split_gallery";
+  const qNow = normalizeAvatarQuadrant(scene?.layout_data?.avatar_quadrant);
+  const qPrev = normalizeAvatarQuadrant(prevScene?.layout_data?.avatar_quadrant);
+  const start = sceneStarts[i] ?? 0;
+  const t = frame - start;
+
+  const target = cells[qNow] ?? cells.BR;
+  const from = cells[qPrev] ?? cells.BR;
+  const shouldAnimateQuadrant =
+    isGallery && prevIsGallery && qNow !== qPrev;
+  const moveSpring = shouldAnimateQuadrant
+    ? Math.min(1, spring({ frame: t, fps, from: 0, to: 1, config: PIP_SPRING }))
+    : 1;
+  const qLeft = interpolate(moveSpring, [0, 1], [from.left, target.left]);
+  const qTop = interpolate(moveSpring, [0, 1], [from.top, target.top]);
+
+  const left = interpolate(mix, [0, 1], [0, qLeft]);
+  const top = interpolate(mix, [0, 1], [0, qTop]);
   const w = interpolate(mix, [0, 1], [width, cellW]);
   const h = interpolate(mix, [0, 1], [height, cellH]);
   const brR = interpolate(mix, [0, 1], [0, 10]);
@@ -808,13 +872,24 @@ function normalizeToFourImageSlots(images) {
   return out;
 }
 
-/** Up to 3 labels for TL, TR, BL (BR is the live avatar). */
+/**
+ * Up to 3 on-video captions for TL, TR, BL (BR is the live avatar).
+ * New schema: `{ image_prompt, on_screen_caption }` — shows caption only (not DALL·E prompt).
+ * Legacy: plain strings are not shown as captions (avoid leaking director prompts); placeholder.
+ */
 function normalizeToThreeGalleryImageSlots(images) {
   const arr = Array.isArray(images) ? images : [];
   const out = ["", "", ""];
   for (let k = 0; k < 3; k += 1) {
     const v = arr[k];
-    out[k] = typeof v === "string" && v.trim() ? v.trim() : `תמונה ${k + 1}`;
+    let cap = "";
+    if (v && typeof v === "object" && !Array.isArray(v)) {
+      cap =
+        typeof v.on_screen_caption === "string" && v.on_screen_caption.trim()
+          ? v.on_screen_caption.trim()
+          : "";
+    }
+    out[k] = cap || `תמונה ${k + 1}`;
   }
   return out;
 }
@@ -855,9 +930,10 @@ function galleryCellPlaceholderStyle(description, index, brandHex) {
 }
 
 /**
- * Full-frame 2×2 grid: `layout_data.images` → top-left, top-right, bottom-left only;
+ * Full-frame 2×2 grid: `layout_data.images` → three slots (TL, TR, BL); each entry may be
+ * `{ image_prompt, on_screen_caption }` — only `on_screen_caption` is drawn on the still.
  * bottom-right is reserved for the `OffthreadVideo` layer.
- * Optional `layout_data.image_urls` (3 URLs) — DALL·E stills with Ken Burns + Hebrew caption band.
+ * Optional `layout_data.image_urls` (3 URLs) — DALL·E stills with Ken Burns + caption band.
  */
 function PipGalleryGrid({
   layoutData,
@@ -867,16 +943,27 @@ function PipGalleryGrid({
 }) {
   const localT = useCurrentFrame();
   const { fps, width, height } = useVideoConfig();
-  const { pad, gap } = getSplitGalleryCellMetrics(width, height);
+  const { pad, gap, cells } = getSplitGalleryCellMetrics(width, height);
   const imageDescriptions = normalizeToThreeGalleryImageSlots(layoutData?.images);
   const imageUrls = normalizeToThreeGalleryImageUrls(layoutData?.image_urls);
+  const avatarQuadrant = normalizeAvatarQuadrant(layoutData?.avatar_quadrant);
+  const orderedQuadrants = ["TL", "TR", "BL", "BR"];
+  const imageQuadrants = orderedQuadrants.filter((q) => q !== avatarQuadrant);
   const fontFamilyStr = resolveCaptionFontFamily("heebo");
+  const tagTextColor = bestTextColorOnBrand(brandHex);
+  const tagFontSize = Math.min(42, height * 0.035);
   const sceneLen = Math.max(1, sceneDurationInFrames);
-  const slots = [
-    { desc: imageDescriptions[0], imageUrl: imageUrls[0], gridColumn: 1, gridRow: 1, index: 0 },
-    { desc: imageDescriptions[1], imageUrl: imageUrls[1], gridColumn: 2, gridRow: 1, index: 1 },
-    { desc: imageDescriptions[2], imageUrl: imageUrls[2], gridColumn: 1, gridRow: 2, index: 2 },
-  ];
+  const slots = imageQuadrants.map((q, idx) => {
+    const cell = cells[q] ?? cells.BR;
+    return {
+      desc: imageDescriptions[idx],
+      imageUrl: imageUrls[idx],
+      gridColumn: cell.gridColumn,
+      gridRow: cell.gridRow,
+      index: idx,
+      quadrant: q,
+    };
+  });
   return (
     <AbsoluteFill
       style={{
@@ -983,43 +1070,85 @@ function PipGalleryGrid({
                     left: 0,
                     right: 0,
                     bottom: 0,
-                    height: "52%",
+                    height: "38%",
                     background:
-                      "linear-gradient(to top, rgba(0,0,0,0.88) 0%, rgba(0,0,0,0.35) 45%, transparent 100%)",
+                      "linear-gradient(to top, rgba(0,0,0,0.72) 0%, rgba(0,0,0,0.24) 55%, transparent 100%)",
                     borderRadius: "0 0 12px 12px",
                     pointerEvents: "none",
                   }}
                 />
-                <span
-                  dir="rtl"
-                  lang="he"
+                <div
                   style={{
-                    position: "relative",
-                    zIndex: 2,
-                    fontFamily: `${fontFamilyStr}, "Segoe UI", sans-serif`,
-                    fontSize: Math.min(22, height * 0.018),
-                    fontWeight: 700,
-                    lineHeight: 1.25,
-                    wordBreak: "break-word",
-                    paddingLeft: 10,
-                    paddingRight: 10,
-                    paddingBottom: 15,
-                    color: "rgba(255,255,255,0.95)",
-                    textShadow: "0 2px 14px rgba(0,0,0,0.9)",
+                    position: "absolute",
+                    left: 0,
+                    right: 0,
+                    bottom: 14,
+                    zIndex: 3,
+                    display: "flex",
+                    justifyContent: "center",
+                    paddingLeft: 12,
+                    paddingRight: 12,
+                    pointerEvents: "none",
                   }}
                 >
-                  {desc}
-                </span>
+                  <span
+                    dir="rtl"
+                    lang="he"
+                    style={{
+                      fontFamily: `${fontFamilyStr}, "Segoe UI", sans-serif`,
+                      fontSize: tagFontSize,
+                      fontWeight: 900,
+                      lineHeight: 1.1,
+                      letterSpacing: -0.2,
+                      color: tagTextColor,
+                      backgroundColor: brandHex,
+                      padding: "8px 24px",
+                      borderRadius: 999,
+                      boxShadow: [
+                        "0 10px 26px rgba(0,0,0,0.55)",
+                        `0 0 0 1px ${tagTextColor.includes("255") ? "rgba(0,0,0,0.18)" : "rgba(255,255,255,0.22)"}`,
+                        `0 0 22px -6px ${brandHex}CC`,
+                      ].join(", "),
+                      backdropFilter: "blur(8px)",
+                      WebkitBackdropFilter: "blur(8px)",
+                      maxWidth: "96%",
+                      whiteSpace: "nowrap",
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                      textShadow:
+                        tagTextColor.includes("255")
+                          ? "0 2px 14px rgba(0,0,0,0.55)"
+                          : "0 1px 10px rgba(255,255,255,0.18)",
+                    }}
+                  >
+                    {desc}
+                  </span>
+                </div>
               </>
             ) : (
               <span
+                dir="rtl"
+                lang="he"
                 style={{
                   fontFamily: `${fontFamilyStr}, "Segoe UI", sans-serif`,
-                  fontSize: Math.min(22, height * 0.018),
-                  fontWeight: 700,
-                  lineHeight: 1.25,
-                  wordBreak: "break-word",
-                  padding: 10,
+                  fontSize: tagFontSize,
+                  fontWeight: 900,
+                  lineHeight: 1.1,
+                  letterSpacing: -0.2,
+                  color: tagTextColor,
+                  backgroundColor: brandHex,
+                  padding: "8px 24px",
+                  borderRadius: 999,
+                  boxShadow: [
+                    "0 10px 26px rgba(0,0,0,0.55)",
+                    `0 0 22px -6px ${brandHex}CC`,
+                  ].join(", "),
+                  backdropFilter: "blur(8px)",
+                  WebkitBackdropFilter: "blur(8px)",
+                  maxWidth: "92%",
+                  whiteSpace: "nowrap",
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
                 }}
               >
                 {desc}
@@ -1030,8 +1159,8 @@ function PipGalleryGrid({
       })}
       <div
         style={{
-          gridColumn: 2,
-          gridRow: 2,
+          gridColumn: (cells[avatarQuadrant] ?? cells.BR).gridColumn,
+          gridRow: (cells[avatarQuadrant] ?? cells.BR).gridRow,
           minHeight: 0,
           minWidth: 0,
           borderRadius: 10,
@@ -1413,6 +1542,9 @@ export function UgcComposition({
         videoScale={videoScale}
         pipWeight={pipWeight}
         speechFrames={speechFrames}
+        scenes={scenes}
+        sceneStarts={sceneStarts}
+        sceneDurations={sceneDurations}
       />
 
       {/* Website URL + end-card logo / product */}

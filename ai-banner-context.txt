@@ -1,5 +1,5 @@
 AI BANNER CONTEXT EXPORT
-Generated (UTC): 2026-04-26 10:04:40 UTC
+Generated (UTC): 2026-04-26 17:41:07 UTC
 Project root: C:\laragon\www\python
 Output filename: ai-banner-context.txt
 
@@ -165,7 +165,7 @@ python/
 │   ├── url_display.py
 │   └── video_service.py
 ├── tasks
-│   └── [182 task UUID folders — runtime outputs omitted]
+│   └── [187 task UUID folders — runtime outputs omitted]
 ├── video_engine
 │   ├── public
 │   │   ├── bgm.mp3
@@ -3950,6 +3950,7 @@ def generate_avatar_studio(
 
     tid = str(task_id)
     try:
+        custom_gallery_images = body.custom_gallery_images
         run_avatar_studio_task.apply_async(
             args=[tid, avatar_id, body.video_length],
             kwargs={
@@ -3961,6 +3962,7 @@ def generate_avatar_studio(
                 "spoken_script": body.spoken_script,
                 "heygen_character_type": body.heygen_character_type,
                 "aspect_ratio": body.aspect_ratio,
+                "custom_gallery_images": custom_gallery_images,
             },
             queue="video_queue",
         )
@@ -5023,6 +5025,10 @@ class GenerateAvatarStudioRequest(BaseModel):
     aspect_ratio: Literal["9:16", "16:9", "1:1"] = Field(
         default="9:16",
         description="HeyGen render dimensions + FFmpeg/Remotion composite target aspect.",
+    )
+    custom_gallery_images: list[str] | None = Field(
+        default=None,
+        description="Optional user-supplied image URLs for split_gallery slots (reserved for a future upload flow).",
     )
 
     @field_validator("creative_brief", "director_notes", "spoken_script", mode="before")
@@ -7818,24 +7824,33 @@ def _dalle3_generate_to_path(client: OpenAI, prompt: str, dest: Path) -> None:
 
 
 def generate_split_gallery_images(
-    images_hebrew: list,
+    image_prompts: list,
     task_id: str,
     work_dir: str | os.PathLike[str],
     *,
     name_prefix: str = "split_gallery",
+    refine_prompts_with_gpt: bool = False,
+    custom_image_urls: list[str] | None = None,
 ) -> list[str]:
-    """Translate three Hebrew labels via GPT-4o, then generate three DALL·E 3 images on disk."""
+    """Generate three DALL·E 3 images from three prompt strings on disk.
+
+    When *refine_prompts_with_gpt* is False (default), each string in *image_prompts* is sent
+    directly to DALL·E 3 (director ``image_prompt`` fields).
+
+    When True, strings are treated as Hebrew labels and expanded to English DALL·E prompts
+    via GPT-4o (legacy scripts).
+    """
     api_key = os.environ.get("OPENAI_API_KEY", "").strip()
     if not api_key:
         raise UGCServiceError("OPENAI_API_KEY is not set in the environment.")
 
     lines: list[str] = []
-    arr = list(images_hebrew) if isinstance(images_hebrew, list) else []
+    arr = list(image_prompts) if isinstance(image_prompts, list) else []
     for k in range(3):
         s = str(arr[k]).strip() if k < len(arr) and arr[k] is not None else ""
         if not s:
             raise UGCServiceError(
-                f"split_gallery requires three non-empty Hebrew image strings; index {k} is missing."
+                f"split_gallery requires three non-empty image prompt strings; index {k} is missing."
             )
         lines.append(s)
 
@@ -7844,10 +7859,20 @@ def generate_split_gallery_images(
     root.mkdir(parents=True, exist_ok=True)
 
     client = OpenAI(api_key=api_key)
-    prompts = _split_gallery_prompts_from_hebrew(client, lines)
+    if refine_prompts_with_gpt:
+        prompts = _split_gallery_prompts_from_hebrew(client, lines)
+    else:
+        prompts = lines
 
     urls: list[str] = []
     for i, prompt in enumerate(prompts, start=1):
+        custom_url = ""
+        if isinstance(custom_image_urls, list) and len(custom_image_urls) >= i:
+            cu = custom_image_urls[i - 1]
+            custom_url = str(cu).strip() if cu is not None else ""
+        if custom_url:
+            urls.append(custom_url)
+            continue
         dest = root / f"{prefix}_{i}.png"
         _dalle3_generate_to_path(client, prompt, dest)
         urls.append(f"/task-files/{task_id}/{prefix}_{i}.png")
@@ -8735,14 +8760,25 @@ def build_ugc_director_system(layout_mode: str = "classic") -> str:
         """\
 • MIDDLE-SCENE LAYOUT (this run — split gallery): every middle scene (not first, not last) must \
 set \"visual_layout\" to exactly \"split_gallery\" — a 2×2 grid where the live avatar occupies the \
-bottom-right quadrant; the other three quadrants show stills. For EACH such scene you MUST include \
-exactly **three** image descriptions (not four):
-    \"layout_data\": { \"images\": [\"<Hebrew image idea 1>\", \"<Hebrew image idea 2>\", \
-\"<Hebrew image idea 3>\"] }
-  Order maps to the compositor as: top-left, top-right, bottom-left (bottom-right is always the \
-avatar — do not supply a fourth image). The three strings are short, concrete visual briefs (what \
-to show) in Hebrew — not spoken aloud. They should match the benefit described in that scene's \
-spoken_text.
+one quadrant; the other three quadrants show stills. For EACH such scene you MUST include \
+1) \"avatar_quadrant\" inside layout_data with an allowed value: TL | TR | BL | BR \
+(default is BR if you are unsure), and you SHOULD vary it between consecutive split_gallery scenes \
+to keep the video engaging.\n\
+\n\
+2) exactly **three** objects (not four cells — one cell is always the avatar), each with two keys:
+    \"layout_data\": { \"images\": [
+      {\"image_prompt\": \"...\", \"on_screen_caption\": \"...\"},
+      {\"image_prompt\": \"...\", \"on_screen_caption\": \"...\"},
+      {\"image_prompt\": \"...\", \"on_screen_caption\": \"...\"}
+    ]}
+  Order maps to the compositor as: the **three quadrants NOT occupied by the avatar**, in this \
+fixed quadrant order (skipping the avatar quadrant): TL, TR, BL, BR.\n\
+  Example: if avatar_quadrant is TL, then images[0]→TR, images[1]→BL, images[2]→BR.\n\
+  Example: if avatar_quadrant is BR, then images[0]→TL, images[1]→TR, images[2]→BL.
+  – image_prompt: a rich **English** visual description for OpenAI DALL·E 3 (subject, lighting, \
+style, composition). Not spoken by TTS. No text or logos in the image. Match that scene's benefit.
+  – on_screen_caption: a **very short** punchy **Hebrew** marketing phrase (roughly 2–5 words) \
+shown on the video over each still — not the DALL·E prompt; keep it snappy like a TikTok caption.
 • Do not use \"avatar_with_bullets\" in this run — middle scenes are always \"split_gallery\" with \
 layout_data as above.
 """
@@ -8756,8 +8792,8 @@ layout_data as above.
 
     body_arc = (
         """\
-    2. Body (middle)      → \"split_gallery\" with layout_data.images (exactly **three** entries) — \
-one key benefit per scene, with three image briefs (TL, TR, BL) for the compositor. Use pause \
+    2. Body (middle)      → \"split_gallery\" with layout_data.images (exactly **three** objects: \
+image_prompt + on_screen_caption per slot, TL/TR/BL) — one key benefit per scene. Use pause \
 markers in spoken_text.
 """
         if is_split
@@ -8770,10 +8806,11 @@ Each scene is self-contained, punchy, and uses pause markers.
     layout_bullet_list = (
         """\
     – \"split_gallery\"     → For middle (body) scenes only: 2×2 grid — the avatar sits in the \
-bottom-right; you supply stills for the other three cells. You MUST include \
-\"layout_data\": { \"images\": [\"...\", \"...\", \"...\"] } with **exactly three** Hebrew \
-image-brief strings (not spoken), in order: top-left, top-right, bottom-left. Never output a \
-fourth string — the fourth quadrant is the avatar.
+quadrant given by layout_data.avatar_quadrant (TL|TR|BL|BR); you supply stills for the other three \
+cells. You MUST include \"layout_data\": { \"avatar_quadrant\": \"TL|TR|BL|BR\", \"images\": [<obj>, <obj>, <obj>] } — **exactly three** objects, each \
+{\"image_prompt\": \"...\", \"on_screen_caption\": \"...\"}, order: top-left, top-right, \
+bottom-left, bottom-right **skipping the avatar quadrant**. image_prompt = English DALL·E visual; \
+on_screen_caption = short Hebrew on-video text. Never a fourth object — one grid cell is the avatar.
 """
         if is_split
         else """\
@@ -8789,7 +8826,12 @@ Use for benefit / feature explanation scenes (middle only).
       "on_screen_text": "<3-4 Hebrew words OR empty string>",
       "visual_layout": "split_gallery",
       "layout_data": {
-        "images": ["<תיאור לתמונה 1 (שמאל-על) — לא מדברים בקול>", "<תיאור לתמונה 2 (ימין-על)>", "<תיאור לתמונה 3 (שמאל-תחתון)>"]
+        "avatar_quadrant": "<TL|TR|BL|BR>",
+        "images": [
+          {"image_prompt": "<English DALL·E 3 visual — slot 1 (see mapping rules)>", "on_screen_caption": "<2-5 Hebrew words>"},
+          {"image_prompt": "<English DALL·E 3 visual — slot 2>", "on_screen_caption": "<2-5 Hebrew words>"},
+          {"image_prompt": "<English DALL·E 3 visual — slot 3>", "on_screen_caption": "<2-5 Hebrew words>"}
+        ]
       }
     }"""
     else:
@@ -8803,8 +8845,11 @@ Use for benefit / feature explanation scenes (middle only).
     extra_constraints = (
         """\
 • Every middle scene must use \"split_gallery\" and MUST include \
-\"layout_data\": { \"images\": [string, string, string] } with exactly three non-empty Hebrew \
-strings (three image slots only; the fourth grid cell is the avatar in the compositor).
+\"layout_data\": { \"avatar_quadrant\": \"TL|TR|BL|BR\", \"images\": [object, object, object] } — exactly three objects, each with \
+non-empty string fields \"image_prompt\" (English, for DALL·E) and \"on_screen_caption\" (Hebrew, \
+for on-video labels). The avatar_quadrant chooses which grid cell is reserved for the avatar; the \
+three image objects fill the remaining three cells in the fixed quadrant order TL,TR,BL,BR skipping \
+the avatar cell.
 • Scenes with \"split_gallery\" must not omit layout_data. First and last scenes must never use \
 \"split_gallery\" or layout_data.
 """
@@ -9077,17 +9122,41 @@ def _validate_script(
                 raise ValueError(
                     f"[ugc_director] Scene {idx} 'layout_data' must be an object for split_gallery."
                 )
+            q = ld.get("avatar_quadrant", "BR")
+            if not isinstance(q, str) or not q.strip():
+                raise ValueError(
+                    f"[ugc_director] Scene {idx} layout_data.avatar_quadrant must be a string "
+                    "(TL|TR|BL|BR)."
+                )
+            qn = q.strip().upper()
+            if qn not in ("TL", "TR", "BL", "BR"):
+                raise ValueError(
+                    f"[ugc_director] Scene {idx} layout_data.avatar_quadrant must be one of "
+                    "TL, TR, BL, BR."
+                )
             imgs = ld.get("images")
             if not isinstance(imgs, list) or len(imgs) != 3:
                 raise ValueError(
                     f"[ugc_director] Scene {idx} layout_data.images must be a list of exactly "
-                    f"three non-empty strings; got {imgs!r}."
+                    f"three objects {{image_prompt, on_screen_caption}}; got {imgs!r}."
                 )
-            for j, s in enumerate(imgs, start=1):
-                if not isinstance(s, str) or not str(s).strip():
+            for j, slot in enumerate(imgs):
+                if not isinstance(slot, dict):
                     raise ValueError(
-                        f"[ugc_director] Scene {idx} layout_data.images[{j - 1}] must be a "
-                        "non-empty string."
+                        f"[ugc_director] Scene {idx} layout_data.images[{j}] must be an object "
+                        f"with 'image_prompt' and 'on_screen_caption'; got {slot!r}."
+                    )
+                ip = slot.get("image_prompt")
+                cap = slot.get("on_screen_caption")
+                if not isinstance(ip, str) or not str(ip).strip():
+                    raise ValueError(
+                        f"[ugc_director] Scene {idx} layout_data.images[{j}].image_prompt must be "
+                        "a non-empty string."
+                    )
+                if not isinstance(cap, str) or not str(cap).strip():
+                    raise ValueError(
+                        f"[ugc_director] Scene {idx} layout_data.images[{j}].on_screen_caption must "
+                        "be a non-empty string."
                     )
 
     # Structural arc enforcement (first = full avatar, last = CTA)
@@ -9404,10 +9473,11 @@ def _enrich_ugc_script_split_gallery_dalle(
     task_id: str,
     work_dir: str | os.PathLike[str],
     log_name: str,
+    custom_gallery_images: list[str] | None = None,
 ) -> None:
     """Fill ``layout_data.image_urls`` for ``split_gallery`` scenes; mutates *ugc_script* in place.
 
-    On API/disk errors, logs and leaves Hebrew ``images`` only (same behavior as
+    On API/disk errors, logs and leaves ``layout_data.images`` unchanged (same behavior as
     ``task_crawl_and_script``).
     """
     from services.ugc_service import generate_split_gallery_images
@@ -9419,17 +9489,46 @@ def _enrich_ugc_script_split_gallery_dalle(
             layout_data = scene.get("layout_data")
             if not isinstance(layout_data, dict):
                 continue
-            hebrew_imgs = layout_data.get("images")
-            if not isinstance(hebrew_imgs, list):
+            raw_imgs = layout_data.get("images")
+            if not isinstance(raw_imgs, list) or len(raw_imgs) != 3:
+                continue
+            all_dict = all(isinstance(x, dict) for x in raw_imgs)
+            all_str = all(isinstance(x, str) for x in raw_imgs)
+            dalle_prompts: list[str] = []
+            refine = False
+            if all_dict:
+                for item in raw_imgs:
+                    p = item.get("image_prompt") if isinstance(item, dict) else None
+                    if isinstance(p, str) and p.strip():
+                        dalle_prompts.append(p.strip())
+                    else:
+                        dalle_prompts = []
+                        break
+                refine = False
+            elif all_str:
+                dalle_prompts = [str(x).strip() for x in raw_imgs if str(x).strip()]
+                refine = True
+            else:
+                logger.warning(
+                    "[%s] task_id=%s  split_gallery scene=%s  layout_data.images must be 3 objects "
+                    "or 3 strings; skipping DALL·E",
+                    log_name,
+                    task_id,
+                    scene.get("scene_number"),
+                )
+                continue
+            if len(dalle_prompts) != 3:
                 continue
             sn = scene.get("scene_number")
             stem = f"split_gallery_s{sn}" if isinstance(sn, int) else "split_gallery"
             try:
                 layout_data["image_urls"] = generate_split_gallery_images(
-                    hebrew_imgs,
+                    dalle_prompts,
                     task_id,
                     work_dir,
                     name_prefix=stem,
+                    refine_prompts_with_gpt=refine,
+                    custom_image_urls=custom_gallery_images,
                 )
             except Exception as one_scene_exc:
                 logger.warning(
@@ -10341,6 +10440,7 @@ def run_avatar_studio_task(
     spoken_script: str | None = None,
     heygen_character_type: str | None = None,
     aspect_ratio: str = "9:16",
+    custom_gallery_images: list[str] | None = None,
 ) -> None:
     """Avatar marketing video from creative prompts only (no crawl)."""
     from services.ugc_service import (
@@ -10416,6 +10516,7 @@ def run_avatar_studio_task(
             task_id,
             work_dir,
             "run_avatar_studio_task",
+            custom_gallery_images=custom_gallery_images,
         )
 
         persist_task(task_uuid, ugc_script=ugc_script)
@@ -12222,18 +12323,49 @@ export const PRIMARY_ADMIN_EMAIL = 'gal0673@gmail.com'
 export const TONE_TAGS = ['[אנרגטי]', '[דרמטי]', '[אמפתי]', '[דחוף]', '[מקצועי]']
 
 export const VIDEO_LAYOUTS = [
-  { id: 'classic', label: 'קלאסי (בולטים)' },
-  { id: 'split_gallery', label: 'גלריית תמונות (חצוי)' },
+  { id: 'classic', label: 'קלאסי (בולטים)', requiredImages: 0 },
+  { id: 'split_gallery', label: 'גלריית תמונות (חצוי)', requiredImages: 3 },
 ]
+
+/** Max `requiredImages` across layouts — bounds dynamic upload UI and state arrays. */
+export const MAX_LAYOUT_REQUIRED_IMAGES = VIDEO_LAYOUTS.reduce(
+  (m, layout) => Math.max(m, typeof layout.requiredImages === 'number' ? layout.requiredImages : 0),
+  0,
+)
+
+export function requiredImagesForLayout(layoutId) {
+  const layout = VIDEO_LAYOUTS.find((l) => l.id === layoutId)
+  return typeof layout?.requiredImages === 'number' ? layout.requiredImages : 0
+}
+
+/**
+ * Layout ids that depend on AI / structured scenes — not offered when the user
+ * chooses "spoken_only". Add future AI-only layouts here.
+ */
+export const VIDEO_LAYOUT_IDS_EXCLUDED_WHEN_SPOKEN_ONLY = new Set(['split_gallery'])
+
+/** Default layout when the current selection is invalid for the script source. */
+export const VIDEO_LAYOUT_FALLBACK_ID = 'classic'
+
+/**
+ * Layout options to show for a given script source (single place for UI + validation).
+ */
+export function videoLayoutsVisibleForScriptSource(scriptSource) {
+  if (scriptSource === 'spoken_only') {
+    return VIDEO_LAYOUTS.filter((l) => !VIDEO_LAYOUT_IDS_EXCLUDED_WHEN_SPOKEN_ONLY.has(l.id))
+  }
+  return VIDEO_LAYOUTS
+}
 
 
 ================================================================================
 FILE: client/src/avatarStudio/UgcForm.jsx
 ================================================================================
 
+import { useRef } from 'react'
 import { Link } from 'react-router-dom'
 import { API_BASE_URL_DISPLAY } from '../api.js'
-import { TONE_TAGS, VIDEO_LAYOUTS } from './ugcConstants.js'
+import { TONE_TAGS, videoLayoutsVisibleForScriptSource } from './ugcConstants.js'
 import Spinner from './Spinner.jsx'
 
 export default function UgcForm({ ugcForm, onSubmit }) {
@@ -12262,6 +12394,10 @@ export default function UgcForm({ ugcForm, onSubmit }) {
     logoUploading,
     productUploading,
     uploadTempAsset,
+    customGalleryImages,
+    setCustomGalleryImages,
+    requiredGalleryImages,
+    gallerySlotUploading,
     avatars,
     catalogLoading,
     selectedAvatarDbId,
@@ -12275,6 +12411,10 @@ export default function UgcForm({ ugcForm, onSubmit }) {
     isPosting,
     isPolling,
   } = ugcForm
+
+  const visibleVideoLayouts = videoLayoutsVisibleForScriptSource(scriptSource)
+  const galleryPickSlotRef = useRef(0)
+  const galleryFileInputRef = useRef(null)
 
   return (
     <form
@@ -12598,7 +12738,7 @@ export default function UgcForm({ ugcForm, onSubmit }) {
       <div role="radiogroup" aria-label="סגנון וידאו" className="space-y-2">
         <span className="block text-xs font-medium text-slate-600 dark:text-slate-300">סגנון וידאו</span>
         <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-          {VIDEO_LAYOUTS.map((layout) => {
+          {visibleVideoLayouts.map((layout) => {
             const isOn = selectedLayout === layout.id
             return (
               <button
@@ -12620,6 +12760,72 @@ export default function UgcForm({ ugcForm, onSubmit }) {
           })}
         </div>
       </div>
+
+      {requiredGalleryImages > 0 && (
+        <div className="space-y-3 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50/80 dark:bg-slate-950/40 px-3 py-3" dir="rtl">
+          <p className="text-[11px] text-slate-600 dark:text-slate-400 leading-relaxed">
+            תמונות מותאמות אישית (אופציונלי): המערכת תייצר תמונות AI עבור כל סלוט שתשאירו ריק.
+          </p>
+          <input
+            ref={galleryFileInputRef}
+            type="file"
+            accept="image/*"
+            className="hidden"
+            onChange={(ev) => {
+              const f = ev.target.files?.[0]
+              if (f) void uploadTempAsset(f, 'gallery', galleryPickSlotRef.current)
+              ev.target.value = ''
+            }}
+          />
+          {Array.from({ length: requiredGalleryImages }, (_, slotIndex) => {
+            const url = typeof customGalleryImages[slotIndex] === 'string' ? customGalleryImages[slotIndex] : ''
+            const busyHere = gallerySlotUploading === slotIndex
+            return (
+              <div key={slotIndex} className="space-y-1.5">
+                <label className="block text-xs font-medium text-slate-600 dark:text-slate-300">
+                  <span dir="ltr" className="inline-block">
+                    Upload Image {slotIndex + 1} (Optional)
+                  </span>
+                </label>
+                <div className="flex flex-wrap items-stretch gap-2">
+                  <input
+                    type="text"
+                    value={url}
+                    onChange={(ev) => {
+                      const v = ev.target.value
+                      setCustomGalleryImages((prev) => {
+                        const next = Array.from({ length: requiredGalleryImages }, (_, i) =>
+                          typeof prev[i] === 'string' ? prev[i] : '',
+                        )
+                        next[slotIndex] = v
+                        return next
+                      })
+                    }}
+                    disabled={formLocked}
+                    placeholder="https://... או העלאה"
+                    className="min-w-0 flex-1 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2.5 text-sm outline-none disabled:opacity-60"
+                    dir="ltr"
+                    autoComplete="off"
+                    maxLength={1024}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => {
+                      galleryPickSlotRef.current = slotIndex
+                      galleryFileInputRef.current?.click()
+                    }}
+                    disabled={formLocked || busyHere}
+                    className="shrink-0 inline-flex items-center justify-center gap-2 rounded-xl border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-800 px-3 py-2.5 text-sm font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-700 disabled:opacity-50 min-w-[5.5rem]"
+                  >
+                    {busyHere ? <Spinner className="!size-4" /> : null}
+                    <span>{busyHere ? 'מעלה…' : 'העלאה'}</span>
+                  </button>
+                </div>
+              </div>
+            )
+          })}
+        </div>
+      )}
 
       {submitError && (
         <div
@@ -12852,7 +13058,9 @@ import {
   ALLOWED_RERENDER_FONT,
   ALLOWED_RERENDER_POS,
   UGC_RERENDER_SPEEDS,
-  VIDEO_LAYOUTS,
+  VIDEO_LAYOUT_FALLBACK_ID,
+  VIDEO_LAYOUT_IDS_EXCLUDED_WHEN_SPOKEN_ONLY,
+  requiredImagesForLayout,
 } from './ugcConstants.js'
 import { axiosErrorMessage, extractCatalogArray } from './ugcHelpers.js'
 
@@ -12872,11 +13080,13 @@ export function useUgcFormState({ taskId, statusPayload, isPolling }) {
   const [websiteUrl, setWebsiteUrl] = useState('')
   const [logoUrl, setLogoUrl] = useState('')
   const [productImageUrl, setProductImageUrl] = useState('')
-  const [selectedLayout, setSelectedLayout] = useState(VIDEO_LAYOUTS[0].id)
+  const [selectedLayout, setSelectedLayout] = useState(VIDEO_LAYOUT_FALLBACK_ID)
   const logoFileRef = useRef(null)
   const productFileRef = useRef(null)
   const [logoUploading, setLogoUploading] = useState(false)
   const [productUploading, setProductUploading] = useState(false)
+  const [customGalleryImages, setCustomGalleryImages] = useState([])
+  const [gallerySlotUploading, setGallerySlotUploading] = useState(null)
 
   const hydratedScriptKeyRef = useRef('')
   const [rerenderSpeed, setRerenderSpeed] = useState(1.15)
@@ -12945,6 +13155,22 @@ export function useUgcFormState({ taskId, statusPayload, isPolling }) {
     else setSelectedVoiceDbId(safeVoices[0]?.id ?? '')
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedAvatarDbId, avatars, voices])
+
+  useEffect(() => {
+    if (scriptSource !== 'spoken_only') return
+    if (!VIDEO_LAYOUT_IDS_EXCLUDED_WHEN_SPOKEN_ONLY.has(selectedLayout)) return
+    setSelectedLayout(VIDEO_LAYOUT_FALLBACK_ID)
+  }, [scriptSource, selectedLayout])
+
+  const requiredGalleryImages = useMemo(() => requiredImagesForLayout(selectedLayout), [selectedLayout])
+
+  useEffect(() => {
+    const n = requiredGalleryImages
+    setCustomGalleryImages((prev) => {
+      if (n === 0) return []
+      return Array.from({ length: n }, (_, i) => (typeof prev[i] === 'string' ? prev[i] : '') || '')
+    })
+  }, [requiredGalleryImages])
 
   useEffect(() => {
     hydratedScriptKeyRef.current = ''
@@ -13041,34 +13267,66 @@ export function useUgcFormState({ taskId, statusPayload, isPolling }) {
     }
   }
 
-  const uploadTempAsset = async (file, kind) => {
+  const postTempUpload = async (file) => {
+    const fd = new FormData()
+    fd.append('file', file)
+    const base = (API_BASE_URL || '').replace(/\/$/, '')
+    const res = await fetch(`${base}/upload-temp-asset`, {
+      method: 'POST',
+      body: fd,
+      credentials: 'include',
+    })
+    let data = {}
+    try {
+      data = await res.json()
+    } catch {
+      /* ignore */
+    }
+    if (!res.ok) {
+      const d = data?.detail
+      if (typeof d === 'string') throw new Error(d)
+      if (Array.isArray(d)) throw new Error(d.map((x) => x.msg || JSON.stringify(x)).join(' '))
+      throw new Error(res.statusText || 'ההעלאה נכשלה')
+    }
+    const u = typeof data?.url === 'string' ? data.url.trim() : ''
+    if (!u) throw new Error('לא התקבלה כתובת קובץ מהשרת')
+    return toAbsoluteApiUrl(u)
+  }
+
+  /**
+   * POST `file` to `/upload-temp-asset` and store the returned URL.
+   * - kind `'logo'` | `'product'` — updates logo / product URL fields.
+   * - kind `'gallery'` — requires `gallerySlotIndex` (0-based); updates `customGalleryImages`.
+   */
+  const uploadTempAsset = async (file, kind, gallerySlotIndex) => {
+    if (kind === 'gallery') {
+      const slotIndex = gallerySlotIndex
+      if (typeof slotIndex !== 'number' || slotIndex < 0 || slotIndex >= requiredGalleryImages) return
+      setSubmitError(null)
+      setGallerySlotUploading(slotIndex)
+      try {
+        const url = await postTempUpload(file)
+        setCustomGalleryImages((prev) => {
+          const next = Array.from({ length: requiredGalleryImages }, (_, i) =>
+            typeof prev[i] === 'string' ? prev[i] : '',
+          )
+          next[slotIndex] = url
+          return next
+        })
+      } catch (err) {
+        setSubmitError(axiosErrorMessage(err))
+      } finally {
+        setGallerySlotUploading(null)
+      }
+      return
+    }
     const setBusy = kind === 'logo' ? setLogoUploading : setProductUploading
     const setUrl = kind === 'logo' ? setLogoUrl : setProductImageUrl
     setSubmitError(null)
     setBusy(true)
     try {
-      const fd = new FormData()
-      fd.append('file', file)
-      const base = (API_BASE_URL || '').replace(/\/$/, '')
-      const res = await fetch(`${base}/upload-temp-asset`, {
-        method: 'POST',
-        body: fd,
-        credentials: 'include',
-      })
-      let data = {}
-      try {
-        data = await res.json()
-      } catch {
-        /* ignore */
-      }
-      if (!res.ok) {
-        const d = data?.detail
-        if (typeof d === 'string') throw new Error(d)
-        if (Array.isArray(d)) throw new Error(d.map((x) => x.msg || JSON.stringify(x)).join(' '))
-        throw new Error(res.statusText || 'ההעלאה נכשלה')
-      }
-      const u = typeof data?.url === 'string' ? data.url.trim() : ''
-      if (u) setUrl(toAbsoluteApiUrl(u))
+      const url = await postTempUpload(file)
+      setUrl(url)
     } catch (err) {
       setSubmitError(axiosErrorMessage(err))
     } finally {
@@ -13118,6 +13376,14 @@ export function useUgcFormState({ taskId, statusPayload, isPolling }) {
       const lu = logoUrl.trim()
       if (lu) body.logo_url = lu
       body.product_image_url = productImageUrl.trim() || undefined
+      if (requiredGalleryImages > 0) {
+        const slots = Array.from({ length: requiredGalleryImages }, (_, i) => {
+          const s = typeof customGalleryImages[i] === 'string' ? customGalleryImages[i].trim() : ''
+          return s
+        })
+        const anyFilled = slots.some(Boolean)
+        if (anyFilled) body.custom_gallery_images = slots
+      }
       const { data } = await api.post('/avatar-studio/generate', body)
       const id = data?.task_id
       if (!id) throw new Error('לא התקבל מזהה משימה')
@@ -13198,6 +13464,10 @@ export function useUgcFormState({ taskId, statusPayload, isPolling }) {
     productFileRef,
     logoUploading,
     productUploading,
+    customGalleryImages,
+    setCustomGalleryImages,
+    requiredGalleryImages,
+    gallerySlotUploading,
     uploadTempAsset,
     selectedAvatar,
     filteredVoices,
@@ -22442,9 +22712,47 @@ function getSplitGalleryCellMetrics(width, height) {
   const innerH = height - 2 * pad;
   const cellW = (innerW - gap) / 2;
   const cellH = (innerH - gap) / 2;
+  const tlLeft = pad;
+  const tlTop = pad;
+  const trLeft = pad + cellW + gap;
+  const trTop = pad;
+  const blLeft = pad;
+  const blTop = pad + cellH + gap;
   const brLeft = pad + cellW + gap;
   const brTop = pad + cellH + gap;
-  return { pad, gap, cellW, cellH, brLeft, brTop };
+  const cells = {
+    TL: { left: tlLeft, top: tlTop, gridColumn: 1, gridRow: 1 },
+    TR: { left: trLeft, top: trTop, gridColumn: 2, gridRow: 1 },
+    BL: { left: blLeft, top: blTop, gridColumn: 1, gridRow: 2 },
+    BR: { left: brLeft, top: brTop, gridColumn: 2, gridRow: 2 },
+  };
+  return { pad, gap, cellW, cellH, cells };
+}
+
+function normalizeAvatarQuadrant(q) {
+  const raw = typeof q === "string" ? q.trim().toUpperCase() : "";
+  if (raw === "TL" || raw === "TR" || raw === "BL" || raw === "BR") return raw;
+  return "BR";
+}
+
+function hexLuma(hex) {
+  const h = typeof hex === "string" ? hex.trim().replace("#", "") : "";
+  const full =
+    h.length === 3
+      ? h.split("").map((c) => c + c).join("")
+      : h.length >= 6
+        ? h.slice(0, 6)
+        : "";
+  if (!/^[0-9A-Fa-f]{6}$/.test(full)) return 0.5;
+  const r = parseInt(full.slice(0, 2), 16) / 255;
+  const g = parseInt(full.slice(2, 4), 16) / 255;
+  const b = parseInt(full.slice(4, 6), 16) / 255;
+  // Perceived luminance (sRGB-ish)
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+}
+
+function bestTextColorOnBrand(brandHex) {
+  return hexLuma(brandHex) > 0.62 ? "rgba(8,8,10,0.92)" : "rgba(255,255,255,0.96)";
 }
 
 /**
@@ -22458,8 +22766,11 @@ function PippableAvatarVideo({
   videoScale,
   pipWeight,
   speechFrames,
+  scenes = [],
+  sceneStarts = [],
+  sceneDurations = [],
 }) {
-  const { width, height } = useVideoConfig();
+  const { width, height, fps } = useVideoConfig();
   const frame = useCurrentFrame();
   const src = typeof rawVideoUrl === "string" ? rawVideoUrl.trim() : "";
   const mix = frame >= speechFrames ? 0 : Math.min(1, Math.max(0, pipWeight));
@@ -22486,9 +22797,32 @@ function PippableAvatarVideo({
     );
   }
 
-  const { brLeft, brTop, cellW, cellH } = getSplitGalleryCellMetrics(width, height);
-  const left = interpolate(mix, [0, 1], [0, brLeft]);
-  const top = interpolate(mix, [0, 1], [0, brTop]);
+  const { cellW, cellH, cells } = getSplitGalleryCellMetrics(width, height);
+
+  // Determine current / previous gallery quadrants so we can animate position changes
+  // only when staying inside a consecutive `split_gallery` run.
+  const i = getSceneIndexForFrame(frame, sceneStarts, sceneDurations);
+  const scene = scenes?.[i] ?? null;
+  const prevScene = i > 0 ? scenes?.[i - 1] : null;
+  const isGallery = resolveSceneLayoutName(scene) === "split_gallery";
+  const prevIsGallery = resolveSceneLayoutName(prevScene) === "split_gallery";
+  const qNow = normalizeAvatarQuadrant(scene?.layout_data?.avatar_quadrant);
+  const qPrev = normalizeAvatarQuadrant(prevScene?.layout_data?.avatar_quadrant);
+  const start = sceneStarts[i] ?? 0;
+  const t = frame - start;
+
+  const target = cells[qNow] ?? cells.BR;
+  const from = cells[qPrev] ?? cells.BR;
+  const shouldAnimateQuadrant =
+    isGallery && prevIsGallery && qNow !== qPrev;
+  const moveSpring = shouldAnimateQuadrant
+    ? Math.min(1, spring({ frame: t, fps, from: 0, to: 1, config: PIP_SPRING }))
+    : 1;
+  const qLeft = interpolate(moveSpring, [0, 1], [from.left, target.left]);
+  const qTop = interpolate(moveSpring, [0, 1], [from.top, target.top]);
+
+  const left = interpolate(mix, [0, 1], [0, qLeft]);
+  const top = interpolate(mix, [0, 1], [0, qTop]);
   const w = interpolate(mix, [0, 1], [width, cellW]);
   const h = interpolate(mix, [0, 1], [height, cellH]);
   const brR = interpolate(mix, [0, 1], [0, 10]);
@@ -22559,13 +22893,24 @@ function normalizeToFourImageSlots(images) {
   return out;
 }
 
-/** Up to 3 labels for TL, TR, BL (BR is the live avatar). */
+/**
+ * Up to 3 on-video captions for TL, TR, BL (BR is the live avatar).
+ * New schema: `{ image_prompt, on_screen_caption }` — shows caption only (not DALL·E prompt).
+ * Legacy: plain strings are not shown as captions (avoid leaking director prompts); placeholder.
+ */
 function normalizeToThreeGalleryImageSlots(images) {
   const arr = Array.isArray(images) ? images : [];
   const out = ["", "", ""];
   for (let k = 0; k < 3; k += 1) {
     const v = arr[k];
-    out[k] = typeof v === "string" && v.trim() ? v.trim() : `תמונה ${k + 1}`;
+    let cap = "";
+    if (v && typeof v === "object" && !Array.isArray(v)) {
+      cap =
+        typeof v.on_screen_caption === "string" && v.on_screen_caption.trim()
+          ? v.on_screen_caption.trim()
+          : "";
+    }
+    out[k] = cap || `תמונה ${k + 1}`;
   }
   return out;
 }
@@ -22606,9 +22951,10 @@ function galleryCellPlaceholderStyle(description, index, brandHex) {
 }
 
 /**
- * Full-frame 2×2 grid: `layout_data.images` → top-left, top-right, bottom-left only;
+ * Full-frame 2×2 grid: `layout_data.images` → three slots (TL, TR, BL); each entry may be
+ * `{ image_prompt, on_screen_caption }` — only `on_screen_caption` is drawn on the still.
  * bottom-right is reserved for the `OffthreadVideo` layer.
- * Optional `layout_data.image_urls` (3 URLs) — DALL·E stills with Ken Burns + Hebrew caption band.
+ * Optional `layout_data.image_urls` (3 URLs) — DALL·E stills with Ken Burns + caption band.
  */
 function PipGalleryGrid({
   layoutData,
@@ -22618,16 +22964,27 @@ function PipGalleryGrid({
 }) {
   const localT = useCurrentFrame();
   const { fps, width, height } = useVideoConfig();
-  const { pad, gap } = getSplitGalleryCellMetrics(width, height);
+  const { pad, gap, cells } = getSplitGalleryCellMetrics(width, height);
   const imageDescriptions = normalizeToThreeGalleryImageSlots(layoutData?.images);
   const imageUrls = normalizeToThreeGalleryImageUrls(layoutData?.image_urls);
+  const avatarQuadrant = normalizeAvatarQuadrant(layoutData?.avatar_quadrant);
+  const orderedQuadrants = ["TL", "TR", "BL", "BR"];
+  const imageQuadrants = orderedQuadrants.filter((q) => q !== avatarQuadrant);
   const fontFamilyStr = resolveCaptionFontFamily("heebo");
+  const tagTextColor = bestTextColorOnBrand(brandHex);
+  const tagFontSize = Math.min(42, height * 0.035);
   const sceneLen = Math.max(1, sceneDurationInFrames);
-  const slots = [
-    { desc: imageDescriptions[0], imageUrl: imageUrls[0], gridColumn: 1, gridRow: 1, index: 0 },
-    { desc: imageDescriptions[1], imageUrl: imageUrls[1], gridColumn: 2, gridRow: 1, index: 1 },
-    { desc: imageDescriptions[2], imageUrl: imageUrls[2], gridColumn: 1, gridRow: 2, index: 2 },
-  ];
+  const slots = imageQuadrants.map((q, idx) => {
+    const cell = cells[q] ?? cells.BR;
+    return {
+      desc: imageDescriptions[idx],
+      imageUrl: imageUrls[idx],
+      gridColumn: cell.gridColumn,
+      gridRow: cell.gridRow,
+      index: idx,
+      quadrant: q,
+    };
+  });
   return (
     <AbsoluteFill
       style={{
@@ -22734,43 +23091,85 @@ function PipGalleryGrid({
                     left: 0,
                     right: 0,
                     bottom: 0,
-                    height: "52%",
+                    height: "38%",
                     background:
-                      "linear-gradient(to top, rgba(0,0,0,0.88) 0%, rgba(0,0,0,0.35) 45%, transparent 100%)",
+                      "linear-gradient(to top, rgba(0,0,0,0.72) 0%, rgba(0,0,0,0.24) 55%, transparent 100%)",
                     borderRadius: "0 0 12px 12px",
                     pointerEvents: "none",
                   }}
                 />
-                <span
-                  dir="rtl"
-                  lang="he"
+                <div
                   style={{
-                    position: "relative",
-                    zIndex: 2,
-                    fontFamily: `${fontFamilyStr}, "Segoe UI", sans-serif`,
-                    fontSize: Math.min(22, height * 0.018),
-                    fontWeight: 700,
-                    lineHeight: 1.25,
-                    wordBreak: "break-word",
-                    paddingLeft: 10,
-                    paddingRight: 10,
-                    paddingBottom: 15,
-                    color: "rgba(255,255,255,0.95)",
-                    textShadow: "0 2px 14px rgba(0,0,0,0.9)",
+                    position: "absolute",
+                    left: 0,
+                    right: 0,
+                    bottom: 14,
+                    zIndex: 3,
+                    display: "flex",
+                    justifyContent: "center",
+                    paddingLeft: 12,
+                    paddingRight: 12,
+                    pointerEvents: "none",
                   }}
                 >
-                  {desc}
-                </span>
+                  <span
+                    dir="rtl"
+                    lang="he"
+                    style={{
+                      fontFamily: `${fontFamilyStr}, "Segoe UI", sans-serif`,
+                      fontSize: tagFontSize,
+                      fontWeight: 900,
+                      lineHeight: 1.1,
+                      letterSpacing: -0.2,
+                      color: tagTextColor,
+                      backgroundColor: brandHex,
+                      padding: "8px 24px",
+                      borderRadius: 999,
+                      boxShadow: [
+                        "0 10px 26px rgba(0,0,0,0.55)",
+                        `0 0 0 1px ${tagTextColor.includes("255") ? "rgba(0,0,0,0.18)" : "rgba(255,255,255,0.22)"}`,
+                        `0 0 22px -6px ${brandHex}CC`,
+                      ].join(", "),
+                      backdropFilter: "blur(8px)",
+                      WebkitBackdropFilter: "blur(8px)",
+                      maxWidth: "96%",
+                      whiteSpace: "nowrap",
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                      textShadow:
+                        tagTextColor.includes("255")
+                          ? "0 2px 14px rgba(0,0,0,0.55)"
+                          : "0 1px 10px rgba(255,255,255,0.18)",
+                    }}
+                  >
+                    {desc}
+                  </span>
+                </div>
               </>
             ) : (
               <span
+                dir="rtl"
+                lang="he"
                 style={{
                   fontFamily: `${fontFamilyStr}, "Segoe UI", sans-serif`,
-                  fontSize: Math.min(22, height * 0.018),
-                  fontWeight: 700,
-                  lineHeight: 1.25,
-                  wordBreak: "break-word",
-                  padding: 10,
+                  fontSize: tagFontSize,
+                  fontWeight: 900,
+                  lineHeight: 1.1,
+                  letterSpacing: -0.2,
+                  color: tagTextColor,
+                  backgroundColor: brandHex,
+                  padding: "8px 24px",
+                  borderRadius: 999,
+                  boxShadow: [
+                    "0 10px 26px rgba(0,0,0,0.55)",
+                    `0 0 22px -6px ${brandHex}CC`,
+                  ].join(", "),
+                  backdropFilter: "blur(8px)",
+                  WebkitBackdropFilter: "blur(8px)",
+                  maxWidth: "92%",
+                  whiteSpace: "nowrap",
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
                 }}
               >
                 {desc}
@@ -22781,8 +23180,8 @@ function PipGalleryGrid({
       })}
       <div
         style={{
-          gridColumn: 2,
-          gridRow: 2,
+          gridColumn: (cells[avatarQuadrant] ?? cells.BR).gridColumn,
+          gridRow: (cells[avatarQuadrant] ?? cells.BR).gridRow,
           minHeight: 0,
           minWidth: 0,
           borderRadius: 10,
@@ -23164,6 +23563,9 @@ export function UgcComposition({
         videoScale={videoScale}
         pipWeight={pipWeight}
         speechFrames={speechFrames}
+        scenes={scenes}
+        sceneStarts={sceneStarts}
+        sceneDurations={sceneDurations}
       />
 
       {/* Website URL + end-card logo / product */}

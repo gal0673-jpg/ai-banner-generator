@@ -129,24 +129,33 @@ def _dalle3_generate_to_path(client: OpenAI, prompt: str, dest: Path) -> None:
 
 
 def generate_split_gallery_images(
-    images_hebrew: list,
+    image_prompts: list,
     task_id: str,
     work_dir: str | os.PathLike[str],
     *,
     name_prefix: str = "split_gallery",
+    refine_prompts_with_gpt: bool = False,
+    custom_image_urls: list[str] | None = None,
 ) -> list[str]:
-    """Translate three Hebrew labels via GPT-4o, then generate three DALL·E 3 images on disk."""
+    """Generate three DALL·E 3 images from three prompt strings on disk.
+
+    When *refine_prompts_with_gpt* is False (default), each string in *image_prompts* is sent
+    directly to DALL·E 3 (director ``image_prompt`` fields).
+
+    When True, strings are treated as Hebrew labels and expanded to English DALL·E prompts
+    via GPT-4o (legacy scripts).
+    """
     api_key = os.environ.get("OPENAI_API_KEY", "").strip()
     if not api_key:
         raise UGCServiceError("OPENAI_API_KEY is not set in the environment.")
 
     lines: list[str] = []
-    arr = list(images_hebrew) if isinstance(images_hebrew, list) else []
+    arr = list(image_prompts) if isinstance(image_prompts, list) else []
     for k in range(3):
         s = str(arr[k]).strip() if k < len(arr) and arr[k] is not None else ""
         if not s:
             raise UGCServiceError(
-                f"split_gallery requires three non-empty Hebrew image strings; index {k} is missing."
+                f"split_gallery requires three non-empty image prompt strings; index {k} is missing."
             )
         lines.append(s)
 
@@ -155,10 +164,20 @@ def generate_split_gallery_images(
     root.mkdir(parents=True, exist_ok=True)
 
     client = OpenAI(api_key=api_key)
-    prompts = _split_gallery_prompts_from_hebrew(client, lines)
+    if refine_prompts_with_gpt:
+        prompts = _split_gallery_prompts_from_hebrew(client, lines)
+    else:
+        prompts = lines
 
     urls: list[str] = []
     for i, prompt in enumerate(prompts, start=1):
+        custom_url = ""
+        if isinstance(custom_image_urls, list) and len(custom_image_urls) >= i:
+            cu = custom_image_urls[i - 1]
+            custom_url = str(cu).strip() if cu is not None else ""
+        if custom_url:
+            urls.append(custom_url)
+            continue
         dest = root / f"{prefix}_{i}.png"
         _dalle3_generate_to_path(client, prompt, dest)
         urls.append(f"/task-files/{task_id}/{prefix}_{i}.png")

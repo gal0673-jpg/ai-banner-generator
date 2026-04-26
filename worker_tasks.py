@@ -39,10 +39,11 @@ def _enrich_ugc_script_split_gallery_dalle(
     task_id: str,
     work_dir: str | os.PathLike[str],
     log_name: str,
+    custom_gallery_images: list[str] | None = None,
 ) -> None:
     """Fill ``layout_data.image_urls`` for ``split_gallery`` scenes; mutates *ugc_script* in place.
 
-    On API/disk errors, logs and leaves Hebrew ``images`` only (same behavior as
+    On API/disk errors, logs and leaves ``layout_data.images`` unchanged (same behavior as
     ``task_crawl_and_script``).
     """
     from services.ugc_service import generate_split_gallery_images
@@ -54,17 +55,46 @@ def _enrich_ugc_script_split_gallery_dalle(
             layout_data = scene.get("layout_data")
             if not isinstance(layout_data, dict):
                 continue
-            hebrew_imgs = layout_data.get("images")
-            if not isinstance(hebrew_imgs, list):
+            raw_imgs = layout_data.get("images")
+            if not isinstance(raw_imgs, list) or len(raw_imgs) != 3:
+                continue
+            all_dict = all(isinstance(x, dict) for x in raw_imgs)
+            all_str = all(isinstance(x, str) for x in raw_imgs)
+            dalle_prompts: list[str] = []
+            refine = False
+            if all_dict:
+                for item in raw_imgs:
+                    p = item.get("image_prompt") if isinstance(item, dict) else None
+                    if isinstance(p, str) and p.strip():
+                        dalle_prompts.append(p.strip())
+                    else:
+                        dalle_prompts = []
+                        break
+                refine = False
+            elif all_str:
+                dalle_prompts = [str(x).strip() for x in raw_imgs if str(x).strip()]
+                refine = True
+            else:
+                logger.warning(
+                    "[%s] task_id=%s  split_gallery scene=%s  layout_data.images must be 3 objects "
+                    "or 3 strings; skipping DALL·E",
+                    log_name,
+                    task_id,
+                    scene.get("scene_number"),
+                )
+                continue
+            if len(dalle_prompts) != 3:
                 continue
             sn = scene.get("scene_number")
             stem = f"split_gallery_s{sn}" if isinstance(sn, int) else "split_gallery"
             try:
                 layout_data["image_urls"] = generate_split_gallery_images(
-                    hebrew_imgs,
+                    dalle_prompts,
                     task_id,
                     work_dir,
                     name_prefix=stem,
+                    refine_prompts_with_gpt=refine,
+                    custom_image_urls=custom_gallery_images,
                 )
             except Exception as one_scene_exc:
                 logger.warning(
@@ -976,6 +1006,7 @@ def run_avatar_studio_task(
     spoken_script: str | None = None,
     heygen_character_type: str | None = None,
     aspect_ratio: str = "9:16",
+    custom_gallery_images: list[str] | None = None,
 ) -> None:
     """Avatar marketing video from creative prompts only (no crawl)."""
     from services.ugc_service import (
@@ -1051,6 +1082,7 @@ def run_avatar_studio_task(
             task_id,
             work_dir,
             "run_avatar_studio_task",
+            custom_gallery_images=custom_gallery_images,
         )
 
         persist_task(task_uuid, ugc_script=ugc_script)

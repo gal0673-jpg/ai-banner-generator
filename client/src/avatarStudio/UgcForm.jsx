@@ -1,3 +1,4 @@
+import { useRef } from 'react'
 import { Link } from 'react-router-dom'
 import { API_BASE_URL_DISPLAY } from '../api.js'
 import { TONE_TAGS, videoLayoutsVisibleForScriptSource } from './ugcConstants.js'
@@ -29,6 +30,10 @@ export default function UgcForm({ ugcForm, onSubmit }) {
     logoUploading,
     productUploading,
     uploadTempAsset,
+    customGalleryImages,
+    setCustomGalleryImages,
+    requiredGalleryImages,
+    gallerySlotUploading,
     avatars,
     catalogLoading,
     selectedAvatarDbId,
@@ -44,6 +49,8 @@ export default function UgcForm({ ugcForm, onSubmit }) {
   } = ugcForm
 
   const visibleVideoLayouts = videoLayoutsVisibleForScriptSource(scriptSource)
+  const galleryPickSlotRef = useRef(0)
+  const galleryFileInputRef = useRef(null)
 
   return (
     <form
@@ -389,6 +396,72 @@ export default function UgcForm({ ugcForm, onSubmit }) {
           })}
         </div>
       </div>
+
+      {requiredGalleryImages > 0 && (
+        <div className="space-y-3 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50/80 dark:bg-slate-950/40 px-3 py-3" dir="rtl">
+          <p className="text-[11px] text-slate-600 dark:text-slate-400 leading-relaxed">
+            תמונות מותאמות אישית (אופציונלי): המערכת תייצר תמונות AI עבור כל סלוט שתשאירו ריק.
+          </p>
+          <input
+            ref={galleryFileInputRef}
+            type="file"
+            accept="image/*"
+            className="hidden"
+            onChange={(ev) => {
+              const f = ev.target.files?.[0]
+              if (f) void uploadTempAsset(f, 'gallery', galleryPickSlotRef.current)
+              ev.target.value = ''
+            }}
+          />
+          {Array.from({ length: requiredGalleryImages }, (_, slotIndex) => {
+            const url = typeof customGalleryImages[slotIndex] === 'string' ? customGalleryImages[slotIndex] : ''
+            const busyHere = gallerySlotUploading === slotIndex
+            return (
+              <div key={slotIndex} className="space-y-1.5">
+                <label className="block text-xs font-medium text-slate-600 dark:text-slate-300">
+                  <span dir="ltr" className="inline-block">
+                    Upload Image {slotIndex + 1} (Optional)
+                  </span>
+                </label>
+                <div className="flex flex-wrap items-stretch gap-2">
+                  <input
+                    type="text"
+                    value={url}
+                    onChange={(ev) => {
+                      const v = ev.target.value
+                      setCustomGalleryImages((prev) => {
+                        const next = Array.from({ length: requiredGalleryImages }, (_, i) =>
+                          typeof prev[i] === 'string' ? prev[i] : '',
+                        )
+                        next[slotIndex] = v
+                        return next
+                      })
+                    }}
+                    disabled={formLocked}
+                    placeholder="https://... או העלאה"
+                    className="min-w-0 flex-1 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2.5 text-sm outline-none disabled:opacity-60"
+                    dir="ltr"
+                    autoComplete="off"
+                    maxLength={1024}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => {
+                      galleryPickSlotRef.current = slotIndex
+                      galleryFileInputRef.current?.click()
+                    }}
+                    disabled={formLocked || busyHere}
+                    className="shrink-0 inline-flex items-center justify-center gap-2 rounded-xl border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-800 px-3 py-2.5 text-sm font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-700 disabled:opacity-50 min-w-[5.5rem]"
+                  >
+                    {busyHere ? <Spinner className="!size-4" /> : null}
+                    <span>{busyHere ? 'מעלה…' : 'העלאה'}</span>
+                  </button>
+                </div>
+              </div>
+            )
+          })}
+        </div>
+      )}
 
       {submitError && (
         <div
