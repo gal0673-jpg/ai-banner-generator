@@ -10,6 +10,7 @@ import {
   useVideoConfig,
 } from "remotion";
 import { loadFont } from "@remotion/google-fonts/Heebo";
+import { DESIGN_TOKENS } from "../shared/designTokens.js";
 
 const heebo = loadFont("normal", {
   weights: ["400", "500", "600", "700", "800"],
@@ -25,7 +26,7 @@ const BASE_BULLET_STARTS    = [22, 32, 42];
 const BASE_CTA_START        = 62;
 
 // ─── Content column reference width (matches DF3 content area in BannerCanvas3) ─
-const D3_CONTENT_W_REF = 688;
+const D3_CONTENT_W_REF = DESIGN_TOKENS?.fonts?.design3?.remotion?.content_w_ref || 688;
 
 function normalizeBrandHex(input) {
   if (!input || typeof input !== "string") return "#4F46E5";
@@ -168,10 +169,27 @@ export const Design3Composition = ({
   const contentW = cardW - cardPad * 2;
 
   // Font sizes scaled from D3_CONTENT_W_REF reference (matches BannerCanvas3 DF3)
-  const headlineFs = Math.min(280, (contentW * (isVertical ? 88 : 62)) / D3_CONTENT_W_REF);
-  const subheadFs  = Math.min(180, (contentW * (isVertical ? 38 : 24)) / D3_CONTENT_W_REF);
-  const bulletFs   = Math.min(140, (contentW * (isVertical ? 28 : 18)) / D3_CONTENT_W_REF);
-  const ctaFs      = Math.min(180, (contentW * (isVertical ? 44 : 28)) / D3_CONTENT_W_REF);
+  const DF_SQ = DESIGN_TOKENS?.fonts?.design3?.square;
+  const DF_V  = DESIGN_TOKENS?.fonts?.design3?.vertical;
+  const headlineFs = Math.min(
+    280,
+    (contentW * (isVertical ? (DF_V?.headline || 88) : (DF_SQ?.headline || 62))) /
+      D3_CONTENT_W_REF,
+  );
+  const subheadFs = Math.min(
+    180,
+    (contentW * (isVertical ? (DF_V?.subhead || 38) : (DF_SQ?.subhead || 24))) /
+      D3_CONTENT_W_REF,
+  );
+  const bulletFs = Math.min(
+    140,
+    (contentW * (isVertical ? (DF_V?.bullets || 28) : (DF_SQ?.bullets || 18))) /
+      D3_CONTENT_W_REF,
+  );
+  const ctaFs = Math.min(
+    180,
+    (contentW * (isVertical ? (DF_V?.cta || 44) : (DF_SQ?.cta || 28))) / D3_CONTENT_W_REF,
+  );
 
   const rowGap   = Math.round(cardH * 0.018);
   const bulletGap = Math.round(cardH * 0.014);

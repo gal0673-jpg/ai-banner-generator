@@ -14,6 +14,7 @@ Final raster banner: run main.py (HTML + headless Chrome) or wire html_renderer 
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import sys
@@ -30,6 +31,8 @@ from openai import (
     RateLimitError,
 )
 from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
+
+logger = logging.getLogger(__name__)
 
 BASE = Path(__file__).resolve().parent
 load_dotenv(BASE / ".env")
@@ -153,7 +156,7 @@ def _images_generate_and_store(client: OpenAI, combined_prompt: str, dest: Path)
     image_url = img_response.data[0].url
     if not image_url:
         raise RuntimeError("[creative_agent] ERROR: DALL-E returned no image URL.")
-    print("[creative_agent] Step 2/3: Downloading image from OpenAI URL…")
+    logger.info("[creative_agent] Step 2/3: Downloading image from OpenAI URL…")
     img_req = requests.get(image_url, timeout=120)
     img_req.raise_for_status()
     dest.write_bytes(img_req.content)
@@ -179,12 +182,12 @@ def _read_scraped() -> str:
 
 
 def fetch_banner_payload(client: OpenAI, user_content: str) -> dict:
-    print("[creative_agent] Step 1/3: Requesting copy + image brief from GPT-4o (Elite Marketing Agency)…")
+    logger.info("[creative_agent] Step 1/3: Requesting copy + image brief from GPT-4o (Elite Marketing Agency)…")
     response = _chat_completions_create_banner(client, user_content)
     text = response.choices[0].message.content
     if not text:
         raise RuntimeError("[creative_agent] ERROR: Empty response from GPT-4o.")
-    print("[creative_agent] Step 1/3: Parsing JSON…")
+    logger.info("[creative_agent] Step 1/3: Parsing JSON…")
     data = json.loads(text)
     for key in ("headline", "subhead", "cta", "video_hook", "image_prompt", "brand_color"):
         if key not in data or not str(data[key]).strip():
@@ -227,7 +230,7 @@ def fetch_banner_payload(client: OpenAI, user_content: str) -> dict:
         )
     data["video_hook"] = hook_raw
 
-    print(
+    logger.info(
         "[creative_agent] Step 1/3: OK — headline, subhead, bullet_points (3), cta, video_hook, "
         "brand_color, image_prompt received."
     )
@@ -239,10 +242,10 @@ def generate_background_dalle3(
 ) -> Path:
     dest = Path(output_path) if output_path is not None else BACKGROUND_PNG_PATH
     dest.parent.mkdir(parents=True, exist_ok=True)
-    print("[creative_agent] Step 2/3: Generating background with DALL-E 3 (1024×1024)…")
+    logger.info("[creative_agent] Step 2/3: Generating background with DALL-E 3 (1024×1024)…")
     combined_prompt = f"{image_prompt.strip()}\n\n{DALLE_IMAGE_API_ENFORCEMENT}"
     _images_generate_and_store(client, combined_prompt, dest)
-    print(f"[creative_agent] Step 2/3: Wrote {dest}.")
+    logger.info("[creative_agent] Step 2/3: Wrote %s.", dest)
     return dest
 
 

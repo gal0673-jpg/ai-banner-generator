@@ -66,7 +66,7 @@ def _did_poll_status(talk_id: str, api_key: str) -> str:
 
     for attempt in range(1, DID_MAX_POLL_ATTEMPTS + 1):
         try:
-            resp = requests.get(url, headers=headers, timeout=30)
+            resp = requests.get(url, headers=headers, timeout=60)
             resp.raise_for_status()
             data = resp.json()
         except requests.RequestException as exc:

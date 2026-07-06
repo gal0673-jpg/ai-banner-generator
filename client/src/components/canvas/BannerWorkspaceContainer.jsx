@@ -12,6 +12,7 @@ import {
   normalizeBrandHex,
 } from './canvasUtils.js'
 import { ACTIONS, useBannerCanvasState } from './useBannerCanvasState.js'
+import { bannerVerticalBottomSafePx } from '../../../../shared/designTokens.js'
 
 /**
  * @typedef {object} BannerLayerUiConfig
@@ -84,6 +85,7 @@ export default function BannerWorkspaceContainer({
   const designSize = isVertical ? BANNER_VERTICAL_9_16 : BANNER_SQUARE_1_1
   const BANNER_W = designSize.width
   const BANNER_H = designSize.height
+  const verticalBottomSafePx = isVertical ? bannerVerticalBottomSafePx(BANNER_H) : 0
 
   const viewportRef = useRef(null)
   const captureRef = useRef(null)
@@ -257,6 +259,21 @@ export default function BannerWorkspaceContainer({
             }}
           >
             {renderCanvasBackground(workspace)}
+
+            {/* 9:16 safe-area guide (TikTok/Reels UI overlays) — preview only */}
+            {isVertical && verticalBottomSafePx > 0 && !exporting ? (
+              <div
+                className="pointer-events-none absolute left-0 right-0 bottom-0"
+                style={{
+                  height: verticalBottomSafePx,
+                  background:
+                    'linear-gradient(180deg, rgba(15,23,42,0) 0%, rgba(15,23,42,0.32) 100%)',
+                  borderTop: '2px dashed rgba(255,255,255,0.45)',
+                  zIndex: 50,
+                }}
+                aria-hidden
+              />
+            ) : null}
 
             <BannerLayer
               canvasRef={captureRef}

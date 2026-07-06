@@ -14,6 +14,21 @@ python -m alembic <command>
 
 ---
 
+## Startup contract (what FastAPI does on boot)
+
+Since the credits work, `Base.metadata.create_all()` is **no longer called** from the API lifespan. Instead, `api._ensure_schema_ready()` runs and takes one of three branches:
+
+| DB state on startup | Behavior |
+|---|---|
+| **Empty** (no tables at all) | One-time bootstrap: `create_all` + `alembic stamp head`. Zero-config dev installs still work. |
+| **Tables exist, no `alembic_version`** | Logs a `WARNING` telling you to run `alembic stamp head`. The API keeps serving — fix when convenient. |
+| **`alembic_version` ≠ latest local revision** | Logs a `WARNING` telling you to run `alembic upgrade head`. The API keeps serving on the old schema (handy for emergency rollbacks). |
+| **Up to date** | Logs one `INFO` line confirming the revision. |
+
+**Deploy ritual:** after pulling new code, run `python -m alembic upgrade head` *before* restarting `uvicorn` / Celery workers. The API will not auto-migrate at runtime (that risks racing between processes), so the explicit step keeps you in control.
+
+---
+
 ## Existing databases: stamp before autogenerate
 
 If **`users` and `banner_tasks` already exist** (production or local), Alembic has no revision history yet. You must **stamp** the database to the current migration head **without** running `upgrade`, so Alembic records that the schema is already in place.

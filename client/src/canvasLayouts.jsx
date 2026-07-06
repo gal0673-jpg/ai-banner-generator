@@ -9,6 +9,7 @@ import {
   DESIGN2_DEFAULT_BOXES_VERTICAL,
   DESIGN3_DEFAULT_BOXES_VERTICAL,
 } from './components/canvas/useBannerCanvasState.js'
+import { DESIGN_TOKENS } from '../../shared/designTokens.js'
 
 // ─── Design 1 — split panel / hero vertical ─────────────────────────────────
 const DC1 = { headline: '#0f172a', subhead: '#475569', bullets: '#1e293b' }
@@ -16,8 +17,8 @@ const LEFT_W = 475
 const DIVIDER_W = 6
 const RIGHT_X = LEFT_W + DIVIDER_W
 const STRIP_H_D1 = 70
-const DF1_SQUARE = { headline: 54, subhead: 26, bullets: 20, cta: 30 }
-const DF1_VERTICAL = { headline: 92, subhead: 42, bullets: 34, cta: 48 }
+const DF1_SQUARE = DESIGN_TOKENS?.fonts?.design1?.square
+const DF1_VERTICAL = DESIGN_TOKENS?.fonts?.design1?.vertical
 const DESIGN1_SQUARE_BOXES = {
   logo: { x: 836, y: 30, width: 200, height: 72 },
   contentStack: { x: 515, y: 120, width: 520, height: 840 },
@@ -165,8 +166,8 @@ function renderDesign1CanvasBackground(ws) {
 }
 
 // ─── Design 2 — immersive full-bleed ─────────────────────────────────────────
-const DF2_SQUARE = { headline: 92, subhead: 36, bullets: 28, cta: 44 }
-const DF2_VERTICAL = { headline: 118, subhead: 48, bullets: 34, cta: 52 }
+const DF2_SQUARE = DESIGN_TOKENS?.fonts?.design2?.square
+const DF2_VERTICAL = DESIGN_TOKENS?.fonts?.design2?.vertical
 const DC2 = { headline: '#ffffff', subhead: '#e6e6e6', bullets: '#ebebeb' }
 const STRIP_H_D2 = 64
 const ACCENT_W = 6
@@ -277,8 +278,8 @@ function renderDesign2CanvasBackground(ws) {
 }
 
 // ─── Design 3 — minimalist card ───────────────────────────────────────────────
-const DF3_SQUARE = { headline: 62, subhead: 24, bullets: 18, cta: 28 }
-const DF3_VERTICAL = { headline: 88, subhead: 38, bullets: 28, cta: 44 }
+const DF3_SQUARE = DESIGN_TOKENS?.fonts?.design3?.square
+const DF3_VERTICAL = DESIGN_TOKENS?.fonts?.design3?.vertical
 const DC3 = { headline: '#0f172a', subhead: '#475569', bullets: '#1e293b' }
 const DESIGN3_SQUARE_BOXES = {
   logo: { x: 660, y: 168, width: 220, height: 72 },

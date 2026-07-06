@@ -2,6 +2,7 @@ import { Navigate, Route, Routes, useLocation } from 'react-router-dom'
 import AdminCatalog from './AdminCatalog.jsx'
 import AvatarStudio from './AvatarStudio.jsx'
 import BannerWorkspace from './BannerWorkspace.jsx'
+import CreateStudio from './studio/CreateStudio.jsx'
 import { useAuth } from './AuthContext.jsx'
 import Login from './Login.jsx'
 
@@ -31,6 +32,14 @@ export default function App() {
         <Route path="/login" element={<Login />} />
         <Route
           path="/"
+          element={
+            <ProtectedRoute>
+              <CreateStudio />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/advanced"
           element={
             <ProtectedRoute>
               <BannerWorkspace />

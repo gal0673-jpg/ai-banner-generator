@@ -227,10 +227,10 @@ SYSTEM OVERVIEW (banner generator)
 ---------------------------------
 - Backend: FastAPI in api.py — JWT auth (auth.py), SQLAlchemy models (models.py), MySQL via DATABASE_URL (database.py).
 - Bootstrap: on startup, creates superuser gal0673@gmail.com if missing (see SUPERUSER_EMAIL in api.py).
-- Flow: POST /generate enqueues crawl + creative pipeline (main.py); task row in banner_tasks; static files under tasks/<uuid>/ served at /task-files/...
-- Client: Vite + React (client/) — Login, BannerWorkspace, BannerCanvas (Framer Motion + re-resizable, html-to-image export).
+- Flow: POST /generate enqueues crawl + creative pipeline (services/banner_pipeline.py, run by worker_tasks.py); task row in banner_tasks; static files under tasks/<uuid>/ served at /task-files/...
+- Client: Vite + React (client/) — Login, BannerWorkspace, DynamicBannerCanvas (Framer Motion + re-resizable, html-to-image export).
 - Video engine: Node/Remotion under video_engine/ (see VIDEO ENGINE SOURCE FILES section in export).
-- Pipeline pieces: creative_agent.py, generate_copy.py, html_renderer.py, composite_banner.py (image generation path).
+- Pipeline pieces: creative_agent.py, services/banner_pipeline.py, html_renderer.py (image generation path).
 - Admin: GET /admin/tasks (superuser). Primary-admin-only: GET /admin/ai-banner-context (same email as SUPERUSER_EMAIL).
 
 This file is generated for AI-assisted development and debugging; it omits git, node_modules, per-task binary trees, and prior context dumps.

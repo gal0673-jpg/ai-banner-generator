@@ -26,7 +26,7 @@ from collections import deque
 from contextlib import contextmanager, nullcontext
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Iterator
-from urllib.parse import unquote, urljoin, urlparse, urlunparse
+from urllib.parse import urljoin, urlparse
 
 import requests
 from PIL import Image, UnidentifiedImageError
@@ -51,13 +51,24 @@ try:
 except ImportError:  # pragma: no cover - optional hardening dependency
     psutil = None  # type: ignore[assignment]
 
+# Pure URL/text helpers + their constants live in crawl_utils (unit-tested there).
+# Re-imported here so existing callers (crawler_service.normalize_url, etc.) work.
+from services.crawl_utils import (  # noqa: E402
+    SEPARATOR,
+    format_page_block,
+    link_contains_junk,
+    normalize_url,
+    same_site,
+    strip_fragment,
+)
+from services.crawl_utils import is_content_sparse as _is_content_sparse  # noqa: E402
+
 logger = logging.getLogger(__name__)
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 MAX_PAGES = 10
 OUTPUT_FILE = _PROJECT_ROOT / "scraped_content.txt"
 LOGO_FILE = _PROJECT_ROOT / "logo.png"
-SEPARATOR = "=" * 80
 RENDER_WAIT_SECONDS = 10
 
 PAGE_LOAD_TIMEOUT_SECONDS = 35
@@ -65,8 +76,6 @@ SCRIPT_TIMEOUT_SECONDS = 25
 DOM_READY_TIMEOUT_SECONDS = 20
 
 HTTPX_TIMEOUT_SECONDS = 15.0
-SPA_MIN_TOTAL_CHARS = 300
-SPA_MIN_MEANINGFUL_PARAS = 3
 
 # Total wall-clock budget for a single headless crawl session (Chrome path only).
 # 0 = disabled (rely on Celery time limits only). Set lower in production to cap leaks.
@@ -327,19 +336,6 @@ def headless_chrome_crawl_session(
             watchdog_thread.join(timeout=1.0)
 
 
-JUNK_KEYWORDS = (
-    "privacy",
-    "terms",
-    "policy",
-    "accessibility",
-    "cookie",
-    "תקנון",
-    "פרטיות",
-    "נגישות",
-    "תנאי שימוש",
-)
-
-
 def _chrome_major_from_executable(exe: str) -> int | None:
     """Parse major version from ``chrome --version`` / ``chromium --version``."""
     if not exe or not os.path.isfile(exe):
@@ -489,79 +485,6 @@ REQUEST_HEADERS: dict[str, str] = {
     ),
     "Accept": "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
 }
-
-
-def normalize_url(url: str) -> str:
-    """Add https:// when no scheme is given."""
-    url = url.strip()
-    while url.startswith("/"):
-        url = url[1:]
-    if not url:
-        return url
-    parsed = urlparse(url)
-    if not parsed.scheme:
-        return "https://" + url
-    return url
-
-
-def strip_fragment(url: str) -> str:
-    """Remove #fragment for stable deduplication."""
-    p = urlparse(url)
-    return urlunparse((p.scheme, p.netloc, p.path or "/", p.params, p.query, ""))
-
-
-def same_site(url: str, base_netloc: str) -> bool:
-    """True if url is http(s) and host matches the crawl root (internal link)."""
-    p = urlparse(url)
-    if p.scheme not in ("http", "https"):
-        return False
-    return p.netloc.lower() == base_netloc.lower()
-
-
-def link_contains_junk(url: str, anchor_text: str) -> bool:
-    """
-    True if URL (decoded) or visible anchor/label text should be excluded from crawl.
-    English keywords: case-insensitive. Hebrew: substring match on decoded URL and anchor.
-    """
-    decoded_url = unquote(url)
-    haystacks = (
-        decoded_url.lower(),
-        anchor_text.lower(),
-        decoded_url,
-        anchor_text,
-    )
-    for kw in JUNK_KEYWORDS:
-        if not kw:
-            continue
-        ascii_kw = kw.isascii()
-        for h in haystacks:
-            if ascii_kw:
-                if kw in h.lower():
-                    return True
-            else:
-                if kw in h:
-                    return True
-    return False
-
-
-def format_page_block(page_url: str, title: str, paragraphs: list[str]) -> str:
-    """One nicely separated section for the output file."""
-    lines = [
-        SEPARATOR,
-        f"URL: {page_url}",
-        SEPARATOR,
-        f"Title: {title}",
-        "",
-        "Paragraphs (<p>):",
-    ]
-    if paragraphs:
-        lines.append("")
-        lines.append("\n\n".join(paragraphs))
-    else:
-        lines.append("(no <p> tags with text found)")
-    lines.append("")
-    lines.append("")
-    return "\n".join(lines)
 
 
 def _patch_real_chrome_local_state() -> None:
@@ -1032,14 +955,14 @@ def extract_and_save_homepage_logo(driver: WebDriver, logo_file: Path) -> bool:
                 im = Image.open(io.BytesIO(r.content))
                 im = im.convert("RGBA")
                 im.save(logo_file, format="PNG", optimize=True)
-                print(f"Saved homepage logo to {logo_file}")
+                logger.info("Saved homepage logo to %s", logo_file)
                 return True
             except (UnidentifiedImageError, OSError, ValueError):
                 continue
         except requests.RequestException:
             continue
 
-    print("Warning: could not detect or download a homepage logo (logo.png not written).")
+    logger.warning("could not detect or download a homepage logo (logo.png not written).")
     return False
 
 
@@ -1084,18 +1007,6 @@ def _lightweight_fetch_page(url: str) -> tuple[str, list[str], BeautifulSoup, st
             paragraphs.append(text)
 
     return title, paragraphs, soup, final_url
-
-
-def _is_content_sparse(paragraphs: list[str]) -> bool:
-    """
-    Return True when ``<p>`` text volume is too thin for a properly rendered static page —
-    the canonical signal that we are looking at a JS-rendered SPA shell.
-
-    Both thresholds must be satisfied to avoid false positives on legitimate short pages.
-    """
-    total_chars = sum(len(p) for p in paragraphs)
-    meaningful = sum(1 for p in paragraphs if len(p) > 20)
-    return total_chars < SPA_MIN_TOTAL_CHARS or meaningful < SPA_MIN_MEANINGFUL_PARAS
 
 
 def _extract_logo_from_soup(soup: BeautifulSoup, base_url: str, logo_file: Path) -> bool:
@@ -1161,12 +1072,12 @@ def _extract_logo_from_soup(soup: BeautifulSoup, base_url: str, logo_file: Path)
             im = Image.open(io.BytesIO(r.content))
             im = im.convert("RGBA")
             im.save(logo_file, format="PNG", optimize=True)
-            print(f"Saved homepage logo to {logo_file}")
+            logger.info("Saved homepage logo to %s", logo_file)
             return True
         except (requests.RequestException, OSError, ValueError, UnidentifiedImageError):
             continue
 
-    print("Warning: could not detect or download a homepage logo (logo.png not written).")
+    logger.warning("could not detect or download a homepage logo (logo.png not written).")
     return False
 
 
@@ -1222,47 +1133,49 @@ def crawl_from_url(
     logo_saved = False
 
     use_chrome = False
-    print("Probing homepage with lightweight fetch (httpx + BeautifulSoup)…")
+    logger.info("Probing homepage with lightweight fetch (httpx + BeautifulSoup)…")
     try:
         lw_title, lw_paras, lw_soup, lw_final_url = _lightweight_fetch_page(start_url)
         if _is_content_sparse(lw_paras):
             total_chars = sum(len(p) for p in lw_paras)
-            print(
-                f"Sparse <p> content detected ({total_chars} chars across "
-                f"{len(lw_paras)} tags) — JS-rendered SPA likely. "
-                "Falling back to headless Chrome…"
+            logger.info(
+                "Sparse <p> content detected (%d chars across %d tags) — JS-rendered SPA likely. "
+                "Falling back to headless Chrome…",
+                total_chars,
+                len(lw_paras),
             )
             use_chrome = True
             queue.append(start_url)
         else:
-            print(
-                f"Static content confirmed ({len(lw_paras)} paragraphs, "
-                f"{sum(len(p) for p in lw_paras)} chars). "
-                "Chrome not needed — using httpx for all pages."
+            logger.info(
+                "Static content confirmed (%d paragraphs, %d chars). "
+                "Chrome not needed — using httpx for all pages.",
+                len(lw_paras),
+                sum(len(p) for p in lw_paras),
             )
             visited.add(start_url)
             visited.add(lw_final_url)
             file_chunks.append(format_page_block(lw_final_url, lw_title, lw_paras))
             pages_fetched += 1
-            print(f"Scraped (1/{MAX_PAGES}): {lw_final_url}")
+            logger.info("Scraped (1/%d): %s", MAX_PAGES, lw_final_url)
             logo_saved = _extract_logo_from_soup(lw_soup, lw_final_url, logo_file)
             for abs_link in _discover_links_from_soup(lw_soup, lw_final_url, base_host):
                 if abs_link not in visited:
                     queue.append(abs_link)
     except ImportError:
-        print("httpx/beautifulsoup4 not installed — falling back to headless Chrome.")
+        logger.warning("httpx/beautifulsoup4 not installed — falling back to headless Chrome.")
         use_chrome = True
         queue.append(start_url)
-    except Exception as probe_exc:
-        print(f"Lightweight probe failed ({probe_exc}) — falling back to headless Chrome.")
+    except Exception as probe_exc:  # noqa: BLE001
+        logger.warning("Lightweight probe failed (%s) — falling back to headless Chrome.", probe_exc)
         use_chrome = True
         queue.append(start_url)
 
     chrome_cm: Any = nullcontext(None)
     if use_chrome:
-        print(
-            "Starting headless Chrome (undetected-chromedriver) "
-            f"(session timeout={UC_WEBDRIVER_SESSION_TIMEOUT_SECONDS or 'off'}s)…"
+        logger.info(
+            "Starting headless Chrome (undetected-chromedriver) (session timeout=%ss)…",
+            UC_WEBDRIVER_SESSION_TIMEOUT_SECONDS or "off",
         )
         chrome_cm = headless_chrome_crawl_session(None)
 
@@ -1288,7 +1201,7 @@ def crawl_from_url(
                             pass
                 except (UnexpectedAlertPresentException, WebDriverException) as nav_err:
                     _safe_dismiss_alerts(driver)
-                    print(f"Skip (navigation failed): {url} — {nav_err}")
+                    logger.warning("Skip (navigation failed): %s — %s", url, nav_err)
                     continue
 
                 try:
@@ -1313,7 +1226,7 @@ def crawl_from_url(
                 try:
                     title_text, paragraph_texts = extract_title_and_paragraphs(driver)
                 except WebDriverException as ext_err:
-                    print(f"Skip (extract failed): {final_url} — {ext_err}")
+                    logger.warning("Skip (extract failed): %s — %s", final_url, ext_err)
                     continue
 
                 if not logo_saved:
@@ -1324,13 +1237,13 @@ def crawl_from_url(
                         if absolute not in visited:
                             queue.append(absolute)
                 except WebDriverException as lnk_err:
-                    print(f"Warning: link discovery failed on {final_url} — {lnk_err}")
+                    logger.warning("link discovery failed on %s — %s", final_url, lnk_err)
 
             else:
                 try:
                     title_text, paragraph_texts, lw_soup, final_url = _lightweight_fetch_page(url)
-                except Exception as fetch_err:
-                    print(f"Skip (lightweight fetch failed): {url} — {fetch_err}")
+                except Exception as fetch_err:  # noqa: BLE001
+                    logger.warning("Skip (lightweight fetch failed): %s — %s", url, fetch_err)
                     continue
 
                 if not logo_saved:
@@ -1342,7 +1255,7 @@ def crawl_from_url(
 
             file_chunks.append(format_page_block(final_url, title_text, paragraph_texts))
             pages_fetched += 1
-            print(f"Scraped ({pages_fetched}/{MAX_PAGES}): {final_url}")
+            logger.info("Scraped (%d/%d): %s", pages_fetched, MAX_PAGES, final_url)
 
     with open(output_file, "w", encoding="utf-8") as f:
         f.write(f"Crawl summary: {pages_fetched} page(s), starting from {start_url}\n\n")
@@ -1356,4 +1269,4 @@ def crawl_from_url(
             f.write(SEPARATOR + "\n\n")
             f.write(str(campaign_brief).strip() + "\n")
 
-    print(f"Done. Content saved to {output_file} ({pages_fetched} page(s)).")
+    logger.info("Done. Content saved to %s (%d page(s)).", output_file, pages_fetched)

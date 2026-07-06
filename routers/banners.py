@@ -16,7 +16,7 @@ from starlette.responses import StreamingResponse
 
 from auth import get_current_user
 from database import SessionLocal, get_db
-from models import BannerTask, UgcVideoData, User
+from models import BannerTask, BusinessProfile, UgcVideoData, User
 from schemas import (
     GenerateRequest,
     GenerateUGCRequest,
@@ -24,6 +24,7 @@ from schemas import (
     TaskPatchRequest,
     UgcReRenderRequest,
 )
+from services import credits as credits_service
 from services.banner_service import (
     TASKS_DIR,
     banner_task_status_dict,
@@ -35,6 +36,7 @@ from services.banner_service import (
     persist_video_task_state,
     rendered_banner_urls_for_task,
 )
+from services.upload_validation import validate_upload_content
 from services.url_display import normalize_website_display
 from services.video_service import public_api_base, video_payload_for_engine
 from worker_tasks import re_render_ugc_task, render_video_task, run_banner_task, run_ugc_task
@@ -54,13 +56,29 @@ def generate(
     current_user: Annotated[User, Depends(get_current_user)],
     db: Session = Depends(get_db),
 ) -> dict[str, str]:
-    url = body.url.strip()
+    # When a saved BusinessProfile is referenced, the worker seeds the job from
+    # its cached context + logo and skips the crawl — so url becomes optional.
+    profile_id = body.business_profile_id
+    profile: BusinessProfile | None = None
+    if profile_id is not None:
+        profile = db.get(BusinessProfile, profile_id)
+        if profile is None or (
+            not current_user.is_superuser and profile.user_id != current_user.id
+        ):
+            raise HTTPException(status_code=404, detail="Unknown business profile")
+
+    url = (body.url or "").strip()
+    if not url and profile is not None:
+        url = (profile.website_url or "").strip() or "https://business-profile.internal/no-crawl"
     if not url:
         raise HTTPException(status_code=400, detail="url must not be empty")
 
     brief = (body.brief or "").strip() or None
 
+    # Atomic: create task row + debit credits in the same transaction. If the
+    # debit fails (insufficient credits) we never touch banner_tasks.
     task_id = uuid.uuid4()
+    cost = credits_service.cost_for_banner()
     row = BannerTask(
         id=task_id,
         user_id=current_user.id,
@@ -69,16 +87,35 @@ def generate(
         url=url,
         brief=brief,
         error=None,
+        business_profile_id=profile.id if profile is not None else None,
     )
     db.add(row)
+    db.flush()  # make task_id visible to ledger FK before debit
+    try:
+        credits_service.debit(
+            db,
+            user=current_user,
+            amount=cost,
+            reason="debit_generate_banner",
+            task_id=task_id,
+        )
+    except credits_service.InsufficientCreditsError as exc:
+        db.rollback()
+        raise credits_service.insufficient_credits_http(exc) from None
     db.commit()
+
     tid = str(task_id)
     try:
         run_banner_task.apply_async(
             args=[tid, url, brief, body.video_hook],
+            kwargs={"business_profile_id": str(profile.id) if profile is not None else None},
             queue="banner_queue",
         )
     except Exception as exc:
+        # Enqueue failed → refund and mark task failed so the user isn't charged.
+        credits_service.refund(
+            current_user.id, cost, reason="refund_enqueue_failed", task_id=task_id
+        )
         persist_task(task_id, status="failed", error=str(exc))
         raise HTTPException(
             status_code=503,
@@ -115,6 +152,7 @@ def generate_ugc(
     website_disp = normalize_website_display(body.website_url)
 
     task_id = uuid.uuid4()
+    cost = credits_service.cost_for_ugc(body.video_length)
     row = BannerTask(
         id=task_id,
         user_id=current_user.id,
@@ -132,6 +170,18 @@ def generate_ugc(
     )
     row.ugc_video = ugc_row
     db.add(row)
+    db.flush()
+    try:
+        credits_service.debit(
+            db,
+            user=current_user,
+            amount=cost,
+            reason=f"debit_generate_ugc_{body.video_length}",
+            task_id=task_id,
+        )
+    except credits_service.InsufficientCreditsError as exc:
+        db.rollback()
+        raise credits_service.insufficient_credits_http(exc) from None
     db.commit()
 
     tid = str(task_id)
@@ -148,6 +198,9 @@ def generate_ugc(
             queue="video_queue",
         )
     except Exception as exc:
+        credits_service.refund(
+            current_user.id, cost, reason="refund_enqueue_failed", task_id=task_id
+        )
         persist_task(
             task_id,
             ugc_status="failed",
@@ -169,7 +222,17 @@ async def upload_temp_asset(
     _current_user: Annotated[User, Depends(get_current_user)],
     file: UploadFile = File(...),
 ) -> dict[str, str]:
-    """Save a generic asset under ``tasks/temp/`` for use as logo/product URL (local dev)."""
+    """Save a generic asset under ``tasks/temp/`` for use as logo/product URL.
+
+    Two-stage validation:
+      1. Suffix must be in ``_ALLOWED_TEMP_SUFFIXES`` (cheap pre-check).
+      2. Bytes must match a real header for that suffix — see
+         ``services.upload_validation.validate_upload_content`` for the magic-byte
+         rules (PIL for images, ISO-BMFF / EBML for video, scrubbed SVG).
+
+    Without (2) anyone could rename ``evil.html`` to ``evil.png`` and have it
+    served back as a same-origin static file.
+    """
     ensure_tasks_dir()
     temp_dir = TASKS_DIR / "temp"
     temp_dir.mkdir(parents=True, exist_ok=True)
@@ -177,7 +240,11 @@ async def upload_temp_asset(
     raw_name = (file.filename or "upload").replace("\\", "/").split("/")[-1]
     suffix = Path(raw_name).suffix.lower()
     if suffix not in _ALLOWED_TEMP_SUFFIXES:
-        suffix = ""
+        raise HTTPException(
+            status_code=415,
+            detail=f"Unsupported file extension {suffix or '(missing)'}. "
+                   "Allowed: PNG, JPG, JPEG, WEBP, GIF, SVG, AVIF, MP4, WEBM, MOV.",
+        )
 
     body = await file.read()
     if len(body) > _MAX_TEMP_UPLOAD_BYTES:
@@ -185,7 +252,10 @@ async def upload_temp_asset(
     if not body:
         raise HTTPException(status_code=400, detail="Empty file.")
 
-    name = f"{uuid.uuid4().hex}{suffix if suffix else '.bin'}"
+    # Magic-byte check — raises HTTPException(415) on mismatch.
+    validated_suffix = validate_upload_content(body, suffix)
+
+    name = f"{uuid.uuid4().hex}{validated_suffix}"
     dest = temp_dir / name
     dest.write_bytes(body)
 
@@ -268,6 +338,19 @@ def ugc_re_render(
 
     ugc_w.ugc_status = "rendering_captions"
     ugc_w.ugc_error = None
+
+    cost = credits_service.cost_for_re_render()
+    try:
+        credits_service.debit(
+            db,
+            user=current_user,
+            amount=cost,
+            reason="debit_ugc_re_render",
+            task_id=tid,
+        )
+    except credits_service.InsufficientCreditsError as exc:
+        db.rollback()
+        raise credits_service.insufficient_credits_http(exc) from None
     db.commit()
 
     try:
@@ -275,6 +358,9 @@ def ugc_re_render(
             args=[task_id, body.aspect_ratio], queue="video_queue"
         )
     except Exception as exc:
+        credits_service.refund(
+            current_user.id, cost, reason="refund_enqueue_failed", task_id=tid
+        )
         persist_task(tid, ugc_status="failed", ugc_error=f"Could not queue UGC re-render: {exc}")
         raise HTTPException(
             status_code=503,
@@ -323,12 +409,33 @@ def get_status(
     return banner_task_status_dict(task_id, row)
 
 
+# SSE safety caps. Without these, a stuck-in-pending task plus a quiet client
+# can pin one connection + DB session per browser tab indefinitely.
+_SSE_POLL_INTERVAL_S = 1.5      # how often we re-check the DB
+_SSE_HEARTBEAT_INTERVAL_S = 15   # SSE comment frame to keep proxies / clients alive
+_SSE_MAX_DURATION_S = 600        # hard cap; client should reconnect (or use WS)
+
+
 @router.get("/status/{task_id}/stream")
 async def stream_task_status(
     task_id: str,
+    request: Request,
     current_user: Annotated[User, Depends(get_current_user)],
 ) -> StreamingResponse:
-    """Stream live task-status updates as Server-Sent Events (text/event-stream)."""
+    """Stream live task-status updates as Server-Sent Events (text/event-stream).
+
+    Three safety caps protect against the pre-fix bug where a stuck task could
+    leak DB connections forever:
+
+    1. ``_SSE_MAX_DURATION_S`` — hard cap (10 min) per connection. Clients are
+       expected to reconnect, or to use ``/ws/task/{id}`` (the WebSocket path is
+       cheaper and supports multi-hour render jobs).
+    2. ``_SSE_HEARTBEAT_INTERVAL_S`` — every 15 s we emit an SSE comment so
+       reverse proxies (nginx, ALB) don't reap the connection as idle, AND so
+       ``request.is_disconnected()`` has a chance to surface client closes.
+    3. ``request.is_disconnected()`` — checked on every loop iteration; if the
+       client has gone away, we exit instead of polling the DB forever.
+    """
     try:
         tid = uuid.UUID(task_id)
     except ValueError:
@@ -341,7 +448,25 @@ async def stream_task_status(
 
     async def event_generator():
         last_payload_json: str | None = None
+        deadline = asyncio.get_running_loop().time() + _SSE_MAX_DURATION_S
+        last_heartbeat = asyncio.get_running_loop().time()
+
         while True:
+            now = asyncio.get_running_loop().time()
+
+            # ── (1) Hard duration cap — signal client + exit cleanly ──────────
+            if now >= deadline:
+                yield (
+                    "event: timeout\n"
+                    f"data: {json.dumps({'reason': 'max-duration', 'after_s': _SSE_MAX_DURATION_S})}\n\n"
+                )
+                break
+
+            # ── (2) Client gone — stop polling the DB ─────────────────────────
+            if await request.is_disconnected():
+                break
+
+            # ── (3) Poll DB and yield only on changes ─────────────────────────
             with SessionLocal() as db:
                 row = db.get(BannerTask, tid)
                 if row is None:
@@ -352,16 +477,22 @@ async def stream_task_status(
             if blob != last_payload_json:
                 last_payload_json = blob
                 yield f"data: {blob}\n\n"
+                last_heartbeat = now  # real data counts as a keepalive
+            elif (now - last_heartbeat) >= _SSE_HEARTBEAT_INTERVAL_S:
+                # SSE comments (lines starting with ":") are ignored by EventSource
+                # but keep proxies happy and unblock the await below to re-check
+                # is_disconnected promptly.
+                yield ": heartbeat\n\n"
+                last_heartbeat = now
 
             current_status = payload["status"]
             video_st = payload.get("video_status")
-
             if current_status == "failed":
                 break
             if current_status == "completed" and video_st != "processing":
                 break
 
-            await asyncio.sleep(1.5)
+            await asyncio.sleep(_SSE_POLL_INTERVAL_S)
 
     return StreamingResponse(
         event_generator(),
@@ -369,6 +500,7 @@ async def stream_task_status(
         headers={
             "Cache-Control": "no-cache",
             "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
         },
     )
 
@@ -465,6 +597,19 @@ def render_task_video(
 
     creative.video_status = "processing"
     creative.video_render_error = None
+
+    cost = credits_service.cost_for_video_render()
+    try:
+        credits_service.debit(
+            db,
+            user=current_user,
+            amount=cost,
+            reason="debit_render_video",
+            task_id=tid,
+        )
+    except credits_service.InsufficientCreditsError as exc:
+        db.rollback()
+        raise credits_service.insufficient_credits_http(exc) from None
     db.commit()
 
     try:
@@ -473,6 +618,9 @@ def render_task_video(
             queue="video_queue",
         )
     except Exception as exc:
+        credits_service.refund(
+            current_user.id, cost, reason="refund_enqueue_failed", task_id=tid
+        )
         persist_video_task_state(
             tid,
             video_status="failed",

@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import api, { API_BASE_URL, toAbsoluteApiUrl } from '../api.js'
+import api from '../api.js'
 import {
   ALLOWED_RERENDER_ANIM,
   ALLOWED_RERENDER_FONT,
@@ -10,6 +10,7 @@ import {
   requiredImagesForLayout,
 } from './ugcConstants.js'
 import { axiosErrorMessage, extractCatalogArray } from './ugcHelpers.js'
+import { useFileUploader } from './useFileUploader.js'
 
 export function useUgcFormState({ taskId, statusPayload, isPolling }) {
   const [avatars, setAvatars] = useState([])
@@ -30,10 +31,21 @@ export function useUgcFormState({ taskId, statusPayload, isPolling }) {
   const [selectedLayout, setSelectedLayout] = useState(VIDEO_LAYOUT_FALLBACK_ID)
   const logoFileRef = useRef(null)
   const productFileRef = useRef(null)
-  const [logoUploading, setLogoUploading] = useState(false)
-  const [productUploading, setProductUploading] = useState(false)
   const [customGalleryImages, setCustomGalleryImages] = useState([])
-  const [gallerySlotUploading, setGallerySlotUploading] = useState(null)
+
+  // Must be declared before useFileUploader which receives setSubmitError as a prop.
+  const [submitError, setSubmitError] = useState(null)
+  const [isPosting, setIsPosting] = useState(false)
+
+  const requiredGalleryImages = useMemo(() => requiredImagesForLayout(selectedLayout), [selectedLayout])
+
+  const { logoUploading, productUploading, gallerySlotUploading, uploadTempAsset } = useFileUploader({
+    requiredGalleryImages,
+    setSubmitError,
+    setLogoUrl,
+    setProductImageUrl,
+    setCustomGalleryImages,
+  })
 
   const hydratedScriptKeyRef = useRef('')
   const [rerenderSpeed, setRerenderSpeed] = useState(1.15)
@@ -45,9 +57,6 @@ export function useUgcFormState({ taskId, statusPayload, isPolling }) {
   const [rerenderError, setRerenderError] = useState(null)
   const [pendingAspectRatio, setPendingAspectRatio] = useState(null)
   const [activePreviewAspect, setActivePreviewAspect] = useState(null)
-
-  const [submitError, setSubmitError] = useState(null)
-  const [isPosting, setIsPosting] = useState(false)
 
   useEffect(() => {
     let cancelled = false
@@ -108,8 +117,6 @@ export function useUgcFormState({ taskId, statusPayload, isPolling }) {
     if (!VIDEO_LAYOUT_IDS_EXCLUDED_WHEN_SPOKEN_ONLY.has(selectedLayout)) return
     setSelectedLayout(VIDEO_LAYOUT_FALLBACK_ID)
   }, [scriptSource, selectedLayout])
-
-  const requiredGalleryImages = useMemo(() => requiredImagesForLayout(selectedLayout), [selectedLayout])
 
   useEffect(() => {
     const n = requiredGalleryImages
@@ -214,75 +221,9 @@ export function useUgcFormState({ taskId, statusPayload, isPolling }) {
     }
   }
 
-  const postTempUpload = async (file) => {
-    const fd = new FormData()
-    fd.append('file', file)
-    const base = (API_BASE_URL || '').replace(/\/$/, '')
-    const res = await fetch(`${base}/upload-temp-asset`, {
-      method: 'POST',
-      body: fd,
-      credentials: 'include',
-    })
-    let data = {}
-    try {
-      data = await res.json()
-    } catch {
-      /* ignore */
-    }
-    if (!res.ok) {
-      const d = data?.detail
-      if (typeof d === 'string') throw new Error(d)
-      if (Array.isArray(d)) throw new Error(d.map((x) => x.msg || JSON.stringify(x)).join(' '))
-      throw new Error(res.statusText || 'ההעלאה נכשלה')
-    }
-    const u = typeof data?.url === 'string' ? data.url.trim() : ''
-    if (!u) throw new Error('לא התקבלה כתובת קובץ מהשרת')
-    return toAbsoluteApiUrl(u)
-  }
-
-  /**
-   * POST `file` to `/upload-temp-asset` and store the returned URL.
-   * - kind `'logo'` | `'product'` — updates logo / product URL fields.
-   * - kind `'gallery'` — requires `gallerySlotIndex` (0-based); updates `customGalleryImages`.
-   */
-  const uploadTempAsset = async (file, kind, gallerySlotIndex) => {
-    if (kind === 'gallery') {
-      const slotIndex = gallerySlotIndex
-      if (typeof slotIndex !== 'number' || slotIndex < 0 || slotIndex >= requiredGalleryImages) return
-      setSubmitError(null)
-      setGallerySlotUploading(slotIndex)
-      try {
-        const url = await postTempUpload(file)
-        setCustomGalleryImages((prev) => {
-          const next = Array.from({ length: requiredGalleryImages }, (_, i) =>
-            typeof prev[i] === 'string' ? prev[i] : '',
-          )
-          next[slotIndex] = url
-          return next
-        })
-      } catch (err) {
-        setSubmitError(axiosErrorMessage(err))
-      } finally {
-        setGallerySlotUploading(null)
-      }
-      return
-    }
-    const setBusy = kind === 'logo' ? setLogoUploading : setProductUploading
-    const setUrl = kind === 'logo' ? setLogoUrl : setProductImageUrl
-    setSubmitError(null)
-    setBusy(true)
-    try {
-      const url = await postTempUpload(file)
-      setUrl(url)
-    } catch (err) {
-      setSubmitError(axiosErrorMessage(err))
-    } finally {
-      setBusy(false)
-    }
-  }
-
   const handleSubmit = async (e) => {
     e.preventDefault()
+    setSubmitError(null)
     if (!selectedAvatar) {
       setSubmitError('נא לבחור אווטאר לפני שליחה.')
       return
@@ -295,7 +236,6 @@ export function useUgcFormState({ taskId, statusPayload, isPolling }) {
       setSubmitError('נא למלא את ״טקסט לדיבור בלבד״ — רק מה שהאווטאר יאמר בעברית.')
       return
     }
-    setSubmitError(null)
     setIsPosting(true)
     try {
       const body = {

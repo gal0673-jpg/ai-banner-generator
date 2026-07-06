@@ -25,5 +25,9 @@ alembic>=1.13
 passlib[bcrypt]
 bcrypt==4.0.1
 python-jose[cryptography]
+pydantic-settings>=2.0
 pymysql
+
+# Test (only required to run `pytest tests/`)
+pytest>=8.0
 # PostgreSQL: pip install "psycopg[binary]" and set DATABASE_URL=postgresql+psycopg://user:pass@host/dbname

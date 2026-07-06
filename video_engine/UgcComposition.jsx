@@ -1007,7 +1007,9 @@ function PipGalleryGrid({
               { extrapolateLeft: "clamp", extrapolateRight: "clamp" },
             );
         const ph = galleryCellPlaceholderStyle(desc, i, brandHex);
-        const hasRaster = Boolean(imageUrl);
+        const isPlaceholder =
+          layoutData?.is_placeholder === true || imageUrl === "PLACEHOLDER_BRAND_COLOR";
+        const hasRaster = Boolean(imageUrl) && !isPlaceholder;
         const kenBurnsScale = interpolate(
           localT,
           [0, Math.max(1, sceneLen - 1)],
@@ -1126,33 +1128,42 @@ function PipGalleryGrid({
                 </div>
               </>
             ) : (
-              <span
-                dir="rtl"
-                lang="he"
+              <div
                 style={{
-                  fontFamily: `${fontFamilyStr}, "Segoe UI", sans-serif`,
-                  fontSize: tagFontSize,
-                  fontWeight: 900,
-                  lineHeight: 1.1,
-                  letterSpacing: -0.2,
-                  color: tagTextColor,
+                  position: "absolute",
+                  inset: 0,
                   backgroundColor: brandHex,
-                  padding: "8px 24px",
-                  borderRadius: 999,
-                  boxShadow: [
-                    "0 10px 26px rgba(0,0,0,0.55)",
-                    `0 0 22px -6px ${brandHex}CC`,
-                  ].join(", "),
-                  backdropFilter: "blur(8px)",
-                  WebkitBackdropFilter: "blur(8px)",
-                  maxWidth: "92%",
-                  whiteSpace: "nowrap",
-                  overflow: "hidden",
-                  textOverflow: "ellipsis",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  padding: 14,
+                  boxSizing: "border-box",
                 }}
               >
-                {desc}
-              </span>
+                <span
+                  dir="rtl"
+                  lang="he"
+                  style={{
+                    fontFamily: `${fontFamilyStr}, "Segoe UI", sans-serif`,
+                    fontSize: tagFontSize,
+                    fontWeight: 900,
+                    lineHeight: 1.1,
+                    letterSpacing: -0.2,
+                    color: tagTextColor,
+                    textAlign: "center",
+                    maxWidth: "92%",
+                    whiteSpace: "nowrap",
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                    textShadow:
+                      tagTextColor.includes("255")
+                        ? "0 2px 16px rgba(0,0,0,0.45)"
+                        : "0 2px 16px rgba(255,255,255,0.18)",
+                  }}
+                >
+                  {desc}
+                </span>
+              </div>
             )}
           </div>
         );

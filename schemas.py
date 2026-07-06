@@ -10,6 +10,7 @@ HeyGen / UGC pipeline. Request and response *keys* are unchanged for API clients
 
 from __future__ import annotations
 
+import re
 import uuid
 from datetime import datetime
 from typing import Any, Literal
@@ -28,7 +29,18 @@ class TokenResponse(BaseModel):
 
 
 class GenerateRequest(BaseModel):
-    url: str = Field(..., min_length=1, description="Site URL to crawl")
+    url: str | None = Field(
+        default=None,
+        min_length=1,
+        description="Site URL to crawl. Optional when business_profile_id is set.",
+    )
+    business_profile_id: uuid.UUID | None = Field(
+        default=None,
+        description=(
+            "When set, generate from the saved BusinessProfile (its cached context "
+            "+ logo) and SKIP the crawl. url becomes optional."
+        ),
+    )
     brief: str | None = Field(
         default=None,
         max_length=12000,
@@ -39,6 +51,12 @@ class GenerateRequest(BaseModel):
         max_length=256,
         description="Optional custom video hook that overrides the AI-generated one",
     )
+
+    @model_validator(mode="after")
+    def require_url_or_profile(self) -> "GenerateRequest":
+        if not (self.url and self.url.strip()) and self.business_profile_id is None:
+            raise ValueError("Either url or business_profile_id is required")
+        return self
 
 
 class RenderVideoRequest(BaseModel):
@@ -239,6 +257,125 @@ class UgcReRenderRequest(BaseModel):
     )
 
 
+# ── Business profile schemas ──────────────────────────────────────────────────
+
+_HEX_COLOR = re.compile(r"^#[0-9A-Fa-f]{6}$")
+
+
+def _normalize_brand_color(v: Any) -> Any:
+    """Accept '1D4ED8' or '#1d4ed8' → '#1D4ED8'; empty → None; reject non-hex."""
+    if v is None:
+        return None
+    s = str(v).strip()
+    if not s:
+        return None
+    if not s.startswith("#"):
+        s = "#" + s
+    if not _HEX_COLOR.match(s):
+        raise ValueError("brand_color must be a #RRGGBB hex value")
+    return s.upper()
+
+
+class BusinessProfileCreate(BaseModel):
+    """Create a business profile from manually entered fields (no crawl)."""
+
+    name: str = Field(..., min_length=1, max_length=255)
+    website_url: str | None = Field(default=None, max_length=1024)
+    description: str | None = Field(default=None, max_length=8000)
+    audience: str | None = Field(default=None, max_length=4000)
+    tone: str | None = Field(default=None, max_length=255)
+    offerings: str | None = Field(default=None, max_length=8000)
+    brand_color: str | None = Field(default=None, max_length=32)
+    logo_url: str | None = Field(default=None, max_length=1024)
+    is_default: bool = False
+
+    @field_validator("brand_color", mode="before")
+    @classmethod
+    def _brand_color(cls, v: Any) -> Any:
+        return _normalize_brand_color(v)
+
+
+class BusinessProfileUpdate(BaseModel):
+    """Partial update — omit any key you do not want to change."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str | None = Field(default=None, min_length=1, max_length=255)
+    website_url: str | None = Field(default=None, max_length=1024)
+    description: str | None = Field(default=None, max_length=8000)
+    audience: str | None = Field(default=None, max_length=4000)
+    tone: str | None = Field(default=None, max_length=255)
+    offerings: str | None = Field(default=None, max_length=8000)
+    brand_color: str | None = Field(default=None, max_length=32)
+    logo_url: str | None = Field(default=None, max_length=1024)
+    is_default: bool | None = None
+
+    @field_validator("brand_color", mode="before")
+    @classmethod
+    def _brand_color(cls, v: Any) -> Any:
+        return _normalize_brand_color(v)
+
+
+class BusinessProfileScanRequest(BaseModel):
+    """Kick off a one-time website scan that fills a profile via crawl + GPT.
+
+    When ``profile_id`` is given, that profile is enriched in place; otherwise a
+    new profile is created from ``website_url`` and returned immediately with
+    ``scan_status='scanning'``. Poll ``GET /business/profiles/{id}`` for the result.
+    """
+
+    website_url: str = Field(..., min_length=1, max_length=1024)
+    profile_id: uuid.UUID | None = None
+    name: str | None = Field(default=None, max_length=255)
+
+
+class BusinessCopyRequest(BaseModel):
+    """Generate marketing copy from a saved profile (instant, no render)."""
+
+    business_profile_id: uuid.UUID
+    goal: str | None = Field(default=None, max_length=4000)
+
+
+class BusinessCopyResponse(BaseModel):
+    headline: str
+    subhead: str
+    bullet_points: list[str]
+    cta: str
+    video_hook: str | None = None
+
+
+class BusinessVideoRequest(BaseModel):
+    """Generate a marketing video from a saved profile, with smart defaults.
+
+    The server picks a default active avatar + voice from the catalog and builds
+    the script brief from the profile, so the customer never sees provider /
+    avatar / voice choices.
+    """
+
+    business_profile_id: uuid.UUID
+    goal: str | None = Field(default=None, max_length=4000)
+    video_length: Literal["15s", "30s", "50s"] = "30s"
+
+
+class BusinessProfileRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    name: str
+    website_url: str | None
+    description: str | None
+    audience: str | None
+    tone: str | None
+    offerings: str | None
+    brand_color: str | None
+    logo_url: str | None
+    scan_status: str
+    scan_error: str | None
+    is_default: bool
+    created_at: datetime
+    updated_at: datetime
+
+
 # ── Catalog schemas ───────────────────────────────────────────────────────────
 
 class VoiceRead(BaseModel):
@@ -327,3 +464,40 @@ class TaskPatchRequest(BaseModel):
         if len(v) != 3:
             raise ValueError("bullet_points must contain exactly 3 strings")
         return [str(x).strip() for x in v]
+
+
+# ── Credits ───────────────────────────────────────────────────────────────────
+
+
+class CreditLedgerEntry(BaseModel):
+    """One audit row from ``credit_ledger`` (read-only)."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    task_id: uuid.UUID | None
+    amount: int
+    reason: str
+    balance_after: int
+    created_at: datetime
+
+
+class CreditBalanceResponse(BaseModel):
+    balance: int
+    last_refill_at: datetime | None
+    recent_entries: list[CreditLedgerEntry] = Field(default_factory=list)
+
+
+class AdminGrantCreditsRequest(BaseModel):
+    """Admin endpoint payload: add or remove credits for a target user.
+
+    ``amount`` is signed: positive grants, negative withdraws (admin-side correction).
+    Withdrawals are capped at the current balance — they never drive it negative.
+    """
+
+    amount: int = Field(..., ge=-10000, le=10000, description="Signed credit delta")
+    reason: str = Field(
+        default="grant_admin",
+        max_length=64,
+        description="Free-form label saved in credit_ledger.reason",
+    )

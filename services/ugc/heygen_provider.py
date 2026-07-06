@@ -158,7 +158,7 @@ def _heygen_poll_status(video_id: str, api_key: str) -> str:
                 HEYGEN_VIDEO_STATUS_URL,
                 params={"video_id": video_id},
                 headers=headers,
-                timeout=30,
+                timeout=60,
             )
             _log_heygen_error_response(resp, "GET video_status.get")
             resp.raise_for_status()

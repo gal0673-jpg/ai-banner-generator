@@ -9,8 +9,8 @@ from typing import Any, Literal
 
 from sqlalchemy.orm import Session
 
+from config import BASE_DIR
 from database import SessionLocal
-from main import BASE_DIR
 from models import BannerCreativeData, BannerTask, UgcVideoData
 
 logger = logging.getLogger(__name__)
@@ -62,7 +62,6 @@ _UGC_KEYS: frozenset[str] = frozenset(
         "ugc_status",
         "ugc_error",
         "ugc_speed_factor",
-        "ugc_video_fit_mode",
     }
 )
 
@@ -156,6 +155,9 @@ def banner_task_status_dict(task_id: str, row: BannerTask) -> dict[str, Any]:
 
 
 def _apply_task_field_updates(db: Session, row: BannerTask, kwargs: dict[str, Any]) -> None:
+    # Local import — avoids pulling the ORM model into module import order.
+    from services.ugc_renders import mirror_url_to_renders
+
     creative: BannerCreativeData | None = None
     ugc: UgcVideoData | None = None
     for key, value in kwargs.items():
@@ -167,6 +169,9 @@ def _apply_task_field_updates(db: Session, row: BannerTask, kwargs: dict[str, An
             if ugc is None:
                 ugc = get_ugc_for_write(db, row)
             setattr(ugc, key, value)
+            # Phase-1 dual-write: mirror per-aspect render URLs to the
+            # normalized ugc_renders table. No-op for non-URL UGC keys.
+            mirror_url_to_renders(db, task_id=row.id, legacy_column=key, value=value)
         else:
             setattr(row, key, value)
 
@@ -179,6 +184,26 @@ def _publish_safe(task_id: str, payload: dict[str, Any]) -> None:
         publish_task_update(task_id, payload)
     except Exception as exc:  # noqa: BLE001
         logger.warning("[banner_service] pub/sub publish failed for %s: %s", task_id, exc)
+
+
+def _maybe_refund_on_failure(task_uuid: uuid.UUID, kwargs: dict[str, Any]) -> None:
+    """If this update marks the task (or its UGC / video render) as ``failed``, refund
+    the most recent un-refunded debit attached to the task.
+
+    Idempotent: ``credits.refund_for_task`` checks the ledger for existing refund
+    rows before issuing another one, so repeated failure writes never double-refund.
+    Imported lazily to avoid touching the credits ORM at module import time.
+    """
+    failure_keys = ("status", "ugc_status", "video_status")
+    if not any(kwargs.get(k) == "failed" for k in failure_keys):
+        return
+    try:
+        from services import credits as credits_service  # local import → avoid cycles
+        credits_service.refund_for_task(task_uuid, reason="refund_failed")
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "[banner_service] refund_for_task failed for %s: %s", task_uuid, exc
+        )
 
 
 def persist_task(task_uuid: uuid.UUID, **kwargs: Any) -> None:
@@ -196,6 +221,7 @@ def persist_task(task_uuid: uuid.UUID, **kwargs: Any) -> None:
         _ = row.ugc_video
         payload = banner_task_status_dict(str(task_uuid), row)
 
+    _maybe_refund_on_failure(task_uuid, kwargs)
     _publish_safe(str(task_uuid), payload)
 
 

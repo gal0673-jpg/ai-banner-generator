@@ -585,11 +585,263 @@ function VoicesTab() {
   )
 }
 
+// ─── Credits admin tab ────────────────────────────────────────────────────────
+
+function CreditsTab() {
+  const [users, setUsers] = useState(null)
+  const [error, setError] = useState(null)
+  const [loading, setLoading] = useState(false)
+  const [grantingId, setGrantingId] = useState(null)
+  const [draft, setDraft] = useState({ amount: '', reason: '' })
+  const [ledger, setLedger] = useState({ open: false, userId: null, rows: null, error: null })
+
+  const reload = useCallback(async () => {
+    setLoading(true)
+    setError(null)
+    try {
+      const { data } = await api.get('/admin/users')
+      setUsers(Array.isArray(data) ? data : [])
+    } catch (err) {
+      setError(axiosErrMsg(err))
+    } finally {
+      setLoading(false)
+    }
+  }, [])
+
+  useEffect(() => { reload() }, [reload])
+
+  const openGrant = (userId) => {
+    setGrantingId(userId)
+    setDraft({ amount: '', reason: '' })
+  }
+  const closeGrant = () => {
+    setGrantingId(null)
+    setDraft({ amount: '', reason: '' })
+  }
+
+  const submitGrant = async (userId) => {
+    const amount = parseInt(draft.amount, 10)
+    if (!Number.isFinite(amount) || amount === 0) {
+      setError('הזן סכום חוקי שונה מ-0')
+      return
+    }
+    setError(null)
+    try {
+      await api.post(`/admin/users/${userId}/credits`, {
+        amount,
+        reason: draft.reason.trim() || (amount > 0 ? 'grant_admin' : 'withdraw_admin'),
+      })
+      closeGrant()
+      await reload()
+    } catch (err) {
+      setError(axiosErrMsg(err))
+    }
+  }
+
+  const openLedger = async (userId) => {
+    setLedger({ open: true, userId, rows: null, error: null })
+    try {
+      const { data } = await api.get(`/admin/users/${userId}/credits/ledger`, {
+        params: { limit: 50 },
+      })
+      setLedger({ open: true, userId, rows: Array.isArray(data) ? data : [], error: null })
+    } catch (err) {
+      setLedger({ open: true, userId, rows: null, error: axiosErrMsg(err) })
+    }
+  }
+  const closeLedger = () => setLedger({ open: false, userId: null, rows: null, error: null })
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between">
+        <h2 className="text-base font-semibold text-slate-900 dark:text-slate-100">
+          קרדיטים — ניהול יתרות משתמשים
+        </h2>
+        <button
+          type="button"
+          onClick={reload}
+          disabled={loading}
+          className="rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-3 py-1.5 text-xs font-medium text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 disabled:opacity-50"
+        >
+          {loading ? 'טוען…' : 'רענן'}
+        </button>
+      </div>
+
+      {error && (
+        <div className="rounded-lg border border-red-300/60 bg-red-50 dark:bg-red-950/40 px-3 py-2 text-sm text-red-700 dark:text-red-200">
+          {error}
+        </div>
+      )}
+
+      {users === null && loading ? (
+        <div className="flex items-center gap-2 text-sm text-slate-500"><Spinner /> טוען משתמשים…</div>
+      ) : users && users.length === 0 ? (
+        <div className="rounded-lg border border-dashed border-slate-300 dark:border-slate-700 px-4 py-8 text-center text-sm text-slate-500">
+          אין משתמשים להצגה.
+        </div>
+      ) : (
+        <div className="overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800">
+          <table className="min-w-full text-sm">
+            <thead className="bg-slate-50 dark:bg-slate-900/60 text-xs uppercase tracking-wide text-slate-500 dark:text-slate-400">
+              <tr>
+                <th className="px-3 py-2 text-right">אימייל</th>
+                <th className="px-3 py-2 text-right">יתרה</th>
+                <th className="px-3 py-2 text-right">תאריך רענון אחרון</th>
+                <th className="px-3 py-2 text-right">סטטוס</th>
+                <th className="px-3 py-2 text-right">פעולות</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+              {users?.map((u) => (
+                <tr key={u.id} className="hover:bg-slate-50/60 dark:hover:bg-slate-900/40">
+                  <td className="px-3 py-2 text-slate-800 dark:text-slate-200 truncate max-w-[260px]" title={u.email}>{u.email}</td>
+                  <td className="px-3 py-2">
+                    <span
+                      className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-semibold ring-1 ${
+                        u.credits_balance <= 20
+                          ? 'bg-rose-50 text-rose-700 ring-rose-200 dark:bg-rose-950/40 dark:text-rose-200 dark:ring-rose-800/60'
+                          : u.credits_balance <= 60
+                          ? 'bg-amber-50 text-amber-700 ring-amber-200 dark:bg-amber-950/40 dark:text-amber-200 dark:ring-amber-800/60'
+                          : 'bg-emerald-50 text-emerald-700 ring-emerald-200 dark:bg-emerald-950/40 dark:text-emerald-200 dark:ring-emerald-800/60'
+                      }`}
+                    >
+                      {u.credits_balance}
+                    </span>
+                  </td>
+                  <td className="px-3 py-2 text-xs text-slate-500 dark:text-slate-400 whitespace-nowrap" dir="ltr">
+                    {u.last_refill_at ? new Date(u.last_refill_at).toLocaleString('he-IL') : '—'}
+                  </td>
+                  <td className="px-3 py-2">
+                    {u.is_superuser
+                      ? <span className="inline-flex items-center rounded-full bg-indigo-100 dark:bg-indigo-950/50 px-2 py-0.5 text-[10px] font-semibold text-indigo-700 dark:text-indigo-300 ring-1 ring-indigo-300/60 dark:ring-indigo-700/40">superuser</span>
+                      : <Badge active />}
+                  </td>
+                  <td className="px-3 py-2">
+                    {grantingId === u.id ? (
+                      <div className="flex flex-wrap items-center gap-2">
+                        <input
+                          type="number"
+                          value={draft.amount}
+                          onChange={(e) => setDraft((d) => ({ ...d, amount: e.target.value }))}
+                          placeholder="±סכום"
+                          className="w-24 rounded-md border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 px-2 py-1 text-xs"
+                        />
+                        <input
+                          type="text"
+                          value={draft.reason}
+                          onChange={(e) => setDraft((d) => ({ ...d, reason: e.target.value }))}
+                          placeholder="סיבה (אופציונלי)"
+                          className="w-36 rounded-md border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 px-2 py-1 text-xs"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => submitGrant(u.id)}
+                          className="rounded-md bg-emerald-600 px-2.5 py-1 text-xs font-semibold text-white hover:bg-emerald-500"
+                        >
+                          שמור
+                        </button>
+                        <button
+                          type="button"
+                          onClick={closeGrant}
+                          className="rounded-md border border-slate-200 dark:border-slate-700 px-2.5 py-1 text-xs text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800"
+                        >
+                          ביטול
+                        </button>
+                      </div>
+                    ) : (
+                      <div className="flex flex-wrap items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => openGrant(u.id)}
+                          className="rounded-md border border-emerald-300/60 bg-emerald-50 dark:bg-emerald-950/40 px-2.5 py-1 text-xs font-medium text-emerald-700 dark:text-emerald-200 hover:bg-emerald-100 dark:hover:bg-emerald-900/40"
+                        >
+                          + / − קרדיטים
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => openLedger(u.id)}
+                          className="rounded-md border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-2.5 py-1 text-xs text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800"
+                        >
+                          היסטוריה
+                        </button>
+                      </div>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {ledger.open && (
+        <div className="fixed inset-0 z-30 flex items-center justify-center bg-black/40 backdrop-blur-sm" onClick={closeLedger}>
+          <div
+            className="max-h-[85vh] w-[min(720px,92vw)] overflow-auto rounded-2xl bg-white dark:bg-slate-900 p-6 shadow-2xl ring-1 ring-slate-200 dark:ring-slate-800"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="mb-4 flex items-center justify-between">
+              <h3 className="text-base font-semibold">היסטוריית קרדיטים</h3>
+              <button
+                type="button"
+                onClick={closeLedger}
+                className="rounded-md border border-slate-200 dark:border-slate-700 px-2 py-1 text-xs text-slate-600 dark:text-slate-300"
+              >
+                סגור
+              </button>
+            </div>
+            {ledger.error ? (
+              <div className="rounded-lg border border-red-300/60 bg-red-50 dark:bg-red-950/40 px-3 py-2 text-sm text-red-700 dark:text-red-200">
+                {ledger.error}
+              </div>
+            ) : ledger.rows === null ? (
+              <div className="flex items-center gap-2 text-sm text-slate-500"><Spinner /> טוען…</div>
+            ) : ledger.rows.length === 0 ? (
+              <div className="text-sm text-slate-500">אין רשומות.</div>
+            ) : (
+              <table className="min-w-full text-xs">
+                <thead className="text-slate-500 dark:text-slate-400">
+                  <tr>
+                    <th className="px-2 py-1.5 text-right">תאריך</th>
+                    <th className="px-2 py-1.5 text-right">סיבה</th>
+                    <th className="px-2 py-1.5 text-right">±</th>
+                    <th className="px-2 py-1.5 text-right">יתרה אחרי</th>
+                    <th className="px-2 py-1.5 text-right">task</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+                  {ledger.rows.map((r) => (
+                    <tr key={r.id}>
+                      <td className="px-2 py-1.5 whitespace-nowrap text-slate-500" dir="ltr">
+                        {new Date(r.created_at).toLocaleString('he-IL')}
+                      </td>
+                      <td className="px-2 py-1.5 text-slate-700 dark:text-slate-200">{r.reason}</td>
+                      <td className={`px-2 py-1.5 font-mono ${r.amount > 0 ? 'text-emerald-600 dark:text-emerald-300' : r.amount < 0 ? 'text-rose-600 dark:text-rose-300' : 'text-slate-500'}`}>
+                        {r.amount > 0 ? `+${r.amount}` : r.amount}
+                      </td>
+                      <td className="px-2 py-1.5 font-mono text-slate-700 dark:text-slate-200">{r.balance_after}</td>
+                      <td className="px-2 py-1.5 font-mono text-[10px] text-slate-400" dir="ltr">
+                        {r.task_id ? r.task_id.slice(0, 8) : '—'}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+
 // ─── Main page ────────────────────────────────────────────────────────────────
 
 const TABS = [
   { id: 'avatars', label: 'ניהול אווטארים' },
   { id: 'voices',  label: 'ניהול קולות'   },
+  { id: 'credits', label: 'ניהול קרדיטים' },
 ]
 
 export default function AdminCatalog() {
@@ -666,7 +918,9 @@ export default function AdminCatalog() {
 
         {/* Tab content */}
         <div className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white/70 dark:bg-slate-900/70 p-6 shadow-sm">
-          {activeTab === 'avatars' ? <AvatarsTab /> : <VoicesTab />}
+          {activeTab === 'avatars' ? <AvatarsTab />
+            : activeTab === 'voices' ? <VoicesTab />
+            : <CreditsTab />}
         </div>
       </div>
     </div>

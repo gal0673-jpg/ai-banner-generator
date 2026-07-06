@@ -6,7 +6,6 @@ import atexit
 import json
 import logging
 import os
-import re
 import signal
 import threading
 import uuid
@@ -18,10 +17,11 @@ from celery.exceptions import SoftTimeLimitExceeded
 
 from celery_app import celery_app
 from database import SessionLocal
-from main import run_agency_banner_pipeline
-from services.crawler_service import crawl_from_url, quit_all_active_drivers
-from models import BannerTask
+from models import BannerTask, BusinessProfile
 from services import ugc_composite_service
+from services.business_profile import build_context_text, extract_profile_fields
+from services.creative_campaign import CreativeCampaignError, parse_creative_campaign
+from services.banner_pipeline import run_agency_banner_pipeline
 from services.banner_service import (
     TASKS_DIR,
     get_creative_for_write,
@@ -29,9 +29,229 @@ from services.banner_service import (
     persist_video_task_state,
     rendered_banner_urls_for_task,
 )
+from services.crawler_service import crawl_from_url, quit_all_active_drivers
 from services.video_service import video_engine_render_url, video_payload_for_engine
 
 logger = logging.getLogger(__name__)
+
+
+def _ugc_aspect_specific_column(aspect_ratio: str, *, kind: str) -> str:
+    """Return DB column name for UGC URLs by aspect ratio.
+
+    kind: "composited" | "final"
+    """
+    ar = ugc_composite_service.normalize_ugc_aspect_ratio(aspect_ratio)
+    if kind == "composited":
+        if ar == "1:1":
+            return "ugc_composited_video_url_1_1"
+        if ar == "16:9":
+            return "ugc_composited_video_url_16_9"
+        return "ugc_composited_video_url"
+    if kind == "final":
+        if ar == "1:1":
+            return "ugc_final_video_url_1_1"
+        if ar == "16:9":
+            return "ugc_final_video_url_16_9"
+        return "ugc_final_video_url"
+    raise ValueError(f"Unknown kind={kind!r}")
+
+
+def _run_ffmpeg_stage(
+    *,
+    task_uuid: uuid.UUID,
+    task_id: str,
+    video_url: str,
+    work_dir: Any,
+    speed_factor: float,
+    aspect_ratio: str,
+) -> tuple[str | None, str]:
+    """Run blurred-background composite; returns (composited_url, note)."""
+    persist_task(task_uuid, ugc_status="processing_video")
+    logger.info(
+        "[_finalize_ugc] task_id=%s  running FFmpeg composite (aspect=%s)…",
+        task_id,
+        aspect_ratio,
+    )
+    composited, note = ugc_composite_service.try_composite_pip_blur(
+        task_id=task_id,
+        source_video_url=video_url,
+        work_dir=work_dir,
+        speed_factor=speed_factor,
+        aspect_ratio=aspect_ratio,
+    )
+    if composited:
+        logger.info(
+            "[_finalize_ugc] task_id=%s  FFmpeg composite OK → %s", task_id, composited
+        )
+    else:
+        logger.info(
+            "[_finalize_ugc] task_id=%s  FFmpeg composite skipped/failed: %s", task_id, note
+        )
+    return composited, note or ""
+
+
+def _flush_composite_urls(
+    *,
+    task_uuid: uuid.UUID,
+    video_url: str,
+    composited_url: str | None,
+    note: str,
+    aspect_ratio: str,
+) -> None:
+    """Persist raw provider URL and aspect-specific composited URL (if any)."""
+    update: dict[str, Any] = {
+        "ugc_raw_video_url": video_url,
+        "ugc_composite_note": note,
+    }
+    update[_ugc_aspect_specific_column(aspect_ratio, kind="composited")] = composited_url
+    persist_task(task_uuid, **update)
+
+
+def _choose_best_remotion_input_url(
+    *,
+    task_id: str,
+    work_dir: Any,
+    aspect_ratio: str,
+    provider_video_url: str,
+) -> tuple[str, Any, Any]:
+    """Pick the fastest/best Remotion input URL and return (url, composited_path, source_path)."""
+    _api_base = os.environ.get("VITE_API_URL", "http://127.0.0.1:8888").rstrip("/")
+    _composited_name = ugc_composite_service.composited_filename_for_aspect_ratio(aspect_ratio)
+    _composited_path = work_dir / _composited_name
+    _source_path = work_dir / "ugc_provider_source.mp4"
+
+    if _composited_path.is_file() and _composited_path.stat().st_size > 1024:
+        render_video_url = f"{_api_base}/task-files/{task_id}/{_composited_name}"
+        logger.info(
+            "[_finalize_ugc] task_id=%s  using FFmpeg-composited video for Remotion "
+            "(%s, 1× decode): %s",
+            task_id,
+            aspect_ratio,
+            render_video_url,
+        )
+        return render_video_url, _composited_path, _source_path
+
+    if _source_path.is_file() and _source_path.stat().st_size > 1024:
+        render_video_url = f"{_api_base}/task-files/{task_id}/ugc_provider_source.mp4"
+        logger.info(
+            "[_finalize_ugc] task_id=%s  composited not found, using raw source: %s",
+            task_id,
+            render_video_url,
+        )
+        return render_video_url, _composited_path, _source_path
+
+    logger.info(
+        "[_finalize_ugc] task_id=%s  no local file found — using CDN URL for Remotion.",
+        task_id,
+    )
+    return provider_video_url, _composited_path, _source_path
+
+
+def _maybe_override_script_duration_with_probe(
+    *,
+    task_id: str,
+    ugc_script: dict,
+    composited_path: Any,
+    source_path: Any,
+) -> dict:
+    """Override estimated_duration_seconds with measured duration if possible."""
+    _estimated_dur = ugc_script.get("estimated_duration_seconds")
+    _probe_path = composited_path if composited_path.is_file() else source_path
+    if _probe_path.is_file():
+        _actual_dur = ugc_composite_service.get_video_duration_seconds(_probe_path)
+        if _actual_dur and _actual_dur > 1:
+            logger.info(
+                "[_finalize_ugc] task_id=%s  measured duration=%.1fs "
+                "(estimated was %ss) — Remotion will use measured value",
+                task_id,
+                _actual_dur,
+                _estimated_dur,
+            )
+            return {**ugc_script, "estimated_duration_seconds": round(_actual_dur, 2)}
+        logger.info(
+            "[_finalize_ugc] task_id=%s  ffprobe unavailable or failed; "
+            "keeping estimated_duration_seconds=%ss",
+            task_id,
+            _estimated_dur,
+        )
+    return ugc_script
+
+
+def _load_ugc_brand_assets(task_uuid: uuid.UUID) -> tuple[str | None, str | None, str | None, str | None]:
+    """Load optional overlay assets from DB (website_display, logo_url, product_image_url, brand_color)."""
+    website_display: str | None = None
+    logo_url: str | None = None
+    product_image_url: str | None = None
+    brand_color: str | None = None
+    with SessionLocal() as db:
+        db_row = db.get(BannerTask, task_uuid)
+        if db_row is not None:
+            ugc_row = db_row.ugc_video
+            w = (ugc_row.ugc_website_display if ugc_row else None) or ""
+            website_display = w.strip() or None
+            cr = db_row.creative
+            lu = cr.logo_url if cr else None
+            logo_url = (str(lu).strip() or None) if lu else None
+            pi = (cr.product_image_url if cr else None) or ""
+            product_image_url = pi.strip() or None
+            bc = ((cr.brand_color if cr else None) or "").strip()
+            brand_color = bc or None
+    return website_display, logo_url, product_image_url, brand_color
+
+
+def _best_available_ugc_video_url(
+    *,
+    provider_video_url: str,
+    composited_url: str | None,
+) -> str:
+    """Prefer composited when available, else raw provider URL."""
+    return (composited_url or "").strip() or provider_video_url
+
+
+def _persist_ugc_final_url(
+    *,
+    task_uuid: uuid.UUID,
+    aspect_ratio: str,
+    final_url: str | None,
+    composite_note: str | None = None,
+    ugc_error: str | None = None,
+) -> None:
+    update: dict[str, Any] = {
+        "ugc_status": "completed",
+        "ugc_error": ugc_error,
+    }
+    if composite_note is not None:
+        update["ugc_composite_note"] = composite_note
+    update[_ugc_aspect_specific_column(aspect_ratio, kind="final")] = final_url
+    persist_task(task_uuid, **update)
+
+
+def cleanup_task_assets(task_id: str) -> None:
+    """Delete large temporary files from a UGC task directory.
+
+    Intended to be called after a successful finalize, to reclaim disk space.
+    """
+    work_dir = TASKS_DIR / task_id
+    if not work_dir.exists():
+        return
+
+    # Always safe to delete: raw provider download (we persist remote URLs in the DB).
+    candidates = [
+        work_dir / "ugc_provider_source.mp4",
+    ]
+
+    for p in candidates:
+        try:
+            if p.is_file():
+                p.unlink()
+                logger.info("[cleanup_task_assets] task_id=%s  deleted %s", task_id, p.name)
+        except Exception as exc:
+            logger.warning(
+                "[cleanup_task_assets] task_id=%s  failed deleting %s: %s",
+                task_id,
+                p.name,
+                exc,
+            )
 
 
 def _enrich_ugc_script_split_gallery_dalle(
@@ -47,6 +267,8 @@ def _enrich_ugc_script_split_gallery_dalle(
     ``task_crawl_and_script``).
     """
     from services.ugc_service import generate_split_gallery_images
+
+    PLACEHOLDER_BRAND_COLOR = "PLACEHOLDER_BRAND_COLOR"
 
     try:
         for scene in ugc_script.get("scenes") or []:
@@ -88,7 +310,7 @@ def _enrich_ugc_script_split_gallery_dalle(
             sn = scene.get("scene_number")
             stem = f"split_gallery_s{sn}" if isinstance(sn, int) else "split_gallery"
             try:
-                layout_data["image_urls"] = generate_split_gallery_images(
+                image_urls = generate_split_gallery_images(
                     dalle_prompts,
                     task_id,
                     work_dir,
@@ -96,6 +318,9 @@ def _enrich_ugc_script_split_gallery_dalle(
                     refine_prompts_with_gpt=refine,
                     custom_image_urls=custom_gallery_images,
                 )
+                layout_data["image_urls"] = image_urls
+                if any(u == PLACEHOLDER_BRAND_COLOR for u in (image_urls or [])):
+                    layout_data["is_placeholder"] = True
             except Exception as one_scene_exc:
                 logger.warning(
                     "[%s] task_id=%s  split_gallery scene=%s  "
@@ -148,37 +373,21 @@ def _finalize_ugc_with_composite(
     work_dir.mkdir(parents=True, exist_ok=True)
 
     # ── Step 1: FFmpeg blurred-background composite ─────────────────────────
-    persist_task(task_uuid, ugc_status="processing_video")
-    logger.info(
-        "[_finalize_ugc] task_id=%s  running FFmpeg composite (aspect=%s)…",
-        task_id,
-        ar,
-    )
-    composited, note = ugc_composite_service.try_composite_pip_blur(
+    composited, note = _run_ffmpeg_stage(
+        task_uuid=task_uuid,
         task_id=task_id,
-        source_video_url=video_url,
+        video_url=video_url,
         work_dir=work_dir,
         speed_factor=speed_factor,
         aspect_ratio=ar,
     )
-    if composited:
-        logger.info("[_finalize_ugc] task_id=%s  FFmpeg composite OK → %s", task_id, composited)
-    else:
-        logger.info("[_finalize_ugc] task_id=%s  FFmpeg composite skipped/failed: %s", task_id, note)
-
-    # Flush raw + composited URLs to DB before the potentially long Remotion render so the
-    # task is already partially visible (and survives a crash in the next step).
-    _composite_flush: dict[str, Any] = {
-        "ugc_raw_video_url": video_url,
-        "ugc_composite_note": note,
-    }
-    if ar == "1:1":
-        _composite_flush["ugc_composited_video_url_1_1"] = composited
-    elif ar == "16:9":
-        _composite_flush["ugc_composited_video_url_16_9"] = composited
-    else:
-        _composite_flush["ugc_composited_video_url"] = composited
-    persist_task(task_uuid, **_composite_flush)
+    _flush_composite_urls(
+        task_uuid=task_uuid,
+        video_url=video_url,
+        composited_url=composited,
+        note=note,
+        aspect_ratio=ar,
+    )
 
     # ── Step 2: Remotion caption render ──────────────────────────────────────
     scenes = (ugc_script or {}).get("scenes") or []
@@ -192,9 +401,15 @@ def _finalize_ugc_with_composite(
             "(no ugc_script or no on_screen_text in any scene).",
             task_id,
         )
-        persist_task(
-            task_uuid,
-            ugc_status="completed",
+        best_url = _best_available_ugc_video_url(
+            provider_video_url=video_url,
+            composited_url=composited,
+        )
+        _persist_ugc_final_url(
+            task_uuid=task_uuid,
+            aspect_ratio=ar,
+            final_url=best_url,
+            composite_note=note or None,
             ugc_error=None,
         )
         return
@@ -206,78 +421,29 @@ def _finalize_ugc_with_composite(
     #                            per frame instead of 2 → roughly half the render time).
     #   2. ugc_provider_source.mp4 — raw provider download; still local so fast.
     #   3. video_url (CDN)     — last resort if nothing was downloaded locally.
-    _api_base = os.environ.get("VITE_API_URL", "http://127.0.0.1:8888").rstrip("/")
-    _composited_name = ugc_composite_service.composited_filename_for_aspect_ratio(ar)
-    _composited_path = work_dir / _composited_name
-    _source_path = work_dir / "ugc_provider_source.mp4"
-
-    if _composited_path.is_file() and _composited_path.stat().st_size > 1024:
-        render_video_url = f"{_api_base}/task-files/{task_id}/{_composited_name}"
-        logger.info(
-            "[_finalize_ugc] task_id=%s  using FFmpeg-composited video for Remotion "
-            "(%s, 1× decode): %s",
-            task_id,
-            ar,
-            render_video_url,
-        )
-    elif _source_path.is_file() and _source_path.stat().st_size > 1024:
-        render_video_url = f"{_api_base}/task-files/{task_id}/ugc_provider_source.mp4"
-        logger.info(
-            "[_finalize_ugc] task_id=%s  composited not found, using raw source: %s",
-            task_id,
-            render_video_url,
-        )
-    else:
-        render_video_url = video_url  # CDN URL — slowest but always available
-        logger.info(
-            "[_finalize_ugc] task_id=%s  no local file found — using CDN URL for Remotion.",
-            task_id,
-        )
+    render_video_url, _composited_path, _source_path = _choose_best_remotion_input_url(
+        task_id=task_id,
+        work_dir=work_dir,
+        aspect_ratio=ar,
+        provider_video_url=video_url,
+    )
 
     # ── Measure actual video duration ────────────────────────────────────────
     # GPT estimates duration; HeyGen/D-ID may produce a slightly longer/shorter file.
     # Remotion uses estimated_duration_seconds for durationInFrames — if the estimate
     # is too short, the render cuts off mid-sentence.  Override with the measured value.
-    _estimated_dur = ugc_script.get("estimated_duration_seconds")
-    _probe_path = _composited_path if _composited_path.is_file() else _source_path
-    if _probe_path.is_file():
-        _actual_dur = ugc_composite_service.get_video_duration_seconds(_probe_path)
-        if _actual_dur and _actual_dur > 1:
-            ugc_script = {**ugc_script, "estimated_duration_seconds": round(_actual_dur, 2)}
-            logger.info(
-                "[_finalize_ugc] task_id=%s  measured duration=%.1fs "
-                "(estimated was %ss) — Remotion will use measured value",
-                task_id,
-                _actual_dur,
-                _estimated_dur,
-            )
-        else:
-            logger.info(
-                "[_finalize_ugc] task_id=%s  ffprobe unavailable or failed; "
-                "keeping estimated_duration_seconds=%ss",
-                task_id,
-                _estimated_dur,
-            )
+    ugc_script = _maybe_override_script_duration_with_probe(
+        task_id=task_id,
+        ugc_script=ugc_script,
+        composited_path=_composited_path,
+        source_path=_source_path,
+    )
 
     # Signal to the UI that captions are being rendered.
     persist_task(task_uuid, ugc_status="rendering_captions")
-    website_display: str | None = None
-    logo_url: str | None = None
-    product_image_url: str | None = None
-    brand_color: str | None = None
-    with SessionLocal() as db:
-        db_row = db.get(BannerTask, task_uuid)
-        if db_row is not None:
-            ugc_row = db_row.ugc_video
-            w = (ugc_row.ugc_website_display if ugc_row else None) or ""
-            website_display = w.strip() or None
-            cr = db_row.creative
-            lu = cr.logo_url if cr else None
-            logo_url = (str(lu).strip() or None) if lu else None
-            pi = (cr.product_image_url if cr else None) or ""
-            product_image_url = pi.strip() or None
-            bc = ((cr.brand_color if cr else None) or "").strip()
-            brand_color = bc or None
+    website_display, logo_url, product_image_url, brand_color = _load_ugc_brand_assets(
+        task_uuid
+    )
 
     logger.info(
         "[_finalize_ugc] task_id=%s  calling Remotion /render-ugc  "
@@ -289,16 +455,20 @@ def _finalize_ugc_with_composite(
         website_display or "(none)",
     )
 
-    final_url, render_err = ugc_composite_service.call_video_engine_render_ugc(
-        task_id=task_id,
-        raw_video_url=render_video_url,
-        ugc_script=ugc_script,
-        website_display=website_display,
-        logo_url=logo_url,
-        product_image_url=product_image_url,
-        brand_color=brand_color,
-        aspect_ratio=ar,
-    )
+    try:
+        final_url, render_err = ugc_composite_service.call_video_engine_render_ugc(
+            task_id=task_id,
+            raw_video_url=render_video_url,
+            ugc_script=ugc_script,
+            website_display=website_display,
+            logo_url=logo_url,
+            product_image_url=product_image_url,
+            brand_color=brand_color,
+            aspect_ratio=ar,
+        )
+    except Exception as exc:
+        final_url = None
+        render_err = str(exc)
 
     if final_url:
         logger.info(
@@ -306,39 +476,36 @@ def _finalize_ugc_with_composite(
             task_id,
             final_url,
         )
-        _final_kw: dict[str, Any] = {
-            "ugc_status": "completed",
-            "ugc_error": None,
-        }
-        if ar == "1:1":
-            _final_kw["ugc_final_video_url_1_1"] = final_url
-        elif ar == "16:9":
-            _final_kw["ugc_final_video_url_16_9"] = final_url
-        else:
-            _final_kw["ugc_final_video_url"] = final_url
-        persist_task(task_uuid, **_final_kw)
+        _persist_ugc_final_url(
+            task_uuid=task_uuid,
+            aspect_ratio=ar,
+            final_url=final_url,
+            composite_note=None,
+            ugc_error=None,
+        )
     else:
-        # Non-fatal: the task still completes; surface composited / raw video instead.
-        # Build a combined note so both FFmpeg outcome and Remotion error are visible in the UI.
-        render_note = f"Video Engine failed: {render_err}. Showing raw video instead."
+        # Non-fatal: the task still completes; fall back to the best available video.
+        best_url = _best_available_ugc_video_url(
+            provider_video_url=video_url,
+            composited_url=composited,
+        )
+        render_note = (
+            f"Video Engine failed: {render_err}. "
+            f"Showing best available video instead: {best_url}"
+        )
         combined_note = f"{note}  |  {render_note}" if note else render_note
         logger.warning(
             "[_finalize_ugc] task_id=%s  Remotion render failed — persisting note: %s",
             task_id,
             render_note,
         )
-        _fail_final: dict[str, Any] = {
-            "ugc_composite_note": combined_note,
-            "ugc_status": "completed",
-            "ugc_error": None,
-        }
-        if ar == "1:1":
-            _fail_final["ugc_final_video_url_1_1"] = None
-        elif ar == "16:9":
-            _fail_final["ugc_final_video_url_16_9"] = None
-        else:
-            _fail_final["ugc_final_video_url"] = None
-        persist_task(task_uuid, **_fail_final)
+        _persist_ugc_final_url(
+            task_uuid=task_uuid,
+            aspect_ratio=ar,
+            final_url=best_url,
+            composite_note=combined_note,
+            ugc_error=None,
+        )
 
 
 # ── Chrome leak-prevention: guarantee cleanup on any exit path ────────────────
@@ -380,8 +547,6 @@ if threading.current_thread() is threading.main_thread():
 
     signal.signal(signal.SIGTERM, _sigterm_handler)
 
-_BRAND_HEX = re.compile(r"^#[0-9A-Fa-f]{6}$")
-
 
 class BannerPipelineFatalError(Exception):
     """Deterministic pipeline failure already written to ``banner_tasks``; Celery must not retry."""
@@ -414,6 +579,49 @@ class BannerGenerationTask(Task):
             pass
 
 
+def _seed_banner_work_dir_from_profile(
+    business_profile_id: str, work_dir: Any, brief: str | None
+) -> bool:
+    """Seed a banner job from a saved profile instead of crawling.
+
+    Writes the profile's cached ``context_text`` to ``scraped_content.txt`` (with
+    the user brief appended in the block the creative prompt looks for) and copies
+    the profile's logo to ``logo.png``. Returns ``True`` only when BOTH context and
+    logo were seeded — the caller then skips the crawl. Returns ``False`` (missing
+    context or logo) so the caller falls back to a normal crawl and the job still
+    succeeds.
+    """
+    with SessionLocal() as db:
+        profile = db.get(BusinessProfile, uuid.UUID(business_profile_id))
+        if profile is None:
+            return False
+        context = (profile.context_text or "").strip()
+        logo_url = (profile.logo_url or "").strip()
+
+    if not context:
+        return False
+
+    # Resolve the profile's logo file from its /task-files/... URL.
+    logo_src = None
+    if logo_url.startswith("/task-files/"):
+        candidate = TASKS_DIR / logo_url[len("/task-files/"):]
+        if candidate.is_file():
+            logo_src = candidate
+    if logo_src is None:
+        return False  # no usable logo → fall back to crawl (banner needs a logo)
+
+    doc = context
+    if brief and brief.strip():
+        doc = (
+            f"{context}\n\n"
+            "USER CAMPAIGN BRIEF (goals / target audience — provided by the user)\n"
+            f"{brief.strip()}"
+        )
+    (work_dir / "scraped_content.txt").write_text(doc, encoding="utf-8")
+    (work_dir / "logo.png").write_bytes(logo_src.read_bytes())
+    return True
+
+
 @celery_app.task(
     bind=True,
     base=BannerGenerationTask,
@@ -426,16 +634,28 @@ def run_banner_task(
     url: str,
     brief: str | None,
     custom_video_hook: str | None = None,
+    business_profile_id: str | None = None,
 ) -> None:
     task_uuid = uuid.UUID(task_id)
     work_dir = TASKS_DIR / task_id
     work_dir.mkdir(parents=True, exist_ok=True)
     # Move off "pending" as soon as the worker picks up the job — crawl can take minutes.
     persist_task(task_uuid, status="scraped")
-    print(f"[run_banner_task] task_id={task_id} status=scraped (crawl starting)", flush=True)
+
+    seeded = False
+    if business_profile_id:
+        try:
+            seeded = _seed_banner_work_dir_from_profile(business_profile_id, work_dir, brief)
+        except Exception as exc:  # noqa: BLE001 — seeding is best-effort; fall back to crawl
+            logger.warning("[run_banner_task] profile seed failed (%s); crawling instead", exc)
+    if seeded:
+        print(f"[run_banner_task] task_id={task_id} seeded from profile (crawl skipped)", flush=True)
+    else:
+        print(f"[run_banner_task] task_id={task_id} status=scraped (crawl starting)", flush=True)
 
     try:
-        crawl_from_url(url, work_dir=work_dir, campaign_brief=brief)
+        if not seeded:
+            crawl_from_url(url, work_dir=work_dir, campaign_brief=brief)
     except SoftTimeLimitExceeded:
         # Celery soft time limit fired inside the crawl.  Chrome may still be alive —
         # kill it before Celery's hard limit sends SIGKILL and leaves orphans.
@@ -468,62 +688,121 @@ def run_banner_task(
     with campaign_path.open(encoding="utf-8") as f:
         data = json.load(f)
 
-    for key in ("headline", "subhead", "cta"):
-        if key not in data or not str(data[key]).strip():
-            persist_task(
-                task_uuid,
-                status="failed",
-                error=f"Invalid creative_campaign.json: missing or empty {key!r}",
-            )
-            raise BannerPipelineFatalError(f"Invalid creative_campaign.json: missing or empty {key!r}")
-
-    raw_hook = data.get("video_hook")
-    ai_hook: str | None = str(raw_hook).strip()[:256] if raw_hook and str(raw_hook).strip() else None
-    video_hook_val: str | None = custom_video_hook or ai_hook
-    bullets = data.get("bullet_points")
-    if not isinstance(bullets, list) or len(bullets) != 3:
-        persist_task(
-            task_uuid,
-            status="failed",
-            error="Invalid creative_campaign.json: bullet_points must be 3 strings.",
-        )
-        raise BannerPipelineFatalError("Invalid creative_campaign.json: bullet_points must be 3 strings.")
-
-    bc_raw = data.get("brand_color")
-    if not isinstance(bc_raw, str) or not bc_raw.strip():
-        persist_task(
-            task_uuid,
-            status="failed",
-            error="Invalid creative_campaign.json: missing or empty brand_color.",
-        )
-        raise BannerPipelineFatalError("Invalid creative_campaign.json: missing or empty brand_color.")
-    bc = bc_raw.strip()
-    if not bc.startswith("#"):
-        bc = "#" + bc
-    if not _BRAND_HEX.match(bc):
-        persist_task(
-            task_uuid,
-            status="failed",
-            error="Invalid creative_campaign.json: brand_color must be #RRGGBB hex.",
-        )
-        raise BannerPipelineFatalError("Invalid creative_campaign.json: brand_color must be #RRGGBB hex.")
+    try:
+        parsed = parse_creative_campaign(data, custom_video_hook=custom_video_hook)
+    except CreativeCampaignError as exc:
+        persist_task(task_uuid, status="failed", error=str(exc))
+        raise BannerPipelineFatalError(str(exc)) from exc
 
     rb1, rb2 = rendered_banner_urls_for_task(task_id)
     persist_task(
         task_uuid,
         status="completed",
         error=None,
-        headline=str(data["headline"]).strip(),
-        subhead=str(data["subhead"]).strip(),
-        bullet_points=[str(b).strip() for b in bullets],
-        cta=str(data["cta"]).strip(),
-        video_hook=video_hook_val,
-        brand_color=bc.upper(),
+        headline=parsed["headline"],
+        subhead=parsed["subhead"],
+        bullet_points=parsed["bullet_points"],
+        cta=parsed["cta"],
+        video_hook=parsed["video_hook"],
+        brand_color=parsed["brand_color"],
         background_url=f"/task-files/{task_id}/background.png",
         logo_url=f"/task-files/{task_id}/logo.png",
         rendered_banner_1_url=rb1,
         rendered_banner_2_url=rb2,
     )
+
+
+@celery_app.task(name="scan_business_profile_task", queue="banner_queue")
+def scan_business_profile_task(profile_id: str, website_url: str) -> None:
+    """One-time enrichment: crawl the site + GPT-extract into a BusinessProfile.
+
+    Fills only fields the user left empty (never clobbers manual edits) and
+    always rebuilds ``context_text`` — the canonical brief that later seeds the
+    creative pipeline in place of a fresh crawl. Failures are recorded on the
+    profile (``scan_status='failed'``) rather than re-raised, so a bad crawl
+    never triggers a Celery retry storm; the profile stays usable as entered.
+    """
+    pid = uuid.UUID(profile_id)
+    work_dir = TASKS_DIR / f"profile-{profile_id}"
+    work_dir.mkdir(parents=True, exist_ok=True)
+
+    try:
+        scraped_text = ""
+        try:
+            crawl_from_url(website_url, work_dir=work_dir)
+        except SoftTimeLimitExceeded:
+            _emergency_chrome_cleanup()
+            raise
+        except Exception as exc:  # noqa: BLE001 — crawl is best-effort here
+            logger.warning("[scan_business_profile] crawl failed for %s: %s", website_url, exc)
+
+        scraped_path = work_dir / "scraped_content.txt"
+        if scraped_path.is_file():
+            scraped_text = scraped_path.read_text(encoding="utf-8").strip()
+
+        extracted: dict[str, str | None] = {}
+        if scraped_text and os.environ.get("OPENAI_API_KEY"):
+            try:
+                from openai import OpenAI
+
+                extracted = extract_profile_fields(OpenAI(), scraped_text)
+            except Exception as exc:  # noqa: BLE001 — extraction is best-effort
+                logger.warning("[scan_business_profile] GPT extraction failed: %s", exc)
+
+        if not scraped_text and not extracted:
+            with SessionLocal() as db:
+                profile = db.get(BusinessProfile, pid)
+                if profile is not None:
+                    profile.scan_status = "failed"
+                    profile.scan_error = (
+                        "לא הצלחנו לקרוא תוכן מהאתר. בדוק את הכתובת או מלא את הפרטים ידנית."
+                    )
+                    db.commit()
+            return
+
+        with SessionLocal() as db:
+            profile = db.get(BusinessProfile, pid)
+            if profile is None:
+                return
+
+            # Fill only empty fields — manual edits win over extraction.
+            for field in ("name", "description", "audience", "tone", "offerings", "brand_color"):
+                value = extracted.get(field)
+                if value and not (getattr(profile, field) or "").strip():
+                    setattr(profile, field, value)
+
+            logo_path = work_dir / "logo.png"
+            if logo_path.is_file() and not (profile.logo_url or "").strip():
+                profile.logo_url = f"/task-files/profile-{profile_id}/logo.png"
+
+            profile.context_text = build_context_text(
+                name=profile.name,
+                description=profile.description,
+                audience=profile.audience,
+                tone=profile.tone,
+                offerings=profile.offerings,
+                brand_color=profile.brand_color,
+                scraped_text=scraped_text,
+            )
+            profile.scan_status = "ready"
+            profile.scan_error = None
+            db.commit()
+    except SoftTimeLimitExceeded:
+        with SessionLocal() as db:
+            profile = db.get(BusinessProfile, pid)
+            if profile is not None:
+                profile.scan_status = "failed"
+                profile.scan_error = "סריקת האתר חרגה מהזמן המוקצב."
+                db.commit()
+        raise
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("[scan_business_profile] unexpected failure")
+        with SessionLocal() as db:
+            profile = db.get(BusinessProfile, pid)
+            if profile is not None:
+                profile.scan_status = "failed"
+                profile.scan_error = str(exc)[:2000]
+                db.commit()
 
 
 def execute_video_render_worker(
@@ -888,6 +1167,20 @@ def task_finalize_ugc_video(
         ugc_script=script,
         aspect_ratio=_ar,
     )
+
+    # Cleanup big temporary assets only after a successful finalize completion.
+    try:
+        with SessionLocal() as db:
+            row2 = db.get(BannerTask, task_uuid)
+            ugc2 = row2.ugc_video if row2 else None
+            if ugc2 and (ugc2.ugc_status or "").strip() == "completed":
+                cleanup_task_assets(task_id)
+    except Exception as exc:
+        logger.warning(
+            "[task_finalize_ugc_video] task_id=%s  cleanup failed (non-fatal): %s",
+            task_id,
+            exc,
+        )
     logger.info("[task_finalize_ugc_video] task_id=%s  pipeline finalize finished.", task_id)
 
 
@@ -1137,5 +1430,14 @@ def run_avatar_studio_task(
             task_id,
             video_url,
         )
+    except Exception as exc:
+        # Ensure UI always stops (status -> failed) even on unexpected exceptions.
+        logger.exception(
+            "[run_avatar_studio_task] task_id=%s  unhandled error: %s",
+            task_id,
+            exc,
+        )
+        persist_task(task_uuid, ugc_status="failed", ugc_error=str(exc))
+        raise
     finally:
         _emergency_chrome_cleanup()

@@ -27,6 +27,8 @@ from services.ugc.exceptions import UGCServiceError
 
 logger = logging.getLogger(__name__)
 
+PLACEHOLDER_BRAND_COLOR = "PLACEHOLDER_BRAND_COLOR"
+
 _TRANSIENT_OPENAI_STATUS = frozenset({408, 429, 500, 502, 503, 504})
 
 
@@ -144,6 +146,11 @@ def generate_split_gallery_images(
 
     When True, strings are treated as Hebrew labels and expanded to English DALL·E prompts
     via GPT-4o (legacy scripts).
+
+    Reliability: this function guarantees a return value for each of the three slots. If a slot's
+    DALL·E call fails (after its internal retries), the returned URL for that slot will be the
+    sentinel string ``PLACEHOLDER_BRAND_COLOR`` so the compositor can render a branded fallback
+    slide instead of failing the whole task.
     """
     api_key = os.environ.get("OPENAI_API_KEY", "").strip()
     if not api_key:
@@ -179,8 +186,19 @@ def generate_split_gallery_images(
             urls.append(custom_url)
             continue
         dest = root / f"{prefix}_{i}.png"
-        _dalle3_generate_to_path(client, prompt, dest)
-        urls.append(f"/task-files/{task_id}/{prefix}_{i}.png")
+        try:
+            _dalle3_generate_to_path(client, prompt, dest)
+            urls.append(f"/task-files/{task_id}/{prefix}_{i}.png")
+        except Exception as exc:
+            logger.exception(
+                "[ugc_service] split_gallery DALL·E slot failed; returning placeholder "
+                "(task_id=%s prefix=%s slot=%d): %s",
+                task_id,
+                prefix,
+                i,
+                exc,
+            )
+            urls.append(PLACEHOLDER_BRAND_COLOR)
 
     logger.info(
         "[ugc_service] split_gallery generated 3 DALL·E images for task_id=%s prefix=%s",
