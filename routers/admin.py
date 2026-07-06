@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import uuid
 from pathlib import Path
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import Response
 from sqlalchemy import select
 from sqlalchemy.orm import Session, joinedload
@@ -14,7 +15,9 @@ from ai_banner_context import OUTPUT_FILENAME, build_document
 from auth import get_current_superuser
 from database import get_db
 from deps import require_primary_admin
-from models import BannerTask, User
+from models import BannerTask, CreditLedger, User, UserCredits
+from schemas import AdminGrantCreditsRequest
+from services import credits as credits_service
 from services.banner_service import rendered_banner_urls_for_task
 
 router = APIRouter(tags=["admin"])
@@ -71,6 +74,136 @@ def admin_list_tasks(
             }
         )
     return out
+
+
+@router.get("/admin/users")
+def admin_list_users_with_credits(
+    _: Annotated[User, Depends(get_current_superuser)],
+    db: Session = Depends(get_db),
+) -> list[dict[str, Any]]:
+    """List all users together with their credit balance — for an admin dashboard."""
+    rows = db.execute(
+        select(User, UserCredits)
+        .outerjoin(UserCredits, UserCredits.user_id == User.id)
+        .order_by(User.created_at)
+    ).all()
+    out: list[dict[str, Any]] = []
+    for u, credits_row in rows:
+        out.append(
+            {
+                "id": str(u.id),
+                "email": u.email,
+                "is_superuser": u.is_superuser,
+                "created_at": u.created_at,
+                "credits_balance": int(credits_row.balance) if credits_row else 0,
+                "last_refill_at": credits_row.last_refill_at if credits_row else None,
+            }
+        )
+    return out
+
+
+@router.post("/admin/users/{user_id}/credits")
+def admin_grant_credits(
+    user_id: str,
+    body: AdminGrantCreditsRequest,
+    _: Annotated[User, Depends(get_current_superuser)],
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Add (positive amount) or withdraw (negative amount) credits for a user.
+
+    Withdrawals are capped at the current balance so the running total never
+    goes negative. Every change is appended to ``credit_ledger``.
+    """
+    try:
+        uid = uuid.UUID(user_id)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Unknown user_id") from None
+
+    target = db.get(User, uid)
+    if target is None:
+        raise HTTPException(status_code=404, detail="Unknown user_id")
+
+    if body.amount == 0:
+        raise HTTPException(status_code=400, detail="amount must be non-zero")
+
+    if body.amount > 0:
+        new_balance = credits_service.grant(
+            db,
+            user_id=uid,
+            amount=body.amount,
+            reason=body.reason or "grant_admin",
+        )
+    else:
+        # Negative amount → withdrawal. Use the debit path but clamp at current balance
+        # so we never go below zero. (Admins correcting an over-grant should not turn
+        # the user into a negative-balance debtor.)
+        from services.credits import _append_ledger, _get_or_create_locked  # type: ignore[attr-defined]
+
+        row = _get_or_create_locked(db, uid)
+        current = int(row.balance)
+        withdraw = min(-body.amount, current)
+        if withdraw == 0:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Cannot withdraw: user balance is already 0 (requested {-body.amount}).",
+            )
+        row.balance = current - withdraw
+        _append_ledger(
+            db,
+            user_id=uid,
+            amount=-withdraw,
+            reason=body.reason or "withdraw_admin",
+            balance_after=int(row.balance),
+        )
+        new_balance = int(row.balance)
+
+    db.commit()
+    return {
+        "user_id": str(uid),
+        "balance": new_balance,
+        "delta": body.amount,
+        "reason": body.reason,
+    }
+
+
+@router.get("/admin/users/{user_id}/credits/ledger")
+def admin_user_credit_ledger(
+    user_id: str,
+    _: Annotated[User, Depends(get_current_superuser)],
+    db: Session = Depends(get_db),
+    limit: int = 100,
+) -> list[dict[str, Any]]:
+    """Recent ledger entries for one user (most-recent first), up to ``limit`` rows."""
+    try:
+        uid = uuid.UUID(user_id)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Unknown user_id") from None
+
+    if db.get(User, uid) is None:
+        raise HTTPException(status_code=404, detail="Unknown user_id")
+
+    limit = max(1, min(limit, 500))
+    entries = (
+        db.execute(
+            select(CreditLedger)
+            .where(CreditLedger.user_id == uid)
+            .order_by(CreditLedger.created_at.desc())
+            .limit(limit)
+        )
+        .scalars()
+        .all()
+    )
+    return [
+        {
+            "id": e.id,
+            "task_id": str(e.task_id) if e.task_id else None,
+            "amount": e.amount,
+            "reason": e.reason,
+            "balance_after": e.balance_after,
+            "created_at": e.created_at,
+        }
+        for e in entries
+    ]
 
 
 @router.get("/admin/ai-banner-context")

@@ -10,6 +10,9 @@ venv/
 
 # Python
 __pycache__/
+*.pyc
+*.sqlite
+*.db
 
 # Generated task workspaces (assets, renders)
 tasks/
@@ -19,4 +22,19 @@ video_engine/output/
 
 # AI Context files
 ai-banner-context.txt
+ai-banner-generator.txt
 project_context.txt
+
+# Root-level dev artifacts from the CLI pipeline (main.py / banner_pipeline).
+# Anchored to repo root so real assets elsewhere (client/, video_engine/) are untouched.
+/agency_banner.png
+/agency_banner_v2.png
+/background.png
+/final_banner.png
+/final_agency_banner.png
+/logo.png
+/banner_data.json
+/creative_campaign.json
+/scraped_content.txt
+# Claude Code tooling (session state, worktrees, local settings)
+.claude/

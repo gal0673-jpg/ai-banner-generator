@@ -20,13 +20,22 @@ from dotenv import load_dotenv
 
 load_dotenv(Path(__file__).resolve().parent / ".env")
 
-from celery import Celery
-from kombu import Queue
+from celery import Celery  # noqa: E402
+from kombu import Queue  # noqa: E402
+
+# Validate env before constructing the Celery app so a misconfigured worker
+# fails fast (clear error message) instead of crashing later inside a task.
+# Feature-required keys (OPENAI / HEYGEN / etc.) are non-strict — the worker
+# still boots and the relevant task fails individually with a clear error.
+from settings import get_settings, validate_startup_config  # noqa: E402
+
+validate_startup_config(strict_required=True)
+_settings = get_settings()
 
 celery_app = Celery(
     "banner_generator",
-    broker="redis://127.0.0.1:6379/0",
-    backend="redis://127.0.0.1:6379/0",
+    broker=_settings.REDIS_URL,
+    backend=_settings.REDIS_URL,
     include=["worker_tasks"],
 )
 

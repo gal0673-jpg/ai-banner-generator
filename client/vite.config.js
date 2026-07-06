@@ -9,6 +9,11 @@ export default defineConfig({
     host: '127.0.0.1',
     port: 5173,
     strictPort: true,
+    fs: {
+      // Allow importing shared design tokens from the repo root (e.g. ../shared/*).
+      // Without this, Vite blocks files outside the client/ directory and the app can render blank.
+      allow: ['..'],
+    },
     proxy: {
       // Same-origin API in dev when client/.env has VITE_API_URL= (empty)
       '/auth': { target: 'http://127.0.0.1:8888', changeOrigin: true },

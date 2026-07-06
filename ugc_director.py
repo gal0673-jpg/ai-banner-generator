@@ -14,6 +14,7 @@ import json
 import os
 import re
 from pathlib import Path
+from typing import Any, Literal
 
 from dotenv import load_dotenv
 from openai import (
@@ -24,6 +25,7 @@ from openai import (
     OpenAI,
     RateLimitError,
 )
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
 
 BASE = Path(__file__).resolve().parent
@@ -38,6 +40,79 @@ VISUAL_LAYOUTS = frozenset(
 )
 
 _DURATION_MAP: dict[str, int] = {"15s": 15, "30s": 30, "50s": 50}
+
+# ---------------------------------------------------------------------------
+# Structured outputs schema (Pydantic)
+# ---------------------------------------------------------------------------
+
+
+class SplitGalleryImage(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    image_prompt: str = Field(..., min_length=1)
+    on_screen_caption: str = Field(..., min_length=1)
+
+
+class LayoutData(BaseModel):
+    """Layout payload for split_gallery scenes (strictly 3 image slots)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    avatar_quadrant: Literal["TL", "TR", "BL", "BR"]
+    images: list[SplitGalleryImage]
+
+    @field_validator("images")
+    @classmethod
+    def require_exactly_three_images(
+        cls, v: list[SplitGalleryImage]
+    ) -> list[SplitGalleryImage]:
+        if len(v) != 3:
+            raise ValueError("layout_data.images must contain exactly 3 objects")
+        return v
+
+
+class UgcScene(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    scene_number: int = Field(..., ge=1)
+    spoken_text: str = Field(..., min_length=1)
+    on_screen_text: str
+    visual_layout: Literal[
+        "full_avatar",
+        "avatar_with_bullets",
+        "avatar_with_cta",
+        "split_gallery",
+    ]
+    layout_data: LayoutData | None = None
+
+    @model_validator(mode="after")
+    def enforce_layout_data_by_layout(self) -> "UgcScene":
+        if self.visual_layout == "split_gallery":
+            if self.layout_data is None:
+                raise ValueError("layout_data is required when visual_layout is 'split_gallery'")
+        else:
+            if self.layout_data is not None:
+                raise ValueError(
+                    "layout_data is only allowed when visual_layout is 'split_gallery'"
+                )
+        return self
+
+
+class UgcScript(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    estimated_duration_seconds: int
+    scenes: list[UgcScene] = Field(..., min_length=1)
+
+    @model_validator(mode="after")
+    def enforce_sequential_scene_numbers(self) -> "UgcScript":
+        for i, scene in enumerate(self.scenes, start=1):
+            if scene.scene_number != i:
+                raise ValueError(
+                    f"scene_number must be sequential starting at 1 (expected {i}, got {scene.scene_number})"
+                )
+        return self
+
 
 # Scene-count guidance per video length — injected into the prompt so the model
 # knows how dense to make the script without under- or over-shooting.
@@ -360,188 +435,35 @@ def _call_gpt(
         raise RuntimeError("[ugc_director] ERROR: GPT-4o returned an empty response.")
     return content
 
+
+@_OPENAI_CHAT_RETRY
+def _call_gpt_structured(
+    client: OpenAI,
+    user_content: str,
+    response_model: type[BaseModel],
+    system_prompt: str | None = None,
+) -> BaseModel:
+    system = system_prompt if system_prompt is not None else UGC_DIRECTOR_SYSTEM
+    completion = client.beta.chat.completions.parse(
+        model="gpt-4o",
+        messages=[
+            {"role": "system", "content": system},
+            {"role": "user", "content": user_content[:16_000]},
+        ],
+        response_format=response_model,
+    )
+    parsed = completion.choices[0].message.parsed
+    if parsed is None:
+        content = completion.choices[0].message.content
+        raise RuntimeError(
+            "[ugc_director] ERROR: OpenAI did not return a parsed structured output. "
+            f"Raw content: {content!r}"
+        )
+    return parsed
+
 # ---------------------------------------------------------------------------
-# Validation helper
+# Validation helper (removed; Pydantic structured outputs now validate)
 # ---------------------------------------------------------------------------
-
-
-def _validate_script(
-    data: dict,
-    expected_duration: int,
-    layout_mode: str = "classic",
-) -> None:
-    """Raise ValueError with an actionable message if the script is malformed."""
-
-    mode = (layout_mode or "classic").lower()
-    if mode not in ("classic", "split_gallery"):
-        mode = "classic"
-
-    if not isinstance(data.get("estimated_duration_seconds"), int):
-        raise ValueError(
-            "[ugc_director] 'estimated_duration_seconds' must be an integer; "
-            f"got {data.get('estimated_duration_seconds')!r}."
-        )
-    if data["estimated_duration_seconds"] != expected_duration:
-        raise ValueError(
-            f"[ugc_director] 'estimated_duration_seconds' must be {expected_duration}; "
-            f"got {data['estimated_duration_seconds']}."
-        )
-
-    scenes = data.get("scenes")
-    if not isinstance(scenes, list) or len(scenes) == 0:
-        raise ValueError("[ugc_director] 'scenes' must be a non-empty array.")
-
-    n = len(scenes)
-    for i, scene in enumerate(scenes):
-        idx = i + 1
-        is_first = i == 0
-        is_last = i == n - 1
-        is_middle = not is_first and not is_last
-
-        for field in ("scene_number", "spoken_text", "on_screen_text", "visual_layout"):
-            if field not in scene:
-                raise ValueError(
-                    f"[ugc_director] Scene {idx} is missing required field {field!r}."
-                )
-
-        if scene["scene_number"] != idx:
-            raise ValueError(
-                f"[ugc_director] Scene at position {idx} has scene_number "
-                f"{scene['scene_number']}; expected {idx}."
-            )
-
-        layout = scene["visual_layout"]
-        if layout not in VISUAL_LAYOUTS:
-            raise ValueError(
-                f"[ugc_director] Scene {idx} has invalid visual_layout {layout!r}. "
-                f"Must be one of {sorted(VISUAL_LAYOUTS)}."
-            )
-
-        if not isinstance(scene["spoken_text"], str) or not scene["spoken_text"].strip():
-            raise ValueError(
-                f"[ugc_director] Scene {idx} 'spoken_text' must be a non-empty string."
-            )
-
-        if not isinstance(scene["on_screen_text"], str):
-            raise ValueError(
-                f"[ugc_director] Scene {idx} 'on_screen_text' must be a string (or empty string)."
-            )
-
-        has_ld = scene.get("layout_data") is not None
-        if has_ld and (is_first or is_last):
-            raise ValueError(
-                f"[ugc_director] Scene {idx} must not include layout_data (hook/CTA scenes only)."
-            )
-
-        if mode == "classic" and is_middle:
-            if layout != "avatar_with_bullets":
-                raise ValueError(
-                    f"[ugc_director] Scene {idx} (middle) must use visual_layout "
-                    f"'avatar_with_bullets' in classic mode; got {layout!r}."
-                )
-            if has_ld:
-                raise ValueError(
-                    f"[ugc_director] Scene {idx} must not include layout_data in classic mode."
-                )
-
-        if mode == "split_gallery" and is_middle:
-            if layout != "split_gallery":
-                raise ValueError(
-                    f"[ugc_director] Scene {idx} (middle) must use visual_layout "
-                    f"'split_gallery' in split_gallery mode; got {layout!r}."
-                )
-            ld = scene.get("layout_data")
-            if not isinstance(ld, dict):
-                raise ValueError(
-                    f"[ugc_director] Scene {idx} 'layout_data' must be an object for split_gallery."
-                )
-            q = ld.get("avatar_quadrant", "BR")
-            if not isinstance(q, str) or not q.strip():
-                raise ValueError(
-                    f"[ugc_director] Scene {idx} layout_data.avatar_quadrant must be a string "
-                    "(TL|TR|BL|BR)."
-                )
-            qn = q.strip().upper()
-            if qn not in ("TL", "TR", "BL", "BR"):
-                raise ValueError(
-                    f"[ugc_director] Scene {idx} layout_data.avatar_quadrant must be one of "
-                    "TL, TR, BL, BR."
-                )
-            imgs = ld.get("images")
-            if not isinstance(imgs, list) or len(imgs) != 3:
-                raise ValueError(
-                    f"[ugc_director] Scene {idx} layout_data.images must be a list of exactly "
-                    f"three objects {{image_prompt, on_screen_caption}}; got {imgs!r}."
-                )
-            for j, slot in enumerate(imgs):
-                if not isinstance(slot, dict):
-                    raise ValueError(
-                        f"[ugc_director] Scene {idx} layout_data.images[{j}] must be an object "
-                        f"with 'image_prompt' and 'on_screen_caption'; got {slot!r}."
-                    )
-                ip = slot.get("image_prompt")
-                cap = slot.get("on_screen_caption")
-                if not isinstance(ip, str) or not str(ip).strip():
-                    raise ValueError(
-                        f"[ugc_director] Scene {idx} layout_data.images[{j}].image_prompt must be "
-                        "a non-empty string."
-                    )
-                if not isinstance(cap, str) or not str(cap).strip():
-                    raise ValueError(
-                        f"[ugc_director] Scene {idx} layout_data.images[{j}].on_screen_caption must "
-                        "be a non-empty string."
-                    )
-
-    # Structural arc enforcement (first = full avatar, last = CTA)
-    if scenes[0]["visual_layout"] != "full_avatar":
-        raise ValueError(
-            "[ugc_director] The first scene must use visual_layout 'full_avatar'."
-        )
-    if scenes[-1]["visual_layout"] != "avatar_with_cta":
-        raise ValueError(
-            "[ugc_director] The last scene must use visual_layout 'avatar_with_cta'."
-        )
-
-
-def _validate_script_studio_spoken_only(data: dict, expected_duration: int) -> None:
-    """Validate a multi-scene spoken_only script (avatar studio, no CTA arc required)."""
-    if not isinstance(data.get("estimated_duration_seconds"), int):
-        raise ValueError(
-            "[ugc_director] 'estimated_duration_seconds' must be an integer; "
-            f"got {data.get('estimated_duration_seconds')!r}."
-        )
-    if data["estimated_duration_seconds"] != expected_duration:
-        raise ValueError(
-            f"[ugc_director] 'estimated_duration_seconds' must be {expected_duration}; "
-            f"got {data['estimated_duration_seconds']}."
-        )
-    scenes = data.get("scenes")
-    if not isinstance(scenes, list) or len(scenes) == 0:
-        raise ValueError("[ugc_director] studio spoken_only expects at least one scene.")
-    for i, scene in enumerate(scenes):
-        idx = i + 1
-        for field in ("scene_number", "spoken_text", "on_screen_text", "visual_layout"):
-            if field not in scene:
-                raise ValueError(
-                    f"[ugc_director] Scene {idx} is missing required field {field!r}."
-                )
-        if scene["scene_number"] != idx:
-            raise ValueError(
-                f"[ugc_director] Scene at position {idx} has scene_number "
-                f"{scene['scene_number']}; expected {idx}."
-            )
-        if scene["visual_layout"] != "full_avatar":
-            raise ValueError(
-                f"[ugc_director] studio spoken_only scene {idx} must use visual_layout 'full_avatar'."
-            )
-        if not isinstance(scene["spoken_text"], str) or not scene["spoken_text"].strip():
-            raise ValueError(
-                f"[ugc_director] Scene {idx} 'spoken_text' must be a non-empty string."
-            )
-        if not isinstance(scene["on_screen_text"], str):
-            raise ValueError(
-                f"[ugc_director] Scene {idx} 'on_screen_text' must be a string."
-            )
 
 
 def _chunk_spoken_text(text: str, max_words: int = 6) -> list[str]:
@@ -600,7 +522,7 @@ def build_studio_spoken_only_script(spoken_text: str, video_length: str) -> dict
         "estimated_duration_seconds": target_seconds,
         "scenes": scenes,
     }
-    _validate_script_studio_spoken_only(data, target_seconds)
+    UgcScript.model_validate(data)
     return data
 
 
@@ -665,21 +587,20 @@ def generate_ugc_script(
     )
 
     client = OpenAI(api_key=api_key)
-    raw = _call_gpt(
+    print("[ugc_director] Requesting structured UGC script from GPT-4o…")
+    parsed = _call_gpt_structured(
         client,
         user_content,
+        UgcScript,
         build_ugc_director_system(layout_mode),
     )
+    data = parsed.model_dump()
 
-    print("[ugc_director] Parsing and validating JSON response…")
-    try:
-        data = json.loads(raw)
-    except json.JSONDecodeError as exc:
-        raise RuntimeError(
-            f"[ugc_director] ERROR: GPT-4o returned invalid JSON — {exc}"
-        ) from exc
-
-    _validate_script(data, target_seconds, layout_mode)
+    if data["estimated_duration_seconds"] != target_seconds:
+        raise ValueError(
+            f"[ugc_director] 'estimated_duration_seconds' must be {target_seconds}; "
+            f"got {data['estimated_duration_seconds']}."
+        )
 
     print(
         f"[ugc_director] OK — {len(data['scenes'])} scene(s) validated for "
@@ -739,21 +660,20 @@ def generate_avatar_studio_script(
     )
 
     client = OpenAI(api_key=api_key)
-    raw = _call_gpt(
+    print("[ugc_director] Avatar studio: requesting structured script from GPT-4o…")
+    parsed = _call_gpt_structured(
         client,
         user_content,
+        UgcScript,
         build_ugc_director_system(layout_mode),
     )
+    data = parsed.model_dump()
 
-    print("[ugc_director] Avatar studio: parsing and validating JSON response…")
-    try:
-        data = json.loads(raw)
-    except json.JSONDecodeError as exc:
-        raise RuntimeError(
-            f"[ugc_director] ERROR: GPT-4o returned invalid JSON — {exc}"
-        ) from exc
-
-    _validate_script(data, target_seconds, layout_mode)
+    if data["estimated_duration_seconds"] != target_seconds:
+        raise ValueError(
+            f"[ugc_director] 'estimated_duration_seconds' must be {target_seconds}; "
+            f"got {data['estimated_duration_seconds']}."
+        )
 
     print(
         f"[ugc_director] Avatar studio OK — {len(data['scenes'])} scene(s) validated."

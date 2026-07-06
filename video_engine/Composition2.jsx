@@ -10,6 +10,7 @@ import {
   useVideoConfig,
 } from "remotion";
 import { loadFont } from "@remotion/google-fonts/Heebo";
+import { DESIGN_TOKENS, bannerVerticalBottomSafePx } from "../shared/designTokens.js";
 
 const heebo = loadFont("normal", {
   weights: ["400", "500", "600", "700", "800"],
@@ -17,7 +18,7 @@ const heebo = loadFont("normal", {
 });
 
 /** Content column width in BannerCanvas2 — scales type to match DF2_SQUARE / DF2_VERTICAL */
-const D2_CONTENT_W_REF = 952;
+const D2_CONTENT_W_REF = DESIGN_TOKENS?.fonts?.design2?.remotion?.content_w_ref || 952;
 
 const SNAP_FRAMES = 30;
 const BASE_BULLET_START_FRAMES = [20, 30, 40];
@@ -173,26 +174,32 @@ export const Design2Composition = ({
   const pad = Math.round(width * 0.06);
   const contentMaxW = width - pad * 2;
 
+  const DF_SQ = DESIGN_TOKENS?.fonts?.design2?.square;
+  const DF_V  = DESIGN_TOKENS?.fonts?.design2?.vertical;
+
   const headlineFs = Math.min(
     280,
-    (contentMaxW * (isVertical ? 118 : 92)) / D2_CONTENT_W_REF,
+    (contentMaxW * (isVertical ? (DF_V?.headline || 118) : (DF_SQ?.headline || 92))) /
+      D2_CONTENT_W_REF,
   );
   const subheadFs = Math.min(
     220,
-    (contentMaxW * (isVertical ? 48 : 36)) / D2_CONTENT_W_REF,
+    (contentMaxW * (isVertical ? (DF_V?.subhead || 48) : (DF_SQ?.subhead || 36))) /
+      D2_CONTENT_W_REF,
   );
   const bulletFs = Math.min(
     180,
-    (contentMaxW * (isVertical ? 34 : 28)) / D2_CONTENT_W_REF,
+    (contentMaxW * (isVertical ? (DF_V?.bullets || 34) : (DF_SQ?.bullets || 28))) /
+      D2_CONTENT_W_REF,
   );
   const ctaFs = Math.min(
     220,
-    (contentMaxW * (isVertical ? 52 : 44)) / D2_CONTENT_W_REF,
+    (contentMaxW * (isVertical ? (DF_V?.cta || 52) : (DF_SQ?.cta || 44))) / D2_CONTENT_W_REF,
   );
 
   // For vertical: push content into the bottom 60% of the frame; reserve bottom for player chrome
   const verticalTopPad = isVertical ? Math.round(height * 0.4) : 0;
-  const verticalBottomSafe = isVertical ? Math.round(height * 0.11) : 0;
+  const verticalBottomSafe = isVertical ? bannerVerticalBottomSafePx(height) : 0;
 
   return (
     <AbsoluteFill

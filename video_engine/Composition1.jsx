@@ -10,6 +10,7 @@ import {
   useVideoConfig,
 } from "remotion";
 import { loadFont } from "@remotion/google-fonts/Heebo";
+import { DESIGN_TOKENS, bannerVerticalBottomSafePx } from "../shared/designTokens.js";
 
 const heebo = loadFont("normal", {
   weights: ["400", "500", "600", "700", "800"],
@@ -18,7 +19,8 @@ const heebo = loadFont("normal", {
 
 const LEFT_RATIO = 0.44;
 /** Bottom text band height at 1080×1920 (60% of frame) — scales headline/subhead with canvas defaults */
-const D1_VERTICAL_TEXT_PANEL_H = 1152;
+const D1_VERTICAL_TEXT_PANEL_H =
+  DESIGN_TOKENS?.fonts?.design1?.remotion?.vertical_text_panel_h_ref || 1152;
 const HOOK_FRAMES = 60;
 const BASE_BULLET_START = [18, 26, 34];
 const BASE_CTA_START = 52;
@@ -209,24 +211,39 @@ export const Design1Composition = ({
   const px = Math.round(containerW * 0.08);
   const py = Math.round(containerH * 0.06);
   /** Extra bottom inset in vertical shorts so OS/player controls do not cover CTA/bullets */
-  const verticalBottomSafe = isVertical ? Math.round(containerH * 0.12) : 0;
+  const verticalBottomSafe = isVertical ? bannerVerticalBottomSafePx(containerH) : 0;
+
+  const DF_SQ = DESIGN_TOKENS?.fonts?.design1?.square;
+  const DF_V  = DESIGN_TOKENS?.fonts?.design1?.vertical;
 
   // Match BannerCanvas DF_VERTICAL / DF_SQUARE (caps only guard extreme aspect ratios)
   const headlineFs = Math.min(
     280,
-    containerH * (isVertical ? 112 / D1_VERTICAL_TEXT_PANEL_H : 72 / 1080),
+    containerH *
+      (isVertical
+        ? (DF_V?.headline || 92) / D1_VERTICAL_TEXT_PANEL_H
+        : (DF_SQ?.headline || 54) / 1080),
   );
   const subheadFs = Math.min(
     220,
-    containerH * (isVertical ? 46 / D1_VERTICAL_TEXT_PANEL_H : 34 / 1080),
+    containerH *
+      (isVertical
+        ? (DF_V?.subhead || 42) / D1_VERTICAL_TEXT_PANEL_H
+        : (DF_SQ?.subhead || 26) / 1080),
   );
   const bulletFs = Math.min(
     180,
-    containerH * (isVertical ? 34 / D1_VERTICAL_TEXT_PANEL_H : 28 / 1080),
+    containerH *
+      (isVertical
+        ? (DF_V?.bullets || 34) / D1_VERTICAL_TEXT_PANEL_H
+        : (DF_SQ?.bullets || 20) / 1080),
   );
   const ctaFs = Math.min(
     220,
-    containerH * (isVertical ? 48 / D1_VERTICAL_TEXT_PANEL_H : 38 / 1080),
+    containerH *
+      (isVertical
+        ? (DF_V?.cta || 48) / D1_VERTICAL_TEXT_PANEL_H
+        : (DF_SQ?.cta || 30) / 1080),
   );
 
   const renderTextPanel = () => (

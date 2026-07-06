@@ -12,6 +12,7 @@ from auth import get_current_user
 from database import get_db
 from models import BannerCreativeData, BannerTask, UgcVideoData, User
 from schemas import GenerateAvatarStudioRequest
+from services import credits as credits_service
 from services.banner_service import persist_task
 from services.url_display import normalize_website_display
 from worker_tasks import run_avatar_studio_task
@@ -46,6 +47,7 @@ def generate_avatar_studio(
     website_disp = normalize_website_display(body.website_url)
 
     task_id = uuid.uuid4()
+    cost = credits_service.cost_for_ugc(body.video_length)
     row = BannerTask(
         id=task_id,
         user_id=current_user.id,
@@ -67,6 +69,18 @@ def generate_avatar_studio(
         ugc_status="pending",
     )
     db.add(row)
+    db.flush()
+    try:
+        credits_service.debit(
+            db,
+            user=current_user,
+            amount=cost,
+            reason=f"debit_avatar_studio_{body.video_length}",
+            task_id=task_id,
+        )
+    except credits_service.InsufficientCreditsError as exc:
+        db.rollback()
+        raise credits_service.insufficient_credits_http(exc) from None
     db.commit()
 
     tid = str(task_id)
@@ -88,6 +102,9 @@ def generate_avatar_studio(
             queue="video_queue",
         )
     except Exception as exc:
+        credits_service.refund(
+            current_user.id, cost, reason="refund_enqueue_failed", task_id=task_id
+        )
         persist_task(
             task_id,
             ugc_status="failed",

@@ -43,8 +43,9 @@ export const ALLOWED_RERENDER_ANIM = new Set(['pop', 'fade', 'typewriter'])
 export const ALLOWED_RERENDER_POS = new Set(['bottom', 'center', 'top'])
 export const ALLOWED_RERENDER_FONT = new Set(['heebo', 'rubik', 'assistant'])
 
-/** Must match api.SUPERUSER_EMAIL (primary admin only). */
-export const PRIMARY_ADMIN_EMAIL = 'gal0673@gmail.com'
+// PRIMARY_ADMIN_EMAIL was previously exported here and embedded into the bundle.
+// The admin identity now comes from /auth/me as `is_superuser` / `is_primary_admin`
+// (see AuthContext.jsx); no email hardcoding is required on the client.
 
 export const TONE_TAGS = ['[אנרגטי]', '[דרמטי]', '[אמפתי]', '[דחוף]', '[מקצועי]']
 

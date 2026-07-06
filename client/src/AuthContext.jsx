@@ -6,6 +6,7 @@ const AuthContext = createContext(null)
 export function AuthProvider({ children }) {
   const [user, setUser] = useState(null)
   const [ready, setReady] = useState(false)
+  const [credits, setCredits] = useState(null)
   const sessionFetchIdRef = useRef(0)
 
   // Restore session from the HttpOnly cookie via the server (no localStorage).
@@ -34,7 +35,14 @@ export function AuthProvider({ children }) {
         const email = res.data?.email
         if (sessionFetchIdRef.current !== fetchId) return
         if (email) {
-          setUser({ email: String(email).trim().toLowerCase() })
+          setUser({
+            email: String(email).trim().toLowerCase(),
+            isSuperuser: Boolean(res.data?.is_superuser),
+            isPrimaryAdmin: Boolean(res.data?.is_primary_admin),
+          })
+          if (typeof res.data?.credits_balance === 'number') {
+            setCredits(res.data.credits_balance)
+          }
         }
       })
       .catch(() => {
@@ -59,7 +67,21 @@ export function AuthProvider({ children }) {
     })
 
     const normalizedEmail = email.trim().toLowerCase()
-    const nextUser = { email: normalizedEmail }
+    // /auth/me also triggers the monthly refill server-side, so call it post-login
+    // to pick up the (possibly bumped) balance + admin flags.
+    let isSuperuser = false
+    let isPrimaryAdmin = false
+    try {
+      const meRes = await api.get('/auth/me', { timeout: 10_000 })
+      isSuperuser = Boolean(meRes.data?.is_superuser)
+      isPrimaryAdmin = Boolean(meRes.data?.is_primary_admin)
+      if (typeof meRes.data?.credits_balance === 'number') {
+        setCredits(meRes.data.credits_balance)
+      }
+    } catch {
+      /* keep going with default isSuperuser/isPrimaryAdmin=false */
+    }
+    const nextUser = { email: normalizedEmail, isSuperuser, isPrimaryAdmin }
     setUser(nextUser)
     return nextUser
   }, [])
@@ -71,6 +93,20 @@ export function AuthProvider({ children }) {
       /* still clear local UI state */
     }
     setUser(null)
+    setCredits(null)
+  }, [])
+
+  /** Re-fetch the current credit balance (call after a debit/refund event). */
+  const refreshCredits = useCallback(async () => {
+    try {
+      const { data } = await api.get('/me/credits', { timeout: 10_000 })
+      if (typeof data?.balance === 'number') {
+        setCredits(data.balance)
+      }
+      return data
+    } catch {
+      return null
+    }
   }, [])
 
   const value = useMemo(
@@ -79,9 +115,11 @@ export function AuthProvider({ children }) {
       ready,
       login,
       logout,
+      credits,
+      refreshCredits,
       isAuthenticated: Boolean(user),
     }),
-    [user, ready, login, logout],
+    [user, ready, login, logout, credits, refreshCredits],
   )
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>

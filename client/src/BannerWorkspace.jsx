@@ -2,151 +2,31 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import api, { API_BASE_URL, API_BASE_URL_DISPLAY, toAbsoluteApiUrl } from './api.js'
 import { useAuth } from './AuthContext.jsx'
+import {
+  SKIP_LATEST_RESTORE_KEY,
+  UGC_DEFAULT_AVATAR_URL,
+  UGC_DEFAULT_VOICE_ID_HINT,
+  VIDEO_RENDERING_HINT,
+} from './bannerWorkspace/constants.js'
+import { Spinner, StatusSkeleton, UgcScriptScenesBody } from './bannerWorkspace/components.jsx'
+import {
+  axiosErrorMessage,
+  formatStatus,
+  formatUgcStatus,
+  isInsufficientCreditsError,
+  readSkipLatestRestoreFlag,
+  ugcPlaybackUrl,
+} from './bannerWorkspace/helpers.js'
+import UgcPanel from './bannerWorkspace/UgcPanel.jsx'
+import WorkspaceHeader from './bannerWorkspace/WorkspaceHeader.jsx'
 import DynamicBannerCanvas from './DynamicBannerCanvas.jsx'
 import { useTaskWebSocket } from './useTaskWebSocket.js'
-
-// ─── helpers ─────────────────────────────────────────────────────────────────
-
-function formatStatus(status, { videoRendering = false } = {}) {
-  if (!status) return 'מתחיל…'
-  if (status === 'completed' && videoRendering) return 'באנר הושלם · מייצר וידאו ברקע…'
-  const map = {
-    pending: 'ממתין…',
-    scraped: 'סורק את האתר…',
-    generating_image: 'מייצר ויז׳ואל וקופי…',
-    completed: 'הושלם',
-    failed: 'נכשל',
-  }
-  return map[status] || status.replace(/_/g, ' ')
-}
-
-function axiosErrorMessage(err) {
-  const d = err.response?.data?.detail
-  if (typeof d === 'string') return d
-  if (Array.isArray(d)) return d.map((x) => x.msg || JSON.stringify(x)).join(' ')
-  return err.message || 'הבקשה נכשלה'
-}
-
-// ─── Sub-components ───────────────────────────────────────────────────────────
-
-function StatusSkeleton() {
-  return (
-    <div className="rounded-2xl border border-slate-200/80 dark:border-slate-700/80 bg-white/80 dark:bg-slate-900/80 p-6 animate-pulse space-y-4">
-      <div className="h-4 w-1/3 rounded bg-slate-200 dark:bg-slate-700 ms-auto" />
-      <div className="h-3 w-full rounded bg-slate-100 dark:bg-slate-800" />
-      <div className="h-3 w-5/6 rounded bg-slate-100 dark:bg-slate-800 ms-auto" />
-      <div className="flex gap-3 pt-4">
-        <div className="h-24 flex-1 rounded-xl bg-slate-100 dark:bg-slate-800" />
-        <div className="h-24 flex-1 rounded-xl bg-slate-100 dark:bg-slate-800" />
-      </div>
-    </div>
-  )
-}
-
-/** Must match api.SUPERUSER_EMAIL (primary admin only). */
-const PRIMARY_ADMIN_EMAIL = 'gal0673@gmail.com'
-
-const VIDEO_RENDERING_HINT =
-  'הווידאו מיוצר ברקע — אפשר להמשיך לערוך את הבאנר. · Video is rendering in the background; you can keep editing.'
-
-/** After "נתק מהמשימה", do not auto-load /banners/latest on refresh (stuck pending would return forever). */
-const SKIP_LATEST_RESTORE_KEY = 'banner_workspace_skip_latest_restore'
-
-/** D-ID sample portrait; stable for tests (see test_ugc.py). */
-const UGC_DEFAULT_AVATAR_URL =
-  'https://d-id-public-bucket.s3.us-west-2.amazonaws.com/alice.jpg'
-
-/** Default ElevenLabs voice used server-side when voice_id is omitted ([`services/ugc_service.py`]). */
-const UGC_DEFAULT_VOICE_ID_HINT = 'Wuv1s5YTNCjL9mFJTqo4'
-
-function ugcPlaybackUrl(payload) {
-  const f = typeof payload?.ugc_final_video_url === 'string' ? payload.ugc_final_video_url.trim() : ''
-  const f1_1 = typeof payload?.ugc_final_video_url_1_1 === 'string' ? payload.ugc_final_video_url_1_1.trim() : ''
-  const f16_9 = typeof payload?.ugc_final_video_url_16_9 === 'string' ? payload.ugc_final_video_url_16_9.trim() : ''
-  const c = typeof payload?.ugc_composited_video_url === 'string' ? payload.ugc_composited_video_url.trim() : ''
-  const r = typeof payload?.ugc_raw_video_url === 'string' ? payload.ugc_raw_video_url.trim() : ''
-  return f || f1_1 || f16_9 || c || r || ''
-}
-
-function formatUgcStatus(ugcStatus) {
-  if (!ugcStatus) return 'מתחיל…'
-  const map = {
-    pending: 'UGC: ממתין…',
-    scraped: 'UGC: נסרק את האתר…',
-    generating_script: 'UGC: מכין תסריט…',
-    generating_video: 'UGC: מייצר וידאו…',
-    completed: 'UGC: הושלם',
-    failed: 'UGC: נכשל',
-  }
-  return map[ugcStatus] || `UGC: ${ugcStatus.replace(/_/g, ' ')}`
-}
-
-function Spinner({ className = '' }) {
-  return (
-    <span
-      className={`inline-block size-5 rounded-full border-2 border-indigo-500/30 border-t-indigo-500 animate-spin ${className}`}
-      aria-hidden
-    />
-  )
-}
-
-function readSkipLatestRestoreFlag() {
-  try {
-    return typeof sessionStorage !== 'undefined' && sessionStorage.getItem(SKIP_LATEST_RESTORE_KEY) === '1'
-  } catch {
-    return false
-  }
-}
-
-/** Renders UGC video script scenes (spoken + on-screen copy). */
-function UgcScriptScenesBody({ scenes }) {
-  if (!Array.isArray(scenes) || scenes.length === 0) return null
-  return (
-    <ul className="space-y-4 pt-2">
-      {scenes.map((scene, i) => {
-        const num = scene?.scene_number ?? i + 1
-        const spoken = typeof scene?.spoken_text === 'string' ? scene.spoken_text.trim() : ''
-        const onScreen = typeof scene?.on_screen_text === 'string' ? scene.on_screen_text.trim() : ''
-        return (
-          <li
-            key={`ugc-scene-${num}-${i}`}
-            className="rounded-xl border border-slate-200/90 dark:border-slate-700/90 bg-slate-50/80 dark:bg-slate-950/50 p-4 text-right"
-          >
-            <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
-              <span className="inline-flex items-center rounded-full bg-indigo-100 dark:bg-indigo-950/80 px-2.5 py-0.5 text-[11px] font-semibold text-indigo-800 dark:text-indigo-200 ring-1 ring-indigo-200/80 dark:ring-indigo-800/60">
-                סצנה {num}
-              </span>
-            </div>
-            <div className="space-y-3">
-              <div>
-                <p className="text-[10px] uppercase tracking-wide text-slate-500 dark:text-slate-400 mb-1">
-                  דיבור (תמליל)
-                </p>
-                <p className="text-sm text-slate-900 dark:text-slate-100 leading-relaxed whitespace-pre-wrap" dir="rtl">
-                  {spoken || '—'}
-                </p>
-              </div>
-              <div>
-                <p className="text-[10px] uppercase tracking-wide text-slate-500 dark:text-slate-400 mb-1">
-                  טקסט על המסך
-                </p>
-                <p className="text-sm font-medium text-slate-800 dark:text-slate-200 leading-relaxed" dir="rtl">
-                  {onScreen || '—'}
-                </p>
-              </div>
-            </div>
-          </li>
-        )
-      })}
-    </ul>
-  )
-}
 
 
 // ─── Main workspace ───────────────────────────────────────────────────────────
 
 export default function BannerWorkspace() {
-  const { user, logout, ready } = useAuth()
+  const { user, logout, ready, credits, refreshCredits } = useAuth()
   const navigate = useNavigate()
 
   const [url,           setUrl]           = useState('')
@@ -252,6 +132,23 @@ export default function BannerWorkspace() {
   useEffect(() => {
     terminalRef.current = terminal
   }, [terminal])
+
+  // Refund happens server-side when a task transitions to `failed` (or any of
+  // its sub-statuses). Re-pull the credit balance so the header reflects it.
+  const lastRefundStatusRef = useRef(null)
+  useEffect(() => {
+    const s = statusPayload?.status
+    const us = statusPayload?.ugc_status
+    const vs = statusPayload?.video_status
+    const failedKey = `${s}|${us}|${vs}`
+    const anyFailed = s === 'failed' || us === 'failed' || vs === 'failed'
+    if (anyFailed && lastRefundStatusRef.current !== failedKey) {
+      lastRefundStatusRef.current = failedKey
+      refreshCredits()
+    } else if (!anyFailed) {
+      lastRefundStatusRef.current = null
+    }
+  }, [statusPayload?.status, statusPayload?.ugc_status, statusPayload?.video_status, refreshCredits])
 
   // Restore latest banner task after refresh (same user session / cookie).
   useEffect(() => {
@@ -361,7 +258,12 @@ export default function BannerWorkspace() {
     }
   }, [taskId])
 
-  const isPrimaryAdmin = user?.email?.toLowerCase() === PRIMARY_ADMIN_EMAIL
+  // `isSuperuser` gates UI for any super-admin (catalog management);
+  // `isPrimaryAdmin` gates UI for the bootstrapped admin only (AI-context export).
+  // Both come from /auth/me (set in AuthContext); the email is never hardcoded
+  // in the client bundle.
+  const isSuperuser = Boolean(user?.isSuperuser)
+  const isPrimaryAdmin = Boolean(user?.isPrimaryAdmin)
 
   const handleRenderVideo = useCallback(async (aspectRatioParam = '1:1') => {
     if (!taskId) return
@@ -382,10 +284,12 @@ export default function BannerWorkspace() {
             : p,
         )
       }
+      refreshCredits()
     } catch (err) {
       setVideoRenderError(axiosErrorMessage(err))
+      if (isInsufficientCreditsError(err)) refreshCredits()
     }
-  }, [taskId, activeDesign])
+  }, [taskId, activeDesign, refreshCredits])
 
   const handleRenderVideo11  = useCallback(() => handleRenderVideo('1:1'),  [handleRenderVideo])
   const handleRenderVideo916 = useCallback(() => handleRenderVideo('9:16'), [handleRenderVideo])
@@ -475,8 +379,10 @@ export default function BannerWorkspace() {
       }
       setSkipLatestRestore(false)
       setTaskId(id)
+      refreshCredits()
     } catch (err) {
       setUgcError(axiosErrorMessage(err))
+      if (isInsufficientCreditsError(err)) refreshCredits()
     } finally {
       setUgcPosting(false)
     }
@@ -508,8 +414,10 @@ export default function BannerWorkspace() {
       }
       setSkipLatestRestore(false)
       setTaskId(id)
+      refreshCredits()
     } catch (err) {
       setSubmitError(axiosErrorMessage(err))
+      if (isInsufficientCreditsError(err)) refreshCredits()
     } finally {
       setIsPosting(false)
     }
@@ -566,13 +474,15 @@ export default function BannerWorkspace() {
     setUgcPendingAspectRatio(targetAspect)
     try {
       await api.post(`/tasks/${taskId}/ugc/re-render`, { aspect_ratio: targetAspect })
+      refreshCredits()
     } catch (err) {
       setUgcRerenderError(axiosErrorMessage(err))
       setUgcPendingAspectRatio(null)
+      if (isInsufficientCreditsError(err)) refreshCredits()
     } finally {
       setUgcRerenderSubmitting(false)
     }
-  }, [taskId, activePreviewAspect, aspectRatio])
+  }, [taskId, activePreviewAspect, aspectRatio, refreshCredits])
 
   return (
     <div
@@ -581,65 +491,16 @@ export default function BannerWorkspace() {
       lang="he"
     >
       {/* ── Top nav ─────────────────────────────────────────────── */}
-      <header className="sticky top-0 z-20 border-b border-slate-200/80 dark:border-slate-800 bg-white/90 dark:bg-slate-900/90 backdrop-blur-md">
-        <div className="mx-auto flex max-w-[96%] items-center justify-between gap-4 px-4 py-3 sm:px-6">
-          <div className="text-start">
-            <h1 className="text-lg font-semibold tracking-tight text-slate-900 dark:text-white">
-              סטודיו באנרים
-            </h1>
-            <p className="text-xs text-slate-500 dark:text-slate-400">
-              ייצור אוטומטי של קופי, ויז׳ואל ועיצובים מוכנים לייצוא
-            </p>
-          </div>
-          <div className="flex items-center gap-3">
-            {user?.email && (
-              <span className="hidden text-sm text-slate-600 dark:text-slate-400 sm:inline max-w-[200px] truncate">
-                {user.email}
-              </span>
-            )}
-            <Link
-              to="/avatar-studio"
-              className="rounded-lg border border-violet-300/80 dark:border-violet-600/50 bg-violet-50 dark:bg-violet-950/40 px-3 py-2 text-sm font-medium text-violet-800 dark:text-violet-200 hover:bg-violet-100 dark:hover:bg-violet-900/50 transition"
-            >
-              סטודיו אווטאר
-            </Link>
-            {isPrimaryAdmin && (
-              <>
-                <Link
-                  to="/admin/catalog"
-                  className="rounded-lg border border-amber-300/80 dark:border-amber-600/50 bg-amber-50 dark:bg-amber-950/40 px-3 py-2 text-sm font-medium text-amber-800 dark:text-amber-200 hover:bg-amber-100 dark:hover:bg-amber-900/50 transition"
-                >
-                  ניהול קטלוג
-                </Link>
-                <button
-                  type="button"
-                  onClick={handleDownloadAiContext}
-                  disabled={aiContextBusy}
-                  className="rounded-lg border border-indigo-300/80 dark:border-indigo-500/50 bg-indigo-50 dark:bg-indigo-950/50 px-3 py-2 text-sm font-medium text-indigo-800 dark:text-indigo-200 hover:bg-indigo-100 dark:hover:bg-indigo-900/60 disabled:opacity-50 transition"
-                  title="מייצר מחדש את הקובץ בשורש הפרויקט ומוריד אותו"
-                >
-                  {aiContextBusy ? 'מייצא…' : 'הורד ai-banner-context'}
-                </button>
-              </>
-            )}
-            <button
-              type="button"
-              onClick={handleLogout}
-              className="rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 px-3 py-2 text-sm font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-700 transition"
-            >
-              התנתקות
-            </button>
-          </div>
-        </div>
-        {isPrimaryAdmin && aiContextErr && (
-          <div
-            className="mx-auto max-w-[96%] px-4 pb-2 sm:px-6 text-end text-xs text-red-600 dark:text-red-400"
-            role="alert"
-          >
-            {aiContextErr}
-          </div>
-        )}
-      </header>
+      <WorkspaceHeader
+        user={user}
+        credits={credits}
+        isSuperuser={isSuperuser}
+        isPrimaryAdmin={isPrimaryAdmin}
+        aiContextBusy={aiContextBusy}
+        aiContextErr={aiContextErr}
+        handleDownloadAiContext={handleDownloadAiContext}
+        handleLogout={handleLogout}
+      />
 
       {/* ── Two-column layout ────────────────────────────────────── */}
       <div className="mx-auto grid max-w-[96%] gap-6 px-4 py-6 lg:grid-cols-[minmax(300px,360px)_1fr] sm:px-6 lg:py-8">
@@ -754,218 +615,28 @@ export default function BannerWorkspace() {
               </button>
             </form>
 
-            <div className="mt-6 border-t border-slate-200 dark:border-slate-800 pt-5 space-y-3">
-              <button
-                type="button"
-                onClick={() => setUgcPanelOpen((o) => !o)}
-                className="w-full rounded-xl border border-violet-300/90 dark:border-violet-600/50 bg-violet-50/90 dark:bg-violet-950/40 px-4 py-2.5 text-sm font-semibold text-violet-900 dark:text-violet-100 hover:bg-violet-100/90 dark:hover:bg-violet-900/50 transition text-right"
-                aria-expanded={ugcPanelOpen}
-              >
-                {ugcPanelOpen ? 'הסתר אווטאר' : 'וידאו אווטאר'}
-              </button>
-
-              {ugcPanelOpen && (
-                <div className="rounded-xl border border-violet-200/80 dark:border-violet-800/50 bg-violet-50/40 dark:bg-violet-950/20 p-4 space-y-3">
-                  <div className="rounded-xl border-2 border-violet-500/60 dark:border-violet-400/40 bg-white dark:bg-slate-900/90 p-4 shadow-sm space-y-3">
-                    <p className="text-sm font-bold text-violet-950 dark:text-violet-100 text-right">
-                      סטודיו אווטאר מלא (מומלץ)
-                    </p>
-                    <p className="text-[11px] text-slate-600 dark:text-slate-300 leading-relaxed text-right">
-                      דף נפרד: <strong className="text-slate-800 dark:text-slate-100">בריף שיווקי</strong>,{' '}
-                      <strong className="text-slate-800 dark:text-slate-100">הערות בימוי</strong> שלא נקראות בקול, תסריט
-                      מובנה מ-AI או טקסט דיבור בלבד — <strong className="text-slate-800 dark:text-slate-100">בלי סריקת אתר</strong>.
-                    </p>
-                    <Link
-                      to="/avatar-studio"
-                      className="flex w-full items-center justify-center gap-2 rounded-xl bg-violet-600 px-4 py-3 text-sm font-bold text-white shadow-md shadow-violet-900/25 hover:bg-violet-500 transition"
-                    >
-                      פתח סטודיו אווטאר
-                    </Link>
-                  </div>
-
-                  <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400 border-t border-violet-200/60 dark:border-violet-800/40 pt-3 text-right">
-                    מסלול ישן — UGC עם סריקת כתובת האתר מהטופס למעלה
-                  </p>
-                  <p className="text-[11px] text-violet-900/80 dark:text-violet-200/80 leading-relaxed">
-                    דורש URL + סריקה. תסריט מותאם (אופציונלי) הוא טקסט דיבור אחד — בלי שדות בימוי נפרדים. השוואת D-ID / HeyGen.
-                  </p>
-                  <div>
-                    <label
-                      htmlFor="bw-ugc-provider"
-                      className="block text-xs font-medium text-slate-600 dark:text-slate-300 mb-1.5"
-                    >
-                      ספק וידאו
-                    </label>
-                    <select
-                      id="bw-ugc-provider"
-                      value={ugcProvider}
-                      onChange={(ev) => {
-                        const v = ev.target.value
-                        setUgcProvider(v)
-                        if (v === 'heygen_elevenlabs' && ugcAvatarId.trim() === UGC_DEFAULT_AVATAR_URL) {
-                          setUgcAvatarId('')
-                        }
-                        if (v === 'd-id' && !ugcAvatarId.trim()) {
-                          setUgcAvatarId(UGC_DEFAULT_AVATAR_URL)
-                        }
-                      }}
-                      disabled={formLocked}
-                      className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2.5 text-sm text-right outline-none focus:border-violet-500 focus:ring-2 focus:ring-violet-500/20 disabled:opacity-60 transition"
-                    >
-                      <option value="d-id">D-ID (תמונת פורטרט + אודיו)</option>
-                      <option value="heygen_elevenlabs">HeyGen + ElevenLabs</option>
-                    </select>
-                  </div>
-                  {ugcProvider === 'heygen_elevenlabs' && (
-                    <div>
-                      <label
-                        htmlFor="bw-ugc-heygen-type"
-                        className="block text-xs font-medium text-slate-600 dark:text-slate-300 mb-1.5"
-                      >
-                        סוג מזהה HeyGen
-                      </label>
-                      <select
-                        id="bw-ugc-heygen-type"
-                        value={ugcHeygenCharacterType}
-                        onChange={(ev) => setUgcHeygenCharacterType(ev.target.value)}
-                        disabled={formLocked}
-                        className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2.5 text-sm text-right outline-none focus:border-violet-500 focus:ring-2 focus:ring-violet-500/20 disabled:opacity-60 transition"
-                      >
-                        <option value="avatar">אווטאר סטודיו (avatar_id)</option>
-                        <option value="talking_photo">תמונה מדברת (talking_photo_id)</option>
-                      </select>
-                    </div>
-                  )}
-                  <div>
-                    <label
-                      htmlFor="bw-ugc-avatar"
-                      className="block text-xs font-medium text-slate-600 dark:text-slate-300 mb-1.5"
-                    >
-                      אווטאר / תמונת מקור
-                    </label>
-                    <input
-                      id="bw-ugc-avatar"
-                      type="text"
-                      value={ugcAvatarId}
-                      onChange={(ev) => setUgcAvatarId(ev.target.value)}
-                      disabled={formLocked}
-                      placeholder={
-                        ugcProvider === 'd-id'
-                          ? 'https://… תמונת פנים ציבורית (HTTPS)'
-                          : ugcHeygenCharacterType === 'talking_photo'
-                            ? 'talking_photo_id (List Avatars V2)'
-                            : 'avatar_id מ-HeyGen'
-                      }
-                      className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2.5 text-sm outline-none focus:border-violet-500 focus:ring-2 focus:ring-violet-500/20 disabled:opacity-60 transition"
-                      dir="ltr"
-                    />
-                    <p className="mt-1 text-[10px] text-slate-500 dark:text-slate-400 leading-relaxed">
-                      D-ID: URL לתמונה. HeyGen: בחר למעלה avatar או talking_photo לפי סוג המזהה מהדשבורד.
-                    </p>
-                  </div>
-                  <div>
-                    <label
-                      htmlFor="bw-ugc-voice"
-                      className="block text-xs font-medium text-slate-600 dark:text-slate-300 mb-1.5"
-                    >
-                      מזהה קול ElevenLabs{' '}
-                      <span className="text-slate-400 font-normal">(אופציונלי)</span>
-                    </label>
-                    <input
-                      id="bw-ugc-voice"
-                      type="text"
-                      value={ugcVoiceId}
-                      onChange={(ev) => setUgcVoiceId(ev.target.value)}
-                      disabled={formLocked}
-                      placeholder={`ריק = ברירת מחדל (${UGC_DEFAULT_VOICE_ID_HINT})`}
-                      className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2.5 text-sm outline-none focus:border-violet-500 focus:ring-2 focus:ring-violet-500/20 disabled:opacity-60 transition"
-                      dir="ltr"
-                      autoComplete="off"
-                    />
-                  </div>
-                  <div dir="rtl">
-                    <label
-                      htmlFor="bw-ugc-aspect"
-                      className="block text-xs font-medium text-slate-600 dark:text-slate-300 mb-1.5"
-                    >
-                      יחס גובה-רוחב לווידאו
-                    </label>
-                    <select
-                      id="bw-ugc-aspect"
-                      value={aspectRatio}
-                      onChange={(ev) => setAspectRatio(ev.target.value)}
-                      disabled={formLocked}
-                      className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2.5 text-sm text-right outline-none focus:border-violet-500 focus:ring-2 focus:ring-violet-500/20 disabled:opacity-60 transition"
-                    >
-                      <option value="9:16">9:16 (Story/Reels)</option>
-                      <option value="16:9">16:9 (אופקי)</option>
-                      <option value="1:1">1:1 (ריבועי)</option>
-                    </select>
-                  </div>
-                  <div>
-                    <label
-                      htmlFor="bw-ugc-website"
-                      className="block text-xs font-medium text-slate-600 dark:text-slate-300 mb-1.5"
-                    >
-                      כתובת לאתר בווידאו{' '}
-                      <span className="text-slate-400 font-normal">
-                        (אופציונלי — בלי https/www, מוצג בפינה ואז במרכז בסוף)
-                      </span>
-                    </label>
-                    <input
-                      id="bw-ugc-website"
-                      type="text"
-                      value={ugcWebsiteUrl}
-                      onChange={(ev) => setUgcWebsiteUrl(ev.target.value)}
-                      disabled={formLocked}
-                      placeholder="למשל: example.co.il או https://www.example.co.il"
-                      className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2.5 text-sm outline-none focus:border-violet-500 focus:ring-2 focus:ring-violet-500/20 disabled:opacity-60 transition"
-                      dir="ltr"
-                      autoComplete="off"
-                      maxLength={512}
-                    />
-                  </div>
-                  <div>
-                    <label
-                      htmlFor="bw-ugc-custom-script"
-                      className="block text-xs font-medium text-slate-600 dark:text-slate-300 mb-1.5"
-                    >
-                      תסריט מותאם (Custom Script){' '}
-                      <span className="text-slate-400 font-normal">(אופציונלי — דילוג על תסריט AI)</span>
-                    </label>
-                    <textarea
-                      id="bw-ugc-custom-script"
-                      name="ugc_custom_script"
-                      rows={4}
-                      maxLength={2000}
-                      placeholder="הקלד כאן טקסט לדיבור — אם יישאר ריק, המערכת תייצר תסריט אוטומטית מהאתר."
-                      value={ugcCustomScript}
-                      onChange={(ev) => setUgcCustomScript(ev.target.value)}
-                      disabled={formLocked}
-                      className="w-full resize-y rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2.5 text-sm text-right outline-none focus:border-violet-500 focus:ring-2 focus:ring-violet-500/20 disabled:opacity-60 min-h-[88px] transition"
-                      dir="rtl"
-                    />
-                  </div>
-                  {ugcError && (
-                    <div
-                      role="alert"
-                      className="rounded-xl border border-red-200 dark:border-red-900/50 bg-red-50 dark:bg-red-950/40 px-3 py-2 text-xs text-red-800 dark:text-red-200 text-right"
-                    >
-                      {ugcError}
-                    </div>
-                  )}
-                  <button
-                    type="button"
-                    onClick={handleGenerateUGC}
-                    disabled={formLocked}
-                    className="w-full rounded-xl bg-violet-600 px-4 py-3 text-sm font-semibold text-white shadow-md shadow-violet-900/20 hover:bg-violet-500 disabled:opacity-50 disabled:pointer-events-none transition inline-flex items-center justify-center gap-2"
-                  >
-                    {ugcPosting && <Spinner className="!size-4 border-white/30 border-t-white" />}
-                    {ugcPosting ? 'שולח…' : 'צור וידאו אווטאר'}
-                  </button>
-                </div>
-              )}
-            </div>
+            <UgcPanel
+              ugcPanelOpen={ugcPanelOpen}
+              setUgcPanelOpen={setUgcPanelOpen}
+              ugcProvider={ugcProvider}
+              setUgcProvider={setUgcProvider}
+              ugcHeygenCharacterType={ugcHeygenCharacterType}
+              setUgcHeygenCharacterType={setUgcHeygenCharacterType}
+              ugcAvatarId={ugcAvatarId}
+              setUgcAvatarId={setUgcAvatarId}
+              ugcVoiceId={ugcVoiceId}
+              setUgcVoiceId={setUgcVoiceId}
+              aspectRatio={aspectRatio}
+              setAspectRatio={setAspectRatio}
+              ugcWebsiteUrl={ugcWebsiteUrl}
+              setUgcWebsiteUrl={setUgcWebsiteUrl}
+              ugcCustomScript={ugcCustomScript}
+              setUgcCustomScript={setUgcCustomScript}
+              formLocked={formLocked}
+              ugcPosting={ugcPosting}
+              ugcError={ugcError}
+              handleGenerateUGC={handleGenerateUGC}
+            />
 
             <p className="mt-4 text-[10px] text-slate-400 dark:text-slate-500 text-right">
               כתובת API:{' '}
