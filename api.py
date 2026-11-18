@@ -172,6 +172,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# StaticFiles checks the directory at construction time (import), which runs
+# before ``lifespan`` — so create it here, or a fresh clone crashes on startup.
+ensure_tasks_dir()
 app.mount("/task-files", StaticFiles(directory=str(TASKS_DIR)), name="task_files")
 
 

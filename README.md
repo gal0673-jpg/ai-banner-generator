@@ -37,7 +37,9 @@ The system is **six processes**. Start them in this order (each in its own termi
 | 5 | Video engine (Remotion) | `cd video_engine && npm run dev` | 9000 |
 | 6 | React client (Vite) | `cd client && npm run dev` | 5173 |
 
-Open the app at **http://localhost:5173** — Vite proxies API/WS calls to `:8888`.
+Open the app at **http://127.0.0.1:5173** — Vite proxies API/WS calls to `:8888`
+(requires `VITE_API_URL=` empty in `client/.env`; copy `client/.env.example`).
+When adding a new FastAPI router prefix, also add it to the `proxy` map in `client/vite.config.js`.
 
 - Redis is required by the Celery worker (broker) **and** the WebSocket status feed (Pub/Sub).
 - The video engine (5) is only needed when rendering **videos**; banners/copy work without it.
