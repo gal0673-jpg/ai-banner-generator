@@ -37,13 +37,16 @@ export function toAbsoluteApiUrl(pathOrUrl) {
  * WebSocket base URL — derived from the HTTP base by swapping the scheme.
  * ``http://127.0.0.1:8888`` → ``ws://127.0.0.1:8888``
  * ``https://api.example.com`` → ``wss://api.example.com``
- * Same-origin proxy (API_BASE_URL === '') → '' (relative WS paths are not
- * valid so we fall back to the explicit local address in that case).
+ * Same-origin proxy (API_BASE_URL === '') → the page's own origin (Vite proxies
+ * ``/ws`` to FastAPI), so the host-only auth cookie is sent with the upgrade.
  */
-export const WS_BASE_URL =
-  API_BASE_URL
-    ? API_BASE_URL.replace(/^http/, 'ws')
-    : 'ws://127.0.0.1:8888'
+function sameOriginWsBase() {
+  if (typeof window === 'undefined') return 'ws://127.0.0.1:8888'
+  return window.location.origin.replace(/^http/, 'ws')
+}
+export const WS_BASE_URL = API_BASE_URL
+  ? API_BASE_URL.replace(/^http/, 'ws')
+  : sameOriginWsBase()
 
 export const api = axios.create({
   baseURL: API_BASE_URL,
